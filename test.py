@@ -120,9 +120,12 @@ class IPodDownloader:
                 '-disposition:v', 'attached_pic'
             ])
         else:
-            cmd.extend(['-c:a', 'copy'])
+            cmd.extend(['-map', '0:a', '-c:a', 'copy'])
 
         cmd.extend([
+            '-map_metadata', '-1',
+            '-movflags', '+faststart',
+            
             '-metadata', f"title={meta['title']}",
             '-metadata', f"artist={meta['artist']}",
             '-metadata', f"album={meta['album']}",
@@ -135,16 +138,11 @@ class IPodDownloader:
         ])
 
         try:
-            subprocess.run(cmd, check=True)
-            print(f"Ready: {os.path.basename(final_output)}")
+            import subprocess
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
+            print(f"✅ Готово: {os.path.basename(final_output)}")
         except subprocess.CalledProcessError:
-            print(f"Error of FFmpeg on time Embedding metadata")
-
-        try:
-            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print(f"Ready: {os.path.basename(final_output)}")
-        except subprocess.CalledProcessError:
-            print(f"Error of FFmpeg on time proccesings tags.")
+            print(f"❌ Сталася помилка FFmpeg під час вшивання тегів.")
 
 if __name__ == "__main__":
     print("Ipod media builder started!")
