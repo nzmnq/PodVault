@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,12 +85,27 @@ class MusicSorterForIPod:
 
     def run(self) -> None:
         audio_files = self.find_source_audio_files()
-        tracks = [self.read_track(path) for path in progress_iter(audio_files, desc="Reading tags", unit="file")]
+        tracks: list[LocalTrack] = []
+        unreadable = 0
+
+        for path in progress_iter(audio_files, desc="Reading tags", unit="file"):
+            track = self.read_track(path)
+            if track:
+                tracks.append(track)
+            else:
+                unreadable += 1
+
         if not tracks:
-            print(f"No audio files found in {self.source_dir}")
+            if unreadable:
+                print(f"No readable audio files found in {self.source_dir}. Skipped unreadable: {unreadable}")
+            else:
+                print(f"No audio files found in {self.source_dir}")
             return
 
         print(f"Found {len(tracks)} audio file(s).")
+        if unreadable:
+            print(f"Skipped unreadable audio file(s): {unreadable}")
+
         jobs = [track for track in tracks if self.should_process(track)]
         skipped = len(tracks) - len(jobs)
 
@@ -170,10 +186,18 @@ class MusicSorterForIPod:
 
         return sorted(files)
 
-    def read_track(self, path: Path) -> LocalTrack:
+    def read_track(self, path: Path) -> LocalTrack | None:
         tags = read_tags_with_mutagen(path)
         if not tags and self.ffprobe_path:
             tags = read_tags_with_ffprobe(path, self.ffprobe_path)
+
+        if tags is None:
+            progress_write(f"Skip unreadable: {path}")
+            return None
+
+        if not tags and not is_decodable_audio(path, self.ffmpeg_path):
+            progress_write(f"Skip unreadable: {path}")
+            return None
 
         artist = first_tag(tags, "artist", "album_artist", default="Unknown Artist")
         title = first_tag(tags, "title", default=path.stem)
@@ -453,20 +477,24 @@ def is_relative_to(path: Path, parent: Path) -> bool:
     return True
 
 
-def read_tags_with_mutagen(path: Path) -> dict[str, str]:
+def read_tags_with_mutagen(path: Path) -> dict[str, str] | None:
     try:
         from mutagen import File as MutagenFile
     except ImportError:
         return {}
 
-    audio = MutagenFile(path, easy=True)
+    try:
+        audio = MutagenFile(path, easy=True)
+    except Exception:
+        return {}
+
     if not audio or not audio.tags:
         return {}
 
     return normalize_tags(dict(audio.tags))
 
 
-def read_tags_with_ffprobe(path: Path, ffprobe_path: str) -> dict[str, str]:
+def read_tags_with_ffprobe(path: Path, ffprobe_path: str) -> dict[str, str] | None:
     cmd = [
         ffprobe_path,
         "-v",
@@ -476,9 +504,34 @@ def read_tags_with_ffprobe(path: Path, ffprobe_path: str) -> dict[str, str]:
         "-show_format",
         str(path),
     ]
-    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-    data = json.loads(result.stdout or "{}")
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        data = json.loads(result.stdout or "{}")
+    except Exception:
+        return None
+
     return normalize_tags(data.get("format", {}).get("tags", {}))
+
+
+def is_decodable_audio(path: Path, ffmpeg_path: str) -> bool:
+    cmd = [
+        ffmpeg_path,
+        "-v",
+        "error",
+        "-i",
+        str(path),
+        "-map",
+        "0:a:0",
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return False
+
+    return result.returncode == 0
 
 
 def normalize_tags(tags: dict) -> dict[str, str]:
@@ -551,9 +604,13 @@ def find_ffmpeg(explicit_path: str | None = None) -> str:
     if explicit_path:
         return explicit_path
 
-    local_path = Path("ffmpeg.exe")
+    local_path = Path("ffmpeg")
     if local_path.exists():
-        return str(local_path)
+        return str(local_path.resolve())
+
+    windows_local_path = Path("ffmpeg.exe")
+    if sys.platform.startswith("win") and windows_local_path.exists():
+        return str(windows_local_path.resolve())
 
     found = shutil.which("ffmpeg")
     if found:
@@ -571,7 +628,7 @@ def find_tool(name: str, local_name: str | None = None) -> str | None:
     if local_name:
         local_path = Path(local_name)
         if local_path.exists():
-            return str(local_path)
+            return str(local_path.resolve())
 
     found = shutil.which(name)
     if found:
@@ -615,7 +672,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     ffmpeg_path = find_ffmpeg(args.ffmpeg)
-    ffprobe_path = args.ffprobe or find_tool("ffprobe", "ffprobe.exe")
+    local_ffprobe = "ffprobe.exe" if sys.platform.startswith("win") else None
+    ffprobe_path = args.ffprobe or find_tool("ffprobe", local_ffprobe)
 
     sorter = MusicSorterForIPod(
         source_dir=args.source_dir.expanduser(),
