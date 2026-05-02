@@ -1,2 +1,5 @@
 yt-dlp>=2024.12.13
 requests>=2.31.0
+mutagen>=1.47.0
+imageio-ffmpeg>=0.5.1
+tqdm>=4.66.0

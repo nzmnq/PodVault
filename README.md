@@ -65,3 +65,35 @@ python ipod_media_builder.py
 - FFmpeg чистить метадані `-map_metadata -1`, кодує AAC `320k`, додає `-movflags +faststart`, вшиває `artist`, `title`, `album`, `composer`, `date`, `genre`, `track`, `disc`.
 - Якщо є обкладинка, вона додається як `attached_pic`.
 - Після успішного створення `.m4a` тимчасові файли видаляються.
+
+## Сортування вже завантаженої музики по альбомах
+
+Окремий скрипт `sort_music_for_ipod.py` бере локальні аудіофайли з будь-якої папки, читає теги через `mutagen` або `ffprobe`, шукає доступні обкладинки альбомів без логіна через Deezer, MusicBrainz/Cover Art Archive та iTunes, конвертує обкладинку у JPEG 600x600 і створює iPod-friendly `.m4a` копії з вшитою обкладинкою.
+
+Вхідні файли не змінюються.
+
+Треки обробляються паралельно з прогресбаром, а обкладинка кешується окремо для кожного `artist + album`, щоб різні альбоми не отримували чужу картинку.
+
+FFmpeg буде знайдено автоматично: локальний `ffmpeg.exe`, системний `ffmpeg` або bundled binary з пакета `imageio-ffmpeg`. Це працює і на Linux після встановлення залежностей з `requirements.txt`.
+
+```bash
+python sort_music_for_ipod.py "/path/to/music" -o iPod_Sorted_Music
+```
+
+Корисні параметри:
+
+```bash
+python sort_music_for_ipod.py "/path/to/music" --dry-run
+python sort_music_for_ipod.py "/path/to/music" --overwrite
+python sort_music_for_ipod.py "/path/to/music" --workers 6
+python sort_music_for_ipod.py "/path/to/music" --ffmpeg /path/to/ffmpeg --ffprobe /path/to/ffprobe
+```
+
+Готові файли будуть розкладені так:
+
+```text
+iPod_Sorted_Music/
+  Album/
+    01 - Song.m4a
+    02 - Song.m4a
+```
