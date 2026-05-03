@@ -68,25 +68,24 @@ python ipod_media_builder.py
 
 ## Сортування вже завантаженої музики по альбомах
 
-Окремий скрипт `sort_music_for_ipod.py` бере локальні аудіофайли з будь-якої папки, читає теги через `mutagen` або `ffprobe`, шукає доступні обкладинки альбомів без логіна через Deezer, MusicBrainz/Cover Art Archive та iTunes, конвертує обкладинку у JPEG 600x600 і створює iPod-friendly `.m4a` копії з вшитою обкладинкою.
+Окремий скрипт `sort_music_for_ipod.py` бере локальні аудіофайли з будь-якої папки, читає теги через `mutagen` або `ffprobe`, шукає доступні обкладинки альбомів без логіна через Deezer, MusicBrainz/Cover Art Archive та iTunes, конвертує обкладинку у baseline JPEG 500x500 і створює iPod-friendly копії з вшитою обкладинкою.
 
 Вхідні файли не змінюються.
 
-Треки обробляються паралельно з прогресбаром, а обкладинка кешується окремо для кожного `artist + album`, щоб різні альбоми не отримували чужу картинку.
+Треки обробляються паралельно з автоматично підібраною кількістю потоків і прогресбаром, а обкладинка кешується окремо для кожного `artist + album`, щоб різні альбоми не отримували чужу картинку.
 
-FFmpeg буде знайдено автоматично: локальний `ffmpeg.exe`, системний `ffmpeg` або bundled binary з пакета `imageio-ffmpeg`. Це працює і на Linux після встановлення залежностей з `requirements.txt`.
+MP3 зберігаються як MP3 без перекодування, щоб не втрачати 320k-якість. M4A/AAC теж копіюються без перекодування. Інші формати автоматично кодуються в M4A AAC з bitrate та sample rate, прочитаними з оригінального файла.
+
+FFmpeg буде знайдено автоматично: локальний `ffmpeg`, системний `ffmpeg`, Windows `ffmpeg.exe` або bundled binary з пакета `imageio-ffmpeg`. Це працює і на Linux після встановлення залежностей з `requirements.txt`.
 
 ```bash
 python sort_music_for_ipod.py "/path/to/music" -o iPod_Sorted_Music
 ```
 
-Корисні параметри:
+Кількість потоків підбирається автоматично. За потреби її можна обмежити вручну:
 
 ```bash
-python sort_music_for_ipod.py "/path/to/music" --dry-run
-python sort_music_for_ipod.py "/path/to/music" --overwrite
 python sort_music_for_ipod.py "/path/to/music" --workers 6
-python sort_music_for_ipod.py "/path/to/music" --ffmpeg /path/to/ffmpeg --ffprobe /path/to/ffprobe
 ```
 
 Готові файли будуть розкладені так:
@@ -94,6 +93,6 @@ python sort_music_for_ipod.py "/path/to/music" --ffmpeg /path/to/ffmpeg --ffprob
 ```text
 iPod_Sorted_Music/
   Album/
-    01 - Song.m4a
+    01 - Song.mp3
     02 - Song.m4a
 ```

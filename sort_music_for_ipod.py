@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -43,6 +44,8 @@ class LocalTrack:
     genre: str
     track: str
     disc: str
+    audio_bitrate: int = 0
+    sample_rate: int = 0
 
     @property
     def album_key(self) -> str:
@@ -56,7 +59,13 @@ class LocalTrack:
     def output_name(self) -> str:
         track_number = normalize_number(self.track)
         prefix = f"{track_number:02d} - " if track_number else ""
-        return sanitize_filename(f"{prefix}{self.title}.m4a")
+        return sanitize_filename(f"{prefix}{self.title}.{output_extension_for(self.path)}")
+
+
+@dataclass(frozen=True)
+class AudioInfo:
+    bitrate: int = 0
+    sample_rate: int = 0
 
 
 class MusicSorterForIPod:
@@ -67,18 +76,14 @@ class MusicSorterForIPod:
         cache_dir: Path,
         ffmpeg_path: str,
         ffprobe_path: str | None,
-        overwrite: bool = False,
-        dry_run: bool = False,
-        workers: int = 4,
+        workers: int | None = None,
     ) -> None:
         self.source_dir = source_dir
         self.output_dir = output_dir
         self.cache_dir = cache_dir
         self.ffmpeg_path = ffmpeg_path
         self.ffprobe_path = ffprobe_path
-        self.overwrite = overwrite
-        self.dry_run = dry_run
-        self.workers = max(1, workers)
+        self.workers = resolve_worker_count(workers)
         self.cover_downloader = AlbumCoverDownloader(cache_dir, ffmpeg_path)
         self.cover_futures: dict[str, Future[Path | None]] = {}
         self.cover_lock = threading.Lock()
@@ -112,11 +117,6 @@ class MusicSorterForIPod:
         if skipped:
             print(f"Skip existing: {skipped}")
 
-        if self.dry_run:
-            for track in jobs:
-                print(f"Would write: {track.path} -> {self.output_path_for(track)}")
-            return
-
         if not jobs:
             print("Nothing to do.")
             return
@@ -147,7 +147,7 @@ class MusicSorterForIPod:
             print("Done.")
 
     def should_process(self, track: LocalTrack) -> bool:
-        return self.overwrite or not self.output_path_for(track).exists()
+        return not self.output_path_for(track).exists()
 
     def output_path_for(self, track: LocalTrack) -> Path:
         return self.output_dir / track.folder_name / track.output_name
@@ -203,6 +203,7 @@ class MusicSorterForIPod:
         title = first_tag(tags, "title", default=path.stem)
         album = first_tag(tags, "album", default="Unknown Album")
         album_artist = first_tag(tags, "album_artist", "albumartist", "artist", default=artist)
+        audio_info = read_audio_info(path, self.ffprobe_path)
 
         return LocalTrack(
             path=path,
@@ -214,9 +215,16 @@ class MusicSorterForIPod:
             genre=first_tag(tags, "genre"),
             track=first_tag(tags, "track", "tracknumber", default="1"),
             disc=first_tag(tags, "disc", "discnumber", default="1"),
+            audio_bitrate=audio_info.bitrate,
+            sample_rate=audio_info.sample_rate,
         )
 
     def build_ipod_file(self, track: LocalTrack, cover_path: Path | None, output_path: Path) -> None:
+        temp_output_path = output_path.with_name(
+            f".{output_path.stem}.{threading.get_ident()}.tmp{output_path.suffix}"
+        )
+        temp_output_path.unlink(missing_ok=True)
+
         cmd = [self.ffmpeg_path, "-y", "-i", str(track.path)]
 
         if cover_path:
@@ -224,45 +232,52 @@ class MusicSorterForIPod:
         else:
             cmd.extend(["-map", "0:a:0"])
 
-        cmd.extend(
-            [
-                "-map_metadata",
-                "-1",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "256k",
-            ]
-        )
+        cmd.extend(["-map_metadata", "-1"])
+
+        audio_mode = self.resolve_audio_mode(track)
+        if audio_mode == "copy":
+            cmd.extend(["-c:a", "copy"])
+        else:
+            cmd.extend(["-c:a", "aac"])
+            if track.audio_bitrate:
+                cmd.extend(["-b:a", str(track.audio_bitrate)])
+            else:
+                cmd.extend(["-b:a", "320k"])
+
+            if track.sample_rate:
+                cmd.extend(["-ar", str(track.sample_rate)])
 
         if cover_path:
-            cmd.extend(["-c:v", "mjpeg", "-disposition:v", "attached_pic"])
+            if output_extension_for(track.path) == "mp3":
+                cmd.extend(["-c:v", "mjpeg", "-id3v2_version", "3"])
+            else:
+                cmd.extend(["-c:v", "mjpeg", "-disposition:v", "attached_pic"])
 
-        cmd.extend(
-            [
-                "-movflags",
-                "+faststart",
-                "-metadata",
-                f"artist={track.artist}",
-                "-metadata",
-                f"title={track.title}",
-                "-metadata",
-                f"album={track.album}",
-                "-metadata",
-                f"album_artist={track.album_artist}",
-                "-metadata",
-                f"date={track.year}",
-                "-metadata",
-                f"genre={track.genre}",
-                "-metadata",
-                f"track={track.track}",
-                "-metadata",
-                f"disc={track.disc}",
-                str(output_path),
-            ]
-        )
+        if output_extension_for(track.path) == "m4a":
+            cmd.extend(["-movflags", "+faststart"])
 
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        cmd.extend(metadata_args(track))
+        cmd.append(str(temp_output_path))
+
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            if cover_path and output_extension_for(track.path) == "mp3":
+                embed_mp3_cover(temp_output_path, cover_path)
+            if not is_decodable_audio(temp_output_path, self.ffmpeg_path):
+                raise RuntimeError("FFmpeg produced an unreadable output file.")
+            temp_output_path.replace(output_path)
+        except Exception:
+            temp_output_path.unlink(missing_ok=True)
+            raise
+
+    def resolve_audio_mode(self, track: LocalTrack) -> str:
+        if track.path.suffix.casefold() == ".mp3":
+            return "copy"
+
+        if track.path.suffix.casefold() in {".m4a", ".aac"}:
+            return "copy"
+
+        return "encode"
 
 
 class AlbumCoverDownloader:
@@ -331,13 +346,16 @@ class AlbumCoverDownloader:
             "-i",
             str(source_path),
             "-vf",
-            "scale=600:600:force_original_aspect_ratio=decrease,"
-            "pad=600:600:(ow-iw)/2:(oh-ih)/2:color=white,format=yuvj420p",
+            "scale=500:500:force_original_aspect_ratio=decrease,"
+            "pad=500:500:(ow-iw)/2:(oh-ih)/2:color=white,format=yuvj420p",
             "-frames:v",
             "1",
+            "-q:v",
+            "3",
             str(output_path),
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        save_baseline_jpeg(output_path)
 
 
 @dataclass(frozen=True)
@@ -513,6 +531,64 @@ def read_tags_with_ffprobe(path: Path, ffprobe_path: str) -> dict[str, str] | No
     return normalize_tags(data.get("format", {}).get("tags", {}))
 
 
+def read_audio_info(path: Path, ffprobe_path: str | None) -> AudioInfo:
+    info = read_audio_info_with_mutagen(path)
+    if (info.bitrate and info.sample_rate) or not ffprobe_path:
+        return info
+
+    ffprobe_info = read_audio_info_with_ffprobe(path, ffprobe_path)
+    return AudioInfo(
+        bitrate=info.bitrate or ffprobe_info.bitrate,
+        sample_rate=info.sample_rate or ffprobe_info.sample_rate,
+    )
+
+
+def read_audio_info_with_mutagen(path: Path) -> AudioInfo:
+    try:
+        from mutagen import File as MutagenFile
+    except ImportError:
+        return AudioInfo()
+
+    try:
+        audio = MutagenFile(path, easy=False)
+    except Exception:
+        return AudioInfo()
+
+    if not audio or not audio.info:
+        return AudioInfo()
+
+    return AudioInfo(
+        bitrate=safe_int(getattr(audio.info, "bitrate", 0)),
+        sample_rate=safe_int(getattr(audio.info, "sample_rate", 0)),
+    )
+
+
+def read_audio_info_with_ffprobe(path: Path, ffprobe_path: str) -> AudioInfo:
+    cmd = [
+        ffprobe_path,
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-select_streams",
+        "a:0",
+        "-show_streams",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        data = json.loads(result.stdout or "{}")
+    except Exception:
+        return AudioInfo()
+
+    streams = data.get("streams") or []
+    stream = streams[0] if streams else {}
+    return AudioInfo(
+        bitrate=safe_int(stream.get("bit_rate")),
+        sample_rate=safe_int(stream.get("sample_rate")),
+    )
+
+
 def is_decodable_audio(path: Path, ffmpeg_path: str) -> bool:
     cmd = [
         ffmpeg_path,
@@ -534,6 +610,48 @@ def is_decodable_audio(path: Path, ffmpeg_path: str) -> bool:
     return result.returncode == 0
 
 
+def embed_mp3_cover(mp3_path: Path, cover_path: Path) -> None:
+    try:
+        from mutagen.id3 import APIC, ID3, ID3NoHeaderError
+    except ImportError:
+        return
+
+    try:
+        tags = ID3(mp3_path)
+    except ID3NoHeaderError:
+        tags = ID3()
+
+    tags.delall("APIC")
+    tags.add(
+        APIC(
+            encoding=0,
+            mime="image/jpeg",
+            type=3,
+            desc="Cover",
+            data=cover_path.read_bytes(),
+        )
+    )
+    tags.save(mp3_path, v2_version=3)
+
+
+def save_baseline_jpeg(path: Path) -> None:
+    try:
+        from PIL import Image
+    except ImportError:
+        return
+
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        image.save(
+            path,
+            format="JPEG",
+            quality=90,
+            optimize=False,
+            progressive=False,
+            subsampling=2,
+        )
+
+
 def normalize_tags(tags: dict) -> dict[str, str]:
     normalized: dict[str, str] = {}
     for key, value in tags.items():
@@ -547,6 +665,24 @@ def normalize_tags(tags: dict) -> dict[str, str]:
     return normalized
 
 
+def metadata_args(track: LocalTrack) -> list[str]:
+    values = {
+        "artist": track.artist,
+        "title": track.title,
+        "album": track.album,
+        "album_artist": track.album_artist,
+        "date": track.year,
+        "genre": track.genre,
+        "track": track.track,
+        "disc": track.disc,
+    }
+
+    args: list[str] = []
+    for key, value in values.items():
+        args.extend(["-metadata", f"{key}={value}"])
+    return args
+
+
 def first_tag(tags: dict[str, str], *names: str, default: str = "") -> str:
     for name in names:
         value = tags.get(name.casefold().replace(" ", "_"))
@@ -558,6 +694,19 @@ def first_tag(tags: dict[str, str], *names: str, default: str = "") -> str:
 def normalize_number(value: str) -> int:
     match = re.search(r"\d+", value or "")
     return int(match.group(0)) if match else 0
+
+
+def safe_int(value) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def output_extension_for(path: Path) -> str:
+    if path.suffix.casefold() == ".mp3":
+        return "mp3"
+    return "m4a"
 
 
 def sanitize_filename(name: str) -> str:
@@ -637,9 +786,17 @@ def find_tool(name: str, local_name: str | None = None) -> str | None:
     return None
 
 
+def resolve_worker_count(workers: int | None) -> int:
+    if workers:
+        return max(1, workers)
+
+    cpu_count = os.cpu_count() or 4
+    return max(2, min(cpu_count, 8))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Sort local music by albums and create iPod-friendly .m4a files with embedded covers."
+        description="Sort local music by albums and add iPod-friendly embedded covers."
     )
     parser.add_argument("source_dir", type=Path, help="Folder with unsorted music.")
     parser.add_argument(
@@ -650,39 +807,27 @@ def parse_args() -> argparse.Namespace:
         help="Folder for sorted iPod-ready files.",
     )
     parser.add_argument(
-        "--cache-dir",
-        type=Path,
-        default=Path("iPod_Sorted_Music/.covers"),
-        help="Folder for downloaded and converted covers.",
-    )
-    parser.add_argument("--ffmpeg", default=None, help="Path to ffmpeg. Uses bundled imageio-ffmpeg if available.")
-    parser.add_argument("--ffprobe", default=None, help="Optional path to ffprobe for tag fallback.")
-    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output files.")
-    parser.add_argument("--dry-run", action="store_true", help="Show planned output without writing files.")
-    parser.add_argument(
         "-j",
         "--workers",
         type=int,
-        default=4,
-        help="Number of parallel track conversion workers.",
+        default=None,
+        help="Override automatic parallel worker count.",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    ffmpeg_path = find_ffmpeg(args.ffmpeg)
+    ffmpeg_path = find_ffmpeg()
     local_ffprobe = "ffprobe.exe" if sys.platform.startswith("win") else None
-    ffprobe_path = args.ffprobe or find_tool("ffprobe", local_ffprobe)
+    ffprobe_path = find_tool("ffprobe", local_ffprobe)
 
     sorter = MusicSorterForIPod(
         source_dir=args.source_dir.expanduser(),
         output_dir=args.output_dir.expanduser(),
-        cache_dir=args.cache_dir.expanduser(),
+        cache_dir=(args.output_dir.expanduser() / ".covers"),
         ffmpeg_path=ffmpeg_path,
         ffprobe_path=ffprobe_path,
-        overwrite=args.overwrite,
-        dry_run=args.dry_run,
         workers=args.workers,
     )
     sorter.run()
