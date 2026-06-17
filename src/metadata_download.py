@@ -8,7 +8,7 @@ class IPodDownloader:
     def __init__(self, tracklist_file='tracklist.txt', download_dir='iPod_Music'):
         self.tracklist_file = tracklist_file
         self.download_dir = os.path.expanduser(download_dir)
-        self.ffmpeg_path = './ffmpeg.exe'
+        self.ffmpeg_path = r'.\bin\ffmpeg.exe' 
         
         if not os.path.exists(self.download_dir):
             os.makedirs(self.download_dir)
@@ -143,6 +143,18 @@ class IPodDownloader:
 
 if __name__ == "__main__":
     print("iPod Media Builder started!")
-    downloader = IPodDownloader()
+
+    tracklist_file = r'C:\Users\nazar\Music_Utility\tracklist.txt'
+
+    dowloaded_folder = r'C:\Users\nazar\Music_Utility\data\iPod_Music'
+    downloader = IPodDownloader(
+        tracklist_file=tracklist_file,
+        download_dir=dowloaded_folder
+    )
     downloader.process_list()
+
+    tracklist_file = r'.\Music_Utility\tracklist.txt'
+
+    dowloaded_folder = r'.\Music_Utility\data\iPod_Music'
+    
     print("\nAll tasks done!")
