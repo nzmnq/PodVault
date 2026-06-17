@@ -2,6 +2,7 @@ import os
 import subprocess
 import yt_dlp
 import requests
+import re
 
 class IPodDownloader:
     def __init__(self, tracklist_file='tracklist.txt', download_dir='iPod_Music'):
@@ -14,7 +15,7 @@ class IPodDownloader:
 
     def process_list(self):
         if not os.path.exists(self.tracklist_file):
-            print(f"File {self.tracklist_file} Not found")
+            print(f"File {self.tracklist_file} not found.")
             return
 
         with open(self.tracklist_file, 'r', encoding='utf-8') as file:
@@ -32,7 +33,7 @@ class IPodDownloader:
                     f.write(res.content)
                 return True
         except Exception as e:
-            print(f"Can't download artwork: {e}")
+            print(f"Cannot download artwork: {e}")
         return False
 
     def _handle_track(self, line):
@@ -57,40 +58,37 @@ class IPodDownloader:
         else:
             query = f"ytsearch1:{meta['artist']} {meta['title']} audio"
         
-        safe_name = f"{meta['artist']} - {meta['title']}".replace('/', '_').replace('\\', '_')
+        raw_name = f"{meta['artist']} - {meta['title']}"
+        safe_name = re.sub(r'[\\/*?:"<>|]', "", raw_name)
         
-        temp_audio = os.path.join(self.download_dir, f"temp_{safe_name}.m4a")
+        temp_base = os.path.join(self.download_dir, f"temp_{safe_name}")
+        
+        temp_audio = f"{temp_base}.m4a" 
         temp_cover = os.path.join(self.download_dir, f"temp_{safe_name}.jpg")
         final_audio = os.path.join(self.download_dir, f"{safe_name}.m4a")
 
-        # НАЛАШТУВАННЯ ДЛЯ МАКСИМАЛЬНОЇ ЯКОСТІ
         ydl_opts = {
-            # 1. Прибираємо обмеження [ext=m4a]. Тепер yt-dlp стягне найважчий і 
-            # найякісніший потік (навіть якщо це WebM/Opus)
-            'format': 'bestaudio/best', 
+            'format': 'bestaudio[ext=m4a]/bestaudio', 
             
             'ffmpeg_location': self.ffmpeg_path,
             'cookiefile': 'cookies.txt',
-            'outtmpl': temp_audio,
+            'outtmpl': f"{temp_base}.%(ext)s",
             'quiet': False,
             'no_warnings': False,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio', 
                 'preferredcodec': 'm4a',
-                # 2. Форсуємо максимальний бітрейт при створенні файлу для iPod
-                'preferredquality': '320', 
             }],
         }
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
- 
                 error_code = ydl.download([query])
                 if error_code != 0:
-                    print("Cannot download, skip.")
+                    print("Cannot download, skipping.")
                     return
         except Exception as e:
-            print(f"Critical error yt-dlp: {e}")
+            print(f"Critical yt-dlp error: {e}")
             return
 
         if not os.path.exists(temp_audio):
@@ -101,14 +99,16 @@ class IPodDownloader:
         if meta['cover']:
             has_cover = self._download_cover(meta['cover'], temp_cover)
 
-        print(f"Embedding metadata...")
+        print("Embedding metadata...")
         self._build_final_file(temp_audio, temp_cover if has_cover else None, final_audio, meta)
 
-        if os.path.exists(temp_audio):
-            os.remove(temp_audio)
-        if os.path.exists(temp_cover):
-            os.remove(temp_cover)
-
+        try:
+            if os.path.exists(temp_audio):
+                os.remove(temp_audio)
+            if os.path.exists(temp_cover):
+                os.remove(temp_cover)
+        except Exception as e:
+            print(f"Warning: Could not remove temp files: {e}")
     def _build_final_file(self, temp_audio, temp_cover, final_output, meta):
         cmd = [self.ffmpeg_path, '-y', '-v', 'error', '-i', temp_audio]
 
@@ -123,9 +123,7 @@ class IPodDownloader:
             cmd.extend(['-map', '0:a', '-c:a', 'copy'])
 
         cmd.extend([
-            '-map_metadata', '-1',
             '-movflags', '+faststart',
-            
             '-metadata', f"title={meta['title']}",
             '-metadata', f"artist={meta['artist']}",
             '-metadata', f"album={meta['album']}",
@@ -138,14 +136,13 @@ class IPodDownloader:
         ])
 
         try:
-            import subprocess
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
-            print(f"✅ Готово: {os.path.basename(final_output)}")
+            print(f"Done: {os.path.basename(final_output)}")
         except subprocess.CalledProcessError:
-            print(f"❌ Сталася помилка FFmpeg під час вшивання тегів.")
+            print("FFmpeg error occurred during metadata embedding.")
 
 if __name__ == "__main__":
-    print("Ipod media builder started!")
+    print("iPod Media Builder started!")
     downloader = IPodDownloader()
     downloader.process_list()
-    print("\nAll task done!")
+    print("\nAll tasks done!")

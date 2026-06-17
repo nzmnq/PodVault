@@ -1,8 +1,8 @@
 # music_transfer
 
-Python/OOP скрипт для завантаження аудіо з YouTube і створення Apple/iPod-friendly `.m4a` файлів з обкладинкою та чистими тегами.
+Python/OOP script for downloading audio from YouTube and creating Apple/iPod-friendly `.m4a` files with cover art and clean tags.
 
-## Встановлення
+## Installation
 
 ### macOS
 
@@ -22,77 +22,46 @@ python -m pip install -r requirements.txt
 winget install Gyan.FFmpeg
 ```
 
-У цьому репозиторії також може лежати локальний `ffmpeg.exe`; скрипт використає його автоматично, якщо файл існує.
+A local `ffmpeg.exe` may also exist in this repository; the script will use it automatically if the file is present.
 
-## Cookies YouTube
+## YouTube Cookies
 
-Покладіть файл `cookies.txt` поруч зі скриптом. Він використовується `yt-dlp` для обходу вікових, регіональних або login-based обмежень YouTube.
+Place `cookies.txt` next to the script. `yt-dlp` uses it to bypass YouTube age, region, or login-based restrictions.
 
-## Формат `tracklist.txt`
+## `tracklist.txt` Format
 
-Один трек на рядок:
+One track per line:
 
 ```text
-Виконавець | Назва | Альбом | Композитор | Рік | Жанр | Номер треку | Номер диска | Посилання на обкладинку
+Artist | Title | Album | Composer | Year | Genre | Track Number | Disc Number | Cover Art URL
 ```
 
-Приклад:
+Example:
 
 ```text
 Daft Punk | Get Lucky | Random Access Memories | Thomas Bangalter, Guy-Manuel de Homem-Christo | 2013 | Disco | 8 | 1 | https://example.com/cover.jpg
 Daft Punk | https://www.youtube.com/watch?v=5NV6Rdv1a3I | Random Access Memories | Thomas Bangalter | 2013 | Disco | 8 | 1 | https://example.com/cover.jpg
 ```
 
-Якщо поле `Назва` починається з `http`, скрипт завантажує пряме посилання. Інакше шукає через:
+If the `Title` field starts with `http`, the script downloads the direct link. Otherwise it searches with:
 
 ```text
-ytsearch1:Виконавець Назва audio
+ytsearch1:Artist Title audio
 ```
 
-## Запуск
+## Run
 
 ```bash
 python ipod_media_builder.py
 ```
 
-Готові файли з'являться в папці `iPod_Music`.
+The finished files will appear in the `iPod_Music` folder.
 
-## Що робить скрипт
+## What the Script Does
 
-- `yt-dlp` завантажує лише сирий аудіопотік з `format=bestaudio/best`, `cookies.txt`, `quiet=False`.
-- `requests` завантажує обкладинку у тимчасовий `.jpg`.
-- `subprocess` запускає FFmpeg для фінальної збірки.
-- FFmpeg чистить метадані `-map_metadata -1`, кодує AAC `320k`, додає `-movflags +faststart`, вшиває `artist`, `title`, `album`, `composer`, `date`, `genre`, `track`, `disc`.
-- Якщо є обкладинка, вона додається як `attached_pic`.
-- Після успішного створення `.m4a` тимчасові файли видаляються.
-
-## Сортування вже завантаженої музики по альбомах
-
-Окремий скрипт `sort_music_for_ipod.py` бере локальні аудіофайли з будь-якої папки, читає теги через `mutagen` або `ffprobe`, шукає доступні обкладинки альбомів без логіна через Deezer, MusicBrainz/Cover Art Archive та iTunes, конвертує обкладинку у baseline JPEG 500x500 і створює iPod-friendly копії з вшитою обкладинкою.
-
-Вхідні файли не змінюються.
-
-Треки обробляються паралельно з автоматично підібраною кількістю потоків і прогресбаром, а обкладинка кешується окремо для кожного `artist + album`, щоб різні альбоми не отримували чужу картинку.
-
-MP3 зберігаються як MP3 без перекодування, щоб не втрачати 320k-якість. M4A/AAC теж копіюються без перекодування. Інші формати автоматично кодуються в M4A AAC з bitrate та sample rate, прочитаними з оригінального файла.
-
-FFmpeg буде знайдено автоматично: локальний `ffmpeg`, системний `ffmpeg`, Windows `ffmpeg.exe` або bundled binary з пакета `imageio-ffmpeg`. Це працює і на Linux після встановлення залежностей з `requirements.txt`.
-
-```bash
-python sort_music_for_ipod.py "/path/to/music" -o iPod_Sorted_Music
-```
-
-Кількість потоків підбирається автоматично. За потреби її можна обмежити вручну:
-
-```bash
-python sort_music_for_ipod.py "/path/to/music" --workers 6
-```
-
-Готові файли будуть розкладені так:
-
-```text
-iPod_Sorted_Music/
-  Album/
-    01 - Song.mp3
-    02 - Song.m4a
-```
+- `yt-dlp` downloads only the raw audio stream with `format=bestaudio/best`, `cookies.txt`, and `quiet=False`.
+- `requests` downloads the cover art into a temporary `.jpg` file.
+- `subprocess` launches FFmpeg for the final build.
+- FFmpeg strips metadata with `-map_metadata -1`, encodes AAC at `320k`, adds `-movflags +faststart`, and writes `artist`, `title`, `album`, `composer`, `date`, `genre`, `track`, and `disc` tags.
+- If cover art is available, it is embedded as `attached_pic`.
+- After a successful `.m4a` build, temporary files are deleted.
