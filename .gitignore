@@ -11,8 +11,8 @@ tools/
 *.mp3
 *.wav
 
+cookies.txt
 .env
-
 __pycache__/
 *.pyc
 *.pyo
