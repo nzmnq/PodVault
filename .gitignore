@@ -1,25 +1,17 @@
 .venv/
 venv/
 env/
-bin/
 
 ffmpeg.exe
-bin/
 tools/
 
-data/
-ALAC_Output/
-input_folder/
-iPod_Music/
 *.flac
 *.m4a
 *.alac
 *.mp3
 *.wav
 
-cookies.txt
 .env
-tracklist.txt
 
 __pycache__/
 *.pyc
