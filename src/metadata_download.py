@@ -15,8 +15,8 @@ class IPodDownloader:
 
     def process_list(self):
         if not os.path.exists(self.tracklist_file):
-            print(f"File {self.tracklist_file} not found.")
-            return
+            with open(os.path.join(tracklist_file), 'w') as test_track:
+                test_track.write("#Here is exapmle:\n Rick Astley | Never Gonna Give You Up | Whenever You Need Somebody | Rick Astley | 1987 | Pop/Dance-Pop | 1 | 1 | https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/a4/82/10/a482103f-7389-4977-83d8-574360e227a8/078221852424.jpg/600x600bb.jpg | https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
         with open(self.tracklist_file, 'r', encoding='utf-8') as file:
             for line in file:
@@ -143,18 +143,15 @@ class IPodDownloader:
 
 if __name__ == "__main__":
     print("iPod Media Builder started!")
+    
+    tracklist_file = r'.\data\tracklist.txt'
 
-    tracklist_file = r'C:\Users\nazar\Music_Utility\tracklist.txt'
+    dowloaded_folder = r'.\data\iPod_Music'
 
-    dowloaded_folder = r'C:\Users\nazar\Music_Utility\data\iPod_Music'
     downloader = IPodDownloader(
         tracklist_file=tracklist_file,
         download_dir=dowloaded_folder
     )
     downloader.process_list()
 
-    tracklist_file = r'.\Music_Utility\tracklist.txt'
-
-    dowloaded_folder = r'.\Music_Utility\data\iPod_Music'
-    
     print("\nAll tasks done!")
