@@ -1,6 +1,11 @@
 import subprocess
+import os
 from pathlib import Path
 import sys
+
+FFMPEG_DIR = str(Path('./bin').resolve())
+os.environ["PATH"] += os.pathsep + FFMPEG_DIR
+
 class FlacToAlacConverter:
     def check_ffmpeg():
         try:
@@ -13,8 +18,7 @@ class FlacToAlacConverter:
         input_path = Path(input_folder)
         
         if not input_path.exists() or not input_path.is_dir():
-            print(f"Err, folder '{input_folder}' not found.")
-            return
+            os.mkdir(INPUT_DIR)
 
         if output_folder:
             output_path = Path(output_folder)
@@ -55,9 +59,9 @@ if __name__ == "__main__":
         print("Error, FFMPEG not founded")
         sys.exit(1)
 
-    INPUT_DIR = "./input_folder" 
+    INPUT_DIR = r'./data/input_folder' 
     
-    OUTPUT_DIR = "./ALAC_Output" 
+    OUTPUT_DIR = r'./data/ALAC_Output' 
     
     print("Started")
     FlacToAlacConverter.convert_flac_to_alac(INPUT_DIR, OUTPUT_DIR)
