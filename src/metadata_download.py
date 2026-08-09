@@ -5,7 +5,6 @@ import requests
 import re
 from pathlib import Path
 
-# Константи шляхів за замовчуванням виносимо нагору
 DEFAULT_TRACKLIST = r'.\data\tracklist.txt'
 DEFAULT_DOWNLOAD_DIR = r'.\data\iPod_Music'
 
