@@ -3,20 +3,30 @@ import subprocess
 import yt_dlp
 import requests
 import re
+from pathlib import Path
+
+# Константи шляхів за замовчуванням виносимо нагору
+DEFAULT_TRACKLIST = r'.\data\tracklist.txt'
+DEFAULT_DOWNLOAD_DIR = r'.\data\iPod_Music'
 
 class IPodDownloader:
-    def __init__(self, tracklist_file='tracklist.txt', download_dir='iPod_Music'):
-        self.tracklist_file = tracklist_file
-        self.download_dir = os.path.expanduser(download_dir)
-        self.ffmpeg_path = r'.\bin\ffmpeg.exe' 
+    def __init__(self, tracklist_file=None, download_dir=None):
+        self.tracklist_file = tracklist_file if tracklist_file else DEFAULT_TRACKLIST
+        self.download_dir = os.path.expanduser(download_dir if download_dir else DEFAULT_DOWNLOAD_DIR)
+        
+        self.ffmpeg_path = str(Path('./bin/ffmpeg.exe').resolve())
         
         if not os.path.exists(self.download_dir):
-            os.makedirs(self.download_dir)
+            os.makedirs(self.download_dir, exist_ok=True)
 
     def process_list(self):
         if not os.path.exists(self.tracklist_file):
-            with open(os.path.join(tracklist_file), 'w') as test_track:
-                test_track.write("#Here is exapmle:\n Rick Astley | Never Gonna Give You Up | Whenever You Need Somebody | Rick Astley | 1987 | Pop/Dance-Pop | 1 | 1 | https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/a4/82/10/a482103f-7389-4977-83d8-574360e227a8/078221852424.jpg/600x600bb.jpg | https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+            tracklist_dir = os.path.dirname(self.tracklist_file)
+            if tracklist_dir and not os.path.exists(tracklist_dir):
+                os.makedirs(tracklist_dir, exist_ok=True)
+                
+            with open(self.tracklist_file, 'w', encoding='utf-8') as test_track:
+                test_track.write("#Here is example:\n Rick Astley | Never Gonna Give You Up | Whenever You Need Somebody | Rick Astley | 1987 | Pop/Dance-Pop | 1 | 1 | https://is1-ssl.mzstatic.com/image/thumb/Music115/v4/a4/82/10/a482103f-7389-4977-83d8-574360e227a8/078221852424.jpg/600x600bb.jpg | https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
         with open(self.tracklist_file, 'r', encoding='utf-8') as file:
             for line in file:
@@ -69,7 +79,6 @@ class IPodDownloader:
 
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio', 
-            
             'ffmpeg_location': self.ffmpeg_path,
             'cookiefile': 'cookies.txt',
             'outtmpl': f"{temp_base}.%(ext)s",
@@ -109,6 +118,7 @@ class IPodDownloader:
                 os.remove(temp_cover)
         except Exception as e:
             print(f"Warning: Could not remove temp files: {e}")
+
     def _build_final_file(self, temp_audio, temp_cover, final_output, meta):
         cmd = [self.ffmpeg_path, '-y', '-v', 'error', '-i', temp_audio]
 
@@ -144,14 +154,7 @@ class IPodDownloader:
 if __name__ == "__main__":
     print("iPod Media Builder started!")
     
-    tracklist_file = r'.\data\tracklist.txt'
-
-    dowloaded_folder = r'.\data\iPod_Music'
-
-    downloader = IPodDownloader(
-        tracklist_file=tracklist_file,
-        download_dir=dowloaded_folder
-    )
+    downloader = IPodDownloader()
     downloader.process_list()
 
     print("\nAll tasks done!")

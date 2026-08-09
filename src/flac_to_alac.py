@@ -6,19 +6,29 @@ import sys
 FFMPEG_DIR = str(Path('./bin').resolve())
 os.environ["PATH"] += os.pathsep + FFMPEG_DIR
 
+DEFAULT_INPUT_DIR = r'./data/input_folder'
+DEFAULT_OUTPUT_DIR = r'./data/ALAC_Output'
+
 class FlacToAlacConverter:
+    @staticmethod
     def check_ffmpeg():
         try:
             subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
         except FileNotFoundError:
             return False
-
-    def convert_flac_to_alac(input_folder, output_folder=None):
-        input_path = Path(input_folder)
         
+    @staticmethod
+    def convert_flac_to_alac(input_folder=None, output_folder=None):
+        if input_folder is None:
+            input_folder = DEFAULT_INPUT_DIR
+        if output_folder is None:
+            output_folder = DEFAULT_OUTPUT_DIR
+
+        input_path = Path(input_folder)
+            
         if not input_path.exists() or not input_path.is_dir():
-            os.mkdir(INPUT_DIR)
+            input_path.mkdir(parents=True, exist_ok=True)
 
         if output_folder:
             output_path = Path(output_folder)
@@ -64,6 +74,6 @@ if __name__ == "__main__":
     OUTPUT_DIR = r'./data/ALAC_Output' 
     
     print("Started")
-    FlacToAlacConverter.convert_flac_to_alac(INPUT_DIR, OUTPUT_DIR)
+    FlacToAlacConverter.convert_flac_to_alac()
     print("-" * 30)
     print("All task done")

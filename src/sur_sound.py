@@ -6,7 +6,7 @@ from scipy.signal import butter, lfilter
 
 INPUT_DIR = r'./data/Ipod_Music' 
     
-OUTPUT_DIR = r'./data/Spatial_proccessed'
+OUTPUT_DIR = r'./data/Spatial_processed'
 
 BIN_DIR = "bin"
 
@@ -30,7 +30,7 @@ Audio spatial method using binaural proccesing
 """
 
 def process_spatial_audio(input_path, output_path):
-    print(f"\nProccesing: {os.path.basename(input_path)}")
+    print(f"\nProcessing: {os.path.basename(input_path)}")
     
     temp_in_wav = "temp_decode.wav"
     temp_out_wav = "temp_encode.wav"
@@ -110,7 +110,7 @@ def process_spatial_audio(input_path, output_path):
         if os.path.exists(temp_in_wav): os.remove(temp_in_wav)
         if os.path.exists(temp_out_wav): os.remove(temp_out_wav)
 
-def main():
+def audio_processing():
     if not os.path.exists(FFMPEG_PATH):
         print(f"\nError, file '{FFMPEG_PATH}' not founded!")
         return
@@ -133,9 +133,9 @@ def main():
         
         if process_spatial_audio(input_path, output_path):
             success_count += 1
-            
+            print(f"Succesfuly coonverted: {success_count}/{len(files_to_process)}")
     
-    print(f"Succesfuly coonverted: {success_count}/{len(files_to_process)}")
     
 if __name__ == "__main__":
-    main()
+    print(f"\nAll task done, open: {OUTPUT_DIR}")
+    audio_processing()
