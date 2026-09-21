@@ -1,19 +1,17 @@
 import numpy as np
 import subprocess
 import os
+import sys
 from scipy.io import wavfile
 from scipy.signal import butter, lfilter
 
-INPUT_DIR = r'./data/Ipod_Music' 
-    
-OUTPUT_DIR = r'./data/Spatial_processed'
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-BIN_DIR = "bin"
-
-FFMPEG_PATH = os.path.join(BIN_DIR, "ffmpeg.exe") 
+import settings
 
 SURROUND_DELAY_MS = 20
 SURROUND_CUTOFF = 7000
+
 
 def butter_lowpass(cutoff, fs, order=5):
     nyq = 0.5 * fs
@@ -21,28 +19,33 @@ def butter_lowpass(cutoff, fs, order=5):
     b, a = butter(order, normal_cutoff, btype='low', analog=False)
     return b, a
 
+
 def apply_lowpass(data, cutoff, fs, order=5):
     b, a = butter_lowpass(cutoff, fs, order=order)
     return lfilter(b, a, data)
 
+
 """
-Audio spatial method using binaural proccesing 
+Audio spatial method using binaural proccesing
 """
 
-def process_spatial_audio(input_path, output_path):
+
+def process_spatial_audio(input_path, output_path, ffmpeg):
     print(f"\nProcessing: {os.path.basename(input_path)}")
-    
-    temp_in_wav = "temp_decode.wav"
-    temp_out_wav = "temp_encode.wav"
+
+    # temp files next to the output, not in whatever the current folder is
+    work_dir = os.path.dirname(output_path)
+    temp_in_wav = os.path.join(work_dir, "temp_decode.wav")
+    temp_out_wav = os.path.join(work_dir, "temp_encode.wav")
 
     try:
         subprocess.run([
-            FFMPEG_PATH, "-y", "-i", input_path, 
+            ffmpeg, "-y", "-i", input_path,
             "-vn", "-acodec", "pcm_s16le", temp_in_wav
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         fs, data = wavfile.read(temp_in_wav)
-        
+
         if len(data.shape) != 2 or data.shape[1] != 2:
             print("File is not stereo!")
             return False
@@ -57,14 +60,14 @@ def process_spatial_audio(input_path, output_path):
         C = (L + R) / np.sqrt(2)
         S = (L - R) / np.sqrt(2)
 
-        C_binaural = C * 0.7 
+        C_binaural = C * 0.7
         S_filtered = apply_lowpass(S, SURROUND_CUTOFF, fs)
-        
+
         delay_samples = int(fs * (SURROUND_DELAY_MS / 1000.0))
         S_delayed = np.pad(S_filtered, (delay_samples, 0), 'constant')[:-delay_samples]
 
         S_L = S_delayed * 0.8
-        S_R = -S_delayed * 0.8 
+        S_R = -S_delayed * 0.8
 
         Front_L = L * 0.6
         Front_R = R * 0.6
@@ -86,14 +89,14 @@ def process_spatial_audio(input_path, output_path):
 
         # 4. ALAC converting with metadata and cover art preservation
         subprocess.run([
-            FFMPEG_PATH, "-y", 
+            ffmpeg, "-y",
             "-i", temp_out_wav,      # Audio source
             "-i", input_path,        # Metadata and cover art source
-            "-map", "0:a:0",         
-            "-map", "1:v?",          
-            "-map_metadata", "1",    
-            "-c:a", "alac",          
-            "-c:v", "copy",          
+            "-map", "0:a:0",
+            "-map", "1:v?",
+            "-map_metadata", "1",
+            "-c:a", "alac",
+            "-c:v", "copy",
             output_path
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -101,7 +104,7 @@ def process_spatial_audio(input_path, output_path):
         return True
 
     except subprocess.CalledProcessError:
-        print("Error, FFMPEG not founded")
+        print("ffmpeg failed on this file")
         return False
     except Exception as e:
         print(f"Error occurred: {e}")
@@ -110,32 +113,39 @@ def process_spatial_audio(input_path, output_path):
         if os.path.exists(temp_in_wav): os.remove(temp_in_wav)
         if os.path.exists(temp_out_wav): os.remove(temp_out_wav)
 
+
 def audio_processing():
-    if not os.path.exists(FFMPEG_PATH):
-        print(f"\nError, file '{FFMPEG_PATH}' not founded!")
+    cfg = settings.require()
+    ffmpeg = settings.ffmpeg(cfg)
+    input_dir = settings.path("spatial_input_dir", cfg)
+    output_dir = settings.path("spatial_output_dir", cfg)
+
+    if not ffmpeg:
+        print("\nffmpeg not found. Set its path on the Settings screen.")
         return
 
-    os.makedirs(INPUT_DIR, exist_ok=True)
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    
+    os.makedirs(input_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+
     # supported formats
     supported_formats = ('.m4a', '.alac', '.mp3', '.wav', '.flac', '.aac')
-    
-    files_to_process = [f for f in os.listdir(INPUT_DIR) if f.lower().endswith(supported_formats)]
-    
+
+    files_to_process = [f for f in os.listdir(input_dir) if f.lower().endswith(supported_formats)]
+
     success_count = 0
-    
+
     for filename in files_to_process:
-        input_path = os.path.join(INPUT_DIR, filename)
-        
+        input_path = os.path.join(input_dir, filename)
+
         base_name = os.path.splitext(filename)[0]
-        output_path = os.path.join(OUTPUT_DIR, f"{base_name}.m4a")
-        
-        if process_spatial_audio(input_path, output_path):
+        output_path = os.path.join(output_dir, f"{base_name}.m4a")
+
+        if process_spatial_audio(input_path, output_path, ffmpeg):
             success_count += 1
             print(f"Succesfuly coonverted: {success_count}/{len(files_to_process)}")
-    
-    
+
+    print(f"\nAll task done, open: {output_dir}")
+
+
 if __name__ == "__main__":
-    print(f"\nAll task done, open: {OUTPUT_DIR}")
     audio_processing()

@@ -1,16 +1,22 @@
 import os
+import sys
 import time
 import requests
 
-tracklist_file = r".\data\tracklist.txt"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import settings
 
 
 def get_cover(artist, title):
-    query = f"{artist} {title}"
-    url = f"https://itunes.apple.com/search?term={query}&entity=song&limit=1"
-
     try:
-        res = requests.get(url, timeout=5)
+        # params= lets requests encode the query: an artist with '&' in the
+        # name used to cut the search string short
+        res = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": f"{artist} {title}", "entity": "song", "limit": 1},
+            timeout=5,
+        )
         data = res.json()
 
         if data.get("resultCount", 0) > 0:
@@ -20,11 +26,14 @@ def get_cover(artist, title):
         pass
     return ""
 
+
 def cover_processing():
+    tracklist_file = settings.path("tracklist_file")
     print("Starting cover finding by iTunes API...\n")
 
     if not os.path.exists(tracklist_file):
-        with open(os.path.join(tracklist_file), 'w') as test_track:
+        os.makedirs(os.path.dirname(tracklist_file), exist_ok=True)
+        with open(tracklist_file, 'w', encoding='utf-8') as test_track:
             test_track.write("#Here is exapmle:\n Rick Astley | Never Gonna Give You Up | Whenever You Need Somebody | Rick Astley | 1987 | Pop/Dance-Pop | 1 | 1 |  | https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
     with open(tracklist_file, "r", encoding="utf-8") as f:
@@ -69,6 +78,8 @@ def cover_processing():
     with open(tracklist_file, "w", encoding="utf-8") as out:
         out.writelines(processed_lines)
 
+    print(f"\nAll task done, open: {tracklist_file}")
+
+
 if __name__ == "__main__":
     cover_processing()
-    print(f"\nAll task done, open: {tracklist_file}")

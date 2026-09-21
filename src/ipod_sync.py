@@ -1,0 +1,883 @@
+"""
+Sync the iPod with the Active folder.
+
+Goal: the device holds exactly what's in <library>\\Active. What was moved
+to Archive leaves the iPod, what's new arrives. The library folder, the
+default mode, the playlist name and the disk subfolder come from the
+settings; the command line can override the mode.
+
+The script never writes the device database (iTunesDB) in any mode: it's
+a closed binary format, and a bad write wipes all music on the iPod at
+once. Everything is done through iTunes itself.
+
+  --mode library
+    The iTunes library is brought in line with Active: what's missing is
+    added, entries pointing into Archive are removed. iTunes stays in
+    "sync entire library" mode, no playlists needed.
+
+  --mode playlist
+    A playlist equal to Active is kept, and the iPod syncs from it.
+    The library isn't touched at all, which makes this the most cautious
+    mode: removing a track from a playlist and deleting it from the
+    library are different things.
+
+    But archive tracks stay in the iTunes library. If the iPod syncs the
+    ENTIRE library — the default — they still reach the device and play
+    in global shuffle. The iPod must be switched to syncing only this
+    playlist.
+
+  --mode device
+    Cleans the iPod itself. Needed when it's set to "Manually manage
+    music": then iTunes removes NOTHING from the device on its own, and
+    tracks moved to Archive stay on the player and play in shuffle,
+    however much the library is cleaned.
+
+    A connected iPod shows up in iTunes as a separate source, and deleting
+    from it is supported — the same as deleting a track by hand in iTunes,
+    just in bulk. iTunes edits iTunesDB itself.
+
+    Matching is BY TAGS: a file on the iPod has its own internal path that
+    has nothing in common with ours.
+
+  --disk X:
+    Mirrors the folder for Rockbox or disk mode. Deletion here is real,
+    so only the subfolder the script manages is touched, and it asks for
+    confirmation.
+
+Dry run by default.
+
+  python src\\ipod_sync.py                      # what would change
+  python src\\ipod_sync.py --apply              # mode from the settings
+  python src\\ipod_sync.py --mode playlist --apply
+  python src\\ipod_sync.py --mode device --apply
+  python src\\ipod_sync.py --disk E: --apply
+"""
+
+import argparse
+import os
+import re
+import shutil
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from mutagen.id3 import ID3
+from mutagen.mp3 import MP3
+
+import settings
+from musiclib import norm, strip_feat
+
+# Set from the settings by configure() — module-level so that the helper
+# functions below can use them, and so tests can import the module.
+LIBRARY = ACTIVE = ARCHIVE = None
+DURATION_TOLERANCE = 3  # seconds
+
+
+def configure(cfg=None):
+    global LIBRARY, ACTIVE, ARCHIVE, DURATION_TOLERANCE
+    cfg = cfg or settings.require()
+    LIBRARY, ACTIVE, ARCHIVE = settings.library_paths(cfg)
+    DURATION_TOLERANCE = int(cfg["duration_tolerance"])
+    return cfg
+
+
+ASSUME_YES = False  # --yes: confirmation already given, don't ask
+
+
+def confirmed(question):
+    """Ask for confirmation with a typed word.
+
+    The BOM is stripped explicitly: PowerShell 5.1 prepends it to a string
+    piped into a program, so 'yes' arrives as '\\ufeffyes'.
+    """
+    if ASSUME_YES:
+        print(f"{question} yes (--yes)")
+        return True
+    try:
+        ans = input(question)
+    except EOFError:
+        return False
+    # 'да' is Russian for 'yes'
+    return ans.replace("\ufeff", "").strip().lower() in ("yes", "y", "да")
+
+
+def active_files():
+    out = []
+    for root, _, files in os.walk(ACTIVE):
+        for fn in sorted(f for f in files if f.lower().endswith(".mp3")):
+            out.append(os.path.join(root, fn))
+    return sorted(out)
+
+
+def key(path):
+    """Path comparison key: case doesn't matter on Windows."""
+    return os.path.normcase(os.path.abspath(path))
+
+
+def under(path, folder):
+    return key(path).startswith(key(folder) + os.sep)
+
+
+# ------------------------------------------------------------ via iTunes
+
+
+def itunes_connect():
+    try:
+        import comtypes.client
+    except ImportError:
+        sys.exit("comtypes is missing. Install: python\\python.exe -m pip install comtypes")
+    try:
+        return comtypes.client.CreateObject("iTunes.Application")
+    except Exception as e:
+        sys.exit(
+            f"Could not connect to iTunes: {e}\n\n"
+            "This usually means iTunes isn't running.\n"
+            "Open iTunes and try again."
+        )
+
+
+def find_playlist(itunes, name):
+    src = itunes.LibrarySource
+    for i in range(1, src.Playlists.Count + 1):
+        pl = src.Playlists.Item(i)
+        if pl.Name == name:
+            return pl
+    return None
+
+
+def track_location(track):
+    """Path to the track's file, if it's a file track. Streams have none."""
+    try:
+        return track.Location or None
+    except Exception:
+        return None
+
+
+def read_library(itunes):
+    """Sort the library: what points into Active, what into Archive."""
+    lib = itunes.LibraryPlaylist
+    total = lib.Tracks.Count
+    print(f"  tracks in the library: {total}")
+
+    in_active, in_archive = {}, {}
+    print("  reading the library...", end="", flush=True)
+    for i in range(1, total + 1):
+        t = lib.Tracks.Item(i)
+        loc = track_location(t)
+        if not loc:
+            continue
+        if under(loc, ACTIVE):
+            in_active[key(loc)] = t
+        elif under(loc, ARCHIVE):
+            in_archive[key(loc)] = t
+        if i % 500 == 0:
+            print(".", end="", flush=True)
+    print()
+    return in_active, in_archive
+
+
+def check_copy_setting(itunes, sample):
+    """Make sure iTunes doesn't copy added files into its own folder.
+
+    If "Copy files to iTunes Media folder when adding to library" is on,
+    adding 1300 tracks silently duplicates the whole library — an extra
+    10 GB and a second copy that will drift away from ours. Tested on one
+    file rather than trusting the settings.
+    """
+    lib = itunes.LibraryPlaylist
+    before = lib.Tracks.Count
+    try:
+        itunes.LibraryPlaylist.AddFile(sample)
+    except Exception as e:
+        return None, f"could not add a test file: {e}"
+    if lib.Tracks.Count <= before:
+        return None, "the test file was not added"
+
+    t = lib.Tracks.Item(lib.Tracks.Count)
+    loc = track_location(t)
+    copied = bool(loc) and not under(loc, LIBRARY)
+    if copied:
+        # clean up after ourselves: the copied file and the entry
+        try:
+            t.Delete()
+        except Exception:
+            pass
+        return False, loc
+    return True, None
+
+
+def guard_copy_setting(itunes, sample):
+    """Stop if iTunes copies files into its own folder."""
+    ok, info = check_copy_setting(itunes, sample)
+    if ok is False:
+        sys.exit(
+            "\nSTOPPED: iTunes copies added files into its own folder.\n"
+            f"  the test file ended up in: {info}\n\n"
+            "Adding the whole Active folder would duplicate ~10 GB and create\n"
+            "a second copy of the library that will drift away from ours.\n\n"
+            "Turn it off: iTunes -> Edit -> Preferences -> Advanced\n"
+            "  -> uncheck \"Copy files to iTunes Media folder when adding to library\".\n"
+            "Then run again."
+        )
+    if ok is None:
+        print(f"  (could not run the copy check: {info})")
+
+
+def sync_mode_library(itunes, apply_changes, wanted, in_lib, from_archive, to_add, files):
+    """Bring the iTunes library in line with Active.
+
+    iTunes stays in "sync entire library" mode, so everything on the iPod
+    looks normal and shuffle works as always.
+    """
+    print()
+    print("=" * 70)
+    print("iTunes LIBRARY = ACTIVE FOLDER")
+    print("=" * 70)
+    print(f"  in Active on disk          : {len(files)}")
+    print(f"  already in the library     : {len(in_lib)}")
+    print(f"  to add                     : {len(to_add)}")
+    print(f"  to remove (point to Archive): {len(from_archive)}")
+
+    if from_archive:
+        print("\n--- WILL LEAVE THE IPOD ---")
+        for _, t in from_archive[:15]:
+            print(f"  {t.Artist} — {t.Name}")
+        if len(from_archive) > 15:
+            print(f"  ... {len(from_archive) - 15} more")
+
+    if to_add:
+        print("\n--- WILL ARRIVE ON THE IPOD ---")
+        for p in to_add[:15]:
+            print(f"  {os.path.relpath(p, ACTIVE)}")
+        if len(to_add) > 15:
+            print(f"  ... {len(to_add) - 15} more")
+
+    if not apply_changes:
+        print("\nNothing changed. Add --apply.")
+        return
+
+    if to_add:
+        guard_copy_setting(itunes, to_add[0])
+
+    added = 0
+    for n, p in enumerate(to_add, 1):
+        try:
+            itunes.LibraryPlaylist.AddFile(p)
+            added += 1
+        except Exception as e:
+            print(f"  ! not added {os.path.basename(p)}: {e}")
+        if n % 50 == 0:
+            print(f"\r  added {n}/{len(to_add)}", end="", flush=True)
+    if to_add:
+        print(f"\r  added {added}/{len(to_add)}")
+
+    # We remove library ENTRIES. The files live in the library folder, outside
+    # the iTunes Media folder, so iTunes doesn't delete them — they stay in
+    # Archive, and the original backup is intact too.
+    removed = 0
+    for n, (_, t) in enumerate(from_archive, 1):
+        try:
+            t.Delete()
+            removed += 1
+        except Exception as e:
+            print(f"  ! not removed {t.Name}: {e}")
+        if n % 50 == 0:
+            print(f"\r  removed {n}/{len(from_archive)}", end="", flush=True)
+    if from_archive:
+        print(f"\r  removed {removed}/{len(from_archive)}")
+
+    # Check the actual result, not the intent: re-read the library and see
+    # whether any entries pointing into Archive are left. Those are exactly
+    # what would reach the iPod and play in global shuffle.
+    print("\n  checking the result...")
+    still_active, still_archive = read_library(itunes)
+    if still_archive:
+        print(f"\n  !! Library entries from Archive left: {len(still_archive)}")
+        for _, t in list(still_archive.items())[:10]:
+            print(f"     {t.Artist} — {t.Name}")
+        print("     These tracks will reach the iPod. Run again or remove by hand.")
+    else:
+        print("  OK no Archive entries left in the library")
+    missing = len(wanted) - len(still_active)
+    if missing > 0:
+        print(f"  !! Active tracks not added: {missing}")
+    else:
+        print(f"  OK the whole Active folder is in the library: {len(still_active)}")
+
+    print("""
+Done. The library now matches Active.
+
+Next: connect the iPod and press Sync. Nothing to configure — iTunes in
+"entire library" mode will bring the device in line. The archive isn't in
+the library, so it can't turn up in shuffle.""")
+
+
+def find_ipod(itunes):
+    """The connected iPod as an iTunes source."""
+    ITSourceKindIPod = 2
+    for i in range(1, itunes.Sources.Count + 1):
+        s = itunes.Sources.Item(i)
+        if s.Kind == ITSourceKindIPod:
+            return s
+    return None
+
+
+def artist_variants(artist):
+    """Artist keys a track can be recognised by.
+
+    The iPod holds tracks with OLD tags — from before the cleanup: co-artists
+    glued into one field ('Lil Peep/ Lil Tracy', 'wifiskeleton, Jaydes').
+    Ours have only the main artist in TPE1. So try both the whole string
+    (that's how 'AC/DC' survives) and the first name before a separator.
+    """
+    a = (artist or "").strip()
+    out = {norm(a)}
+    first = re.split(r"\s*[/;,]\s*|\s+&\s+|\s+feat\.?\s+", a, maxsplit=1)[0]
+    out.add(norm(first))
+    out.discard("")
+    return out
+
+
+def device_keys(artist, title):
+    """Track keys: artist + title without features.
+
+    The album is NOT part of the key: we merged singles into a 'Singles'
+    album, while on the iPod they sit under their original titles, so not
+    a single one would match by album. Paths don't work either — a file on
+    the player has its own internal path. Artist and title are what's left.
+    """
+    t = norm(strip_feat(title or ""))
+    return {(a, t) for a in artist_variants(artist)} if t else set()
+
+
+def index_library():
+    """Index of the whole library — Active and Archive — by track key."""
+    idx = {}   # key -> {'A', 'R'}
+    active_by_key = {}
+    for root_dir, state in ((ACTIVE, "A"), (ARCHIVE, "R")):
+        for root, _, files in os.walk(root_dir):
+            for fn in files:
+                if not fn.lower().endswith(".mp3"):
+                    continue
+                p = os.path.join(root, fn)
+                try:
+                    tags = ID3(p)
+                except Exception:
+                    continue
+
+                def one(k):
+                    v = tags.get(k)
+                    return str(v.text[0]) if v and v.text else ""
+
+                keys = device_keys(one("TPE1"), one("TIT2")) | \
+                    device_keys(one("TPE2"), one("TIT2"))
+                for k in keys:
+                    idx.setdefault(k, set()).add(state)
+                if state == "A" and keys:
+                    try:
+                        dur = MP3(p).info.length
+                    except Exception:
+                        dur = None
+                    active_by_key[p] = (keys, dur)
+    return idx, active_by_key
+
+
+def find_missing_on_device(active_info, device_tracks):
+    """Which Active files are missing from the iPod.
+
+    The 'artist + title' key alone isn't enough: the same song often exists
+    in several versions — album, live, compilation (Black Sabbath's
+    'Paranoid' is in the library three times; the live 'Lithium' and 'Come
+    As You Are' from In Utero share titles with the studio ones on
+    Nevermind). By key they're indistinguishable, so the check counted the
+    live version as delivered because the studio one was already there.
+
+    So a track counts as delivered only if the iPod has a NOT YET CLAIMED
+    track with a shared key and the same duration. Duration doesn't depend
+    on tags, so it works against the old tags on the device too.
+    """
+    pool = {}
+    for n, (keys, dur) in enumerate(device_tracks):
+        for k in keys:
+            pool.setdefault(k, []).append(n)
+    used = set()
+    missing = []
+    for p, (keys, dur) in sorted(active_info.items()):
+        match = None
+        for k in keys:
+            for n in pool.get(k, []):
+                if n in used:
+                    continue
+                d = device_tracks[n][1]
+                if dur is None or d is None or abs(d - dur) <= DURATION_TOLERANCE:
+                    match = n
+                    break
+            if match is not None:
+                break
+        if match is None:
+            missing.append(p)
+        else:
+            used.add(match)
+    return missing
+
+
+def read_device(pod):
+    """iPod tracks: object, keys, duration."""
+    pl = pod.Playlists.Item(1)
+    out = []
+    for j in range(1, pl.Tracks.Count + 1):
+        t = pl.Tracks.Item(j)
+        try:
+            dur = float(t.Duration)
+        except Exception:
+            dur = None
+        out.append((t, device_keys(t.Artist, t.Name), dur))
+    return out
+
+
+def is_archive(t, idx):
+    states = set()
+    for k in device_keys(t.Artist, t.Name):
+        states |= idx.get(k, set())
+    return "R" in states and "A" not in states
+
+
+def delete_archive_from_device(itunes, idx, expected):
+    """Delete archive tracks from the iPod.
+
+    References to device tracks can't be collected in advance: after the
+    very first deletion iTunes invalidates ALL objects obtained before, and
+    Delete() on them throws 'The track has been deleted' without deleting
+    anything. The first version deleted exactly one track per run.
+
+    So each track is fetched fresh right before deletion, and the pass runs
+    from the end of the list: deleting track N doesn't shift the numbers
+    before it.
+    """
+    removed = 0
+    retries = 0
+    pod = find_ipod(itunes)
+    j = pod.Playlists.Item(1).Tracks.Count
+    while j >= 1:
+        if retries > 3:
+            print(f"\n  ! track #{j}: reference keeps going stale, skipping")
+            retries, j = 0, j - 1
+            continue
+        try:
+            tracks = pod.Playlists.Item(1).Tracks
+            if j > tracks.Count:
+                j = tracks.Count
+                continue
+            t = tracks.Item(j)
+            if is_archive(t, idx):
+                t.Delete()
+                removed += 1
+                if removed % 10 == 0:
+                    print(f"\r  deleted {removed}/{expected}", end="", flush=True)
+        except Exception as e:
+            if "deleted" in str(e).lower():
+                # the reference went stale between fetching and calling — refetch
+                pod = find_ipod(itunes)
+                retries += 1
+                continue
+            print(f"\n  ! track #{j}: {e}")
+        retries = 0
+        j -= 1
+    return removed
+
+
+def device_library(itunes):
+    """The iPod's library through an interface that has AddFile.
+
+    comtypes hands out device playlists as the base IITPlaylist, which has
+    no AddFile. The first version got an AttributeError, swallowed it in a
+    catch-all except, and dutifully reported 'not added' for all 170 files.
+    """
+    from comtypes.gen import iTunesLib
+    pod = find_ipod(itunes)
+    return pod, pod.Playlists.Item(1).QueryInterface(iTunesLib.IITLibraryPlaylist)
+
+
+def add_to_device(itunes, paths):
+    """Copy files onto the iPod. Returns how many actually landed."""
+    import time
+
+    pod, lib = device_library(itunes)
+    before = lib.Tracks.Count
+    added = 0
+    for n, p in enumerate(paths, 1):
+        try:
+            status = lib.AddFile(p)
+            # copying is asynchronous — wait for the file to arrive
+            while status is not None and status.InProgress:
+                time.sleep(0.2)
+            added += 1
+        except Exception as e:
+            print(f"\n  ! {os.path.basename(p)}: {e}")
+            # the library reference may have gone stale — refetch
+            pod, lib = device_library(itunes)
+
+        # Safety check: after the first file make sure the track really
+        # appeared on the iPod, not just that the call went through.
+        if n == 1:
+            now = lib.Tracks.Count
+            if now <= before:
+                print("\n  !! The first file didn't appear on the iPod — stopping")
+                print("     rather than pushing the rest for nothing.")
+                return 0
+            print(f"  first file landed ({before} -> {now}), continuing")
+        if n % 10 == 0:
+            print(f"\r  copied {n}/{len(paths)}", end="", flush=True)
+    return added
+
+
+def sync_device(apply_changes):
+    """Remove from the iPod itself whatever isn't in Active.
+
+    Needed when the iPod is in manual mode: then iTunes removes nothing
+    from the device on its own, and tracks moved to Archive keep sitting on
+    the player and turning up in global shuffle, however much the library
+    is cleaned.
+
+    We don't write iTunesDB: iTunes edits the device itself, we only tell
+    it what to remove — exactly like deleting a track by hand, but in bulk.
+    """
+    itunes = itunes_connect()
+    print(f"iTunes {itunes.Version}   mode: device")
+
+    pod = find_ipod(itunes)
+    if pod is None:
+        sys.exit(
+            "No iPod among the iTunes sources.\n\n"
+            "Check that it's connected by cable and visible in iTunes itself.\n"
+            "If it's charging-only or locked, iTunes doesn't expose it."
+        )
+    print(f"  device: {pod.Name}")
+
+    print("  indexing the library...")
+    idx, active_by_key = index_library()
+
+    # What's on the iPod now. The device's first playlist is its full
+    # library; the others reference the same tracks.
+    print("  reading the device...")
+    device = read_device(pod)
+    dev_total = len(device)
+    keep, archive, unknown = [], [], []
+    for t, keys, _ in device:
+        states = set()
+        for k in keys:
+            states |= idx.get(k, set())
+        # Delete ONLY what's recognised as archive and not as active.
+        # Found nowhere — leave it: an extra track in shuffle beats a
+        # needed one wiped.
+        if "A" in states:
+            keep.append(t)
+        elif "R" in states:
+            archive.append(t)
+        else:
+            unknown.append(t)
+
+    to_delete = archive
+    to_add = find_missing_on_device(active_by_key, [(k, d) for _, k, d in device])
+
+    print()
+    print("=" * 70)
+    print(f"ON THE DEVICE: {pod.Name}")
+    print("=" * 70)
+    print(f"  tracks now               : {dev_total}")
+    print(f"  recognised as Active     : {len(keep)}   (stay)")
+    print(f"  recognised as Archive    : {len(archive)}   <- delete, this is what plays in shuffle")
+    print(f"  not recognised           : {len(unknown)}   (left alone)")
+    print(f"  in Active, not on the iPod: {len(to_add)}")
+
+    if archive:
+        print("\n--- WILL BE DELETED FROM THE IPOD (archive) ---")
+        for t in archive[:25]:
+            print(f"  {t.Artist} — {t.Album} — {t.Name}")
+        if len(archive) > 25:
+            print(f"  ... {len(archive) - 25} more")
+
+    if unknown:
+        print("\n--- NOT RECOGNISED, WILL STAY ON THE IPOD ---")
+        print("  In neither Active nor Archive. Possibly old versions or")
+        print("  things no longer in the library. The script doesn't delete them.")
+        for t in unknown[:25]:
+            print(f"  {t.Artist} — {t.Album} — {t.Name}")
+        if len(unknown) > 25:
+            print(f"  ... {len(unknown) - 25} more")
+
+    if to_add:
+        print("\n--- IN ACTIVE, NOT ON THE IPOD ---")
+        for p in to_add[:15]:
+            print(f"  {os.path.relpath(p, ACTIVE)}")
+        if len(to_add) > 15:
+            print(f"  ... {len(to_add) - 15} more")
+
+    if not apply_changes:
+        print("\nNothing changed. Add --apply.")
+        return
+
+    if to_delete:
+        print(f"\n  Deleting {len(to_delete)} tracks FROM THE DEVICE can't be undone.")
+        print(f"  The files in {LIBRARY} and the backup stay intact.")
+        if not confirmed("  Type 'yes' to confirm: "):
+            print("Cancelled.")
+            return
+
+        removed = delete_archive_from_device(itunes, idx, len(to_delete))
+        print(f"\r  deleted {removed}/{len(to_delete)}          ")
+
+    if to_add:
+        print(f"\n  Copying {len(to_add)} tracks to the iPod...")
+        added = add_to_device(itunes, to_add)
+        print(f"\r  copied {added}/{len(to_add)}          ")
+
+    # Check the actual result: re-read the device and count how much
+    # archive is really left on it.
+    print("\n  checking the device...")
+    pod = find_ipod(itunes)
+    device = read_device(pod)
+    total_now = len(device)
+    left = sum(1 for t, _, _ in device if is_archive(t, idx))
+    still_missing = len(find_missing_on_device(
+        active_by_key, [(k, d) for _, k, d in device]))
+    print(f"  tracks on the iPod: {total_now}")
+    if left:
+        print(f"  !! archive left: {left}. Run again.")
+    else:
+        print("  OK no archive left on the iPod")
+    if still_missing:
+        print(f"  !! Active tracks not delivered: {still_missing}")
+    else:
+        print("  OK the whole Active folder is on the iPod")
+
+    print("\nDone. Disconnect the iPod with Eject in iTunes and check shuffle.")
+
+
+def sync_itunes(apply_changes, mode, playlist_name):
+    itunes = itunes_connect()
+    print(f"iTunes {itunes.Version}   mode: {mode}")
+
+    in_lib, in_archive = read_library(itunes)
+    from_archive = list(in_archive.items())
+
+    files = active_files()
+    wanted = {key(f): f for f in files}
+    to_add = [p for k, p in wanted.items() if k not in in_lib]
+
+    if mode == "library":
+        return sync_mode_library(itunes, apply_changes, wanted, in_lib,
+                                 from_archive, to_add, files)
+
+    pl = find_playlist(itunes, playlist_name)
+    in_pl = {}
+    if pl is not None:
+        for i in range(1, pl.Tracks.Count + 1):
+            t = pl.Tracks.Item(i)
+            loc = track_location(t)
+            if loc:
+                in_pl[key(loc)] = t
+    to_remove = [t for k, t in in_pl.items() if k not in wanted]
+    already = len(in_pl) - len(to_remove)
+
+    print()
+    print("=" * 70)
+    print(f"PLAYLIST: {playlist_name}" + ("" if pl is not None else "   (will be created)"))
+    print("=" * 70)
+    print(f"  in Active on disk          : {len(files)}")
+    print(f"  already in the playlist    : {already}")
+    print(f"  to add to the library      : {len(to_add)}")
+    print(f"  to remove from the playlist: {len(to_remove)}")
+    print(f"  library entries from Archive: {len(from_archive)}  (stay in the library)")
+
+    if from_archive:
+        print(f"""
+  WARNING. {len(from_archive)} tracks from Archive stay in the iTunes library.
+  If the iPod is set to sync the ENTIRE library — the default — they still
+  reach the device and turn up in global shuffle. The playlist on its own
+  does nothing to prevent that.
+
+  To avoid it, do one of two things:
+    - switch the iPod to syncing only the playlist "{playlist_name}"
+      (iTunes -> iPod -> Music -> Selected playlists...)
+    - or use --mode library, which removes these entries from the
+      library altogether""")
+
+    if to_remove:
+        print("\n--- WILL LEAVE THE IPOD ---")
+        for t in to_remove[:15]:
+            print(f"  {t.Artist} — {t.Name}")
+        if len(to_remove) > 15:
+            print(f"  ... {len(to_remove) - 15} more")
+
+    if to_add:
+        print("\n--- WILL ARRIVE ON THE IPOD ---")
+        for p in to_add[:15]:
+            print(f"  {os.path.relpath(p, ACTIVE)}")
+        if len(to_add) > 15:
+            print(f"  ... {len(to_add) - 15} more")
+
+    if not apply_changes:
+        print("\nNothing changed. Add --apply.")
+        return
+
+    if pl is None:
+        pl = itunes.CreatePlaylist(playlist_name)
+        print(f"\nPlaylist created: {playlist_name}")
+
+    # Remove extras FROM THE PLAYLIST. The file on disk and the library
+    # entry stay — Delete() on a track in a user playlist only takes it
+    # off that playlist.
+    for n, t in enumerate(to_remove, 1):
+        try:
+            t.Delete()
+        except Exception as e:
+            print(f"  ! not removed {t.Name}: {e}")
+        if n % 50 == 0:
+            print(f"\r  removed {n}/{len(to_remove)}", end="", flush=True)
+    if to_remove:
+        print(f"\r  removed {len(to_remove)}/{len(to_remove)}")
+
+    # Add everything not in the playlist. AddFile also puts the track into
+    # the library if it wasn't there, so a separate pass over to_add isn't
+    # needed — otherwise what's already in the playlist would be doubled.
+    missing_in_pl = [p for k, p in wanted.items() if k not in in_pl]
+    if missing_in_pl:
+        guard_copy_setting(itunes, missing_in_pl[0])
+    added = 0
+    for n, p in enumerate(missing_in_pl, 1):
+        try:
+            pl.AddFile(p)
+            added += 1
+        except Exception as e:
+            print(f"  ! not added {os.path.basename(p)}: {e}")
+        if n % 50 == 0:
+            print(f"\r  added {n}/{len(missing_in_pl)}", end="", flush=True)
+    if missing_in_pl:
+        print(f"\r  added {added}/{len(missing_in_pl)}")
+
+    print(f"""
+Done. One last step — configure the iPod once:
+
+  iTunes -> connect the iPod -> Music tab
+  -> "Selected playlists, artists, albums, and genres"
+  -> tick the playlist "{playlist_name}" -> Apply
+
+After that, just run this script and press Sync.""")
+
+
+# -------------------------------------------------------------- to disk
+
+
+def sync_disk(drive, apply_changes, subdir):
+    root = os.path.join(drive if drive.endswith(os.sep) else drive + os.sep, subdir)
+    if not os.path.isdir(os.path.splitdrive(root)[0] + os.sep):
+        sys.exit(f"Drive not available: {drive}")
+
+    files = active_files()
+    want = {}
+    for p in files:
+        want[os.path.relpath(p, ACTIVE)] = p
+    # cover art is needed too
+    for r, _, fs in os.walk(ACTIVE):
+        for fn in fs:
+            if fn.lower() == "folder.jpg":
+                p = os.path.join(r, fn)
+                want[os.path.relpath(p, ACTIVE)] = p
+
+    have = {}
+    if os.path.isdir(root):
+        for r, _, fs in os.walk(root):
+            for fn in fs:
+                p = os.path.join(r, fn)
+                have[os.path.relpath(p, root)] = p
+
+    to_copy = [rel for rel in want if rel not in have
+               or os.path.getsize(want[rel]) != os.path.getsize(have[rel])]
+    to_delete = [rel for rel in have if rel not in want]
+    size = sum(os.path.getsize(want[r]) for r in to_copy)
+
+    print("=" * 70)
+    print(f"MIRROR TO DISK: {root}")
+    print("=" * 70)
+    print(f"  should be : {len(want)} files")
+    print(f"  to copy   : {len(to_copy)}  ({size / 1024 ** 3:.2f} GB)")
+    print(f"  to delete : {len(to_delete)}")
+
+    if to_delete:
+        print("\n--- WILL BE DELETED FROM THE DEVICE ---")
+        for rel in to_delete[:15]:
+            print(f"  {rel}")
+        if len(to_delete) > 15:
+            print(f"  ... {len(to_delete) - 15} more")
+
+    if not apply_changes:
+        print("\nNothing changed. Add --apply.")
+        return
+
+    if to_delete:
+        print(f"\nDeleting {len(to_delete)} files from the device — this can't be undone.")
+        if not confirmed("  Type 'yes' to confirm: "):
+            print("Cancelled.")
+            return
+
+    for n, rel in enumerate(to_copy, 1):
+        dst = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(want[rel], dst)
+        if n % 50 == 0:
+            print(f"\r  copied {n}/{len(to_copy)}", end="", flush=True)
+    if to_copy:
+        print(f"\r  copied {len(to_copy)}/{len(to_copy)}")
+
+    for rel in to_delete:
+        try:
+            os.remove(have[rel])
+        except OSError as e:
+            print(f"  ! not deleted {rel}: {e}")
+    # clean up folders that became empty
+    for r, dirs, fs in os.walk(root, topdown=False):
+        if r != root and not os.listdir(r):
+            try:
+                os.rmdir(r)
+            except OSError:
+                pass
+    print(f"\nDone: {len(to_copy)} copied, {len(to_delete)} deleted.")
+
+
+def main():
+    cfg = configure()
+
+    ap = argparse.ArgumentParser(description="sync the iPod with the Active folder")
+    ap.add_argument("--apply", action="store_true", help="actually apply")
+    ap.add_argument("--disk", metavar="X:", help="mirror to a drive (Rockbox / disk mode)")
+    ap.add_argument("--subdir", default=cfg["ipod_disk_subdir"],
+                    help=f"folder on the device, with --disk (setting: {cfg['ipod_disk_subdir']})")
+    ap.add_argument("--mode", choices=("library", "playlist", "device"),
+                    default=cfg["ipod_sync_mode"],
+                    help="library: library = Active; "
+                         "playlist: keep a separate playlist; "
+                         "device: clean the iPod itself (for manual mode). "
+                         f"Setting: {cfg['ipod_sync_mode']}")
+    ap.add_argument("--playlist", default=cfg["ipod_playlist"],
+                    help=f"playlist name (setting: {cfg['ipod_playlist']})")
+    ap.add_argument("--yes", action="store_true",
+                    help="don't ask to confirm deletion (already confirmed)")
+    args = ap.parse_args()
+
+    global ASSUME_YES
+    ASSUME_YES = args.yes
+
+    if not os.path.isdir(ACTIVE):
+        sys.exit(f"Active folder not found: {ACTIVE}")
+
+    if args.disk:
+        sync_disk(args.disk, args.apply, args.subdir)
+    elif args.mode == "device":
+        sync_device(args.apply)
+    else:
+        sync_itunes(args.apply, args.mode, args.playlist)
+
+
+if __name__ == "__main__":
+    main()

@@ -3,30 +3,31 @@ import os
 from pathlib import Path
 import sys
 
-FFMPEG_DIR = str(Path('./bin').resolve())
-os.environ["PATH"] += os.pathsep + FFMPEG_DIR
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-DEFAULT_INPUT_DIR = r'./data/input_folder'
-DEFAULT_OUTPUT_DIR = r'./data/ALAC_Output'
+import settings
+
 
 class FlacToAlacConverter:
     @staticmethod
     def check_ffmpeg():
-        try:
-            subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return True
-        except FileNotFoundError:
-            return False
-        
+        return settings.ffmpeg() is not None
+
     @staticmethod
     def convert_flac_to_alac(input_folder=None, output_folder=None):
+        cfg = settings.require()
+        ffmpeg = settings.ffmpeg(cfg)
+        if not ffmpeg:
+            print("ffmpeg not found. Set its path on the Settings screen.")
+            return
+
         if input_folder is None:
-            input_folder = DEFAULT_INPUT_DIR
+            input_folder = settings.path("flac_input_dir", cfg)
         if output_folder is None:
-            output_folder = DEFAULT_OUTPUT_DIR
+            output_folder = settings.path("alac_output_dir", cfg)
 
         input_path = Path(input_folder)
-            
+
         if not input_path.exists() or not input_path.is_dir():
             input_path.mkdir(parents=True, exist_ok=True)
 
@@ -37,7 +38,7 @@ class FlacToAlacConverter:
             output_path = input_path
 
         flac_files = list(input_path.glob("*.flac"))
-        
+
         if not flac_files:
             print(f"In folder '{input_folder}' FLAC not found.")
             return
@@ -46,10 +47,10 @@ class FlacToAlacConverter:
 
         for flac_file in flac_files:
             output_file = output_path / f"{flac_file.stem}.m4a"
-            
+
             print(f"Converting: {flac_file.name} ...")
             command = [
-                "ffmpeg",
+                ffmpeg,
                 "-y",
                 "-loglevel", "error",
                 "-i", str(flac_file),
@@ -57,22 +58,19 @@ class FlacToAlacConverter:
                 "-vn",
                 str(output_file)
             ]
-            
+
             try:
                 subprocess.run(command, check=True)
                 print(f"Ready: {output_file.name}")
-            except subprocess.CalledProcessError as e:
+            except subprocess.CalledProcessError:
                 print(f"Error occured by converting {flac_file.name}.")
+
 
 if __name__ == "__main__":
     if not FlacToAlacConverter.check_ffmpeg():
-        print("Error, FFMPEG not founded")
+        print("Error, FFMPEG not found. Set its path on the Settings screen.")
         sys.exit(1)
 
-    INPUT_DIR = r'./data/input_folder' 
-    
-    OUTPUT_DIR = r'./data/ALAC_Output' 
-    
     print("Started")
     FlacToAlacConverter.convert_flac_to_alac()
     print("-" * 30)

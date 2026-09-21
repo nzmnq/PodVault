@@ -1,15 +1,27 @@
+# Python environments
 .venv/
 venv/
 env/
+.python/
 
+# Personal settings — created by the first-run wizard, holds local paths
+settings.json
+
+# Tool output
+reports/
+
+# Binaries
 ffmpeg.exe
+bin/
 tools/
 
+# Audio and cover art never go into the repository
 *.flac
 *.m4a
 *.alac
 *.mp3
 *.wav
+*.jpg
 
 cookies.txt
 .env
