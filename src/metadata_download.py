@@ -3,22 +3,30 @@ import subprocess
 import yt_dlp
 import requests
 import re
-from pathlib import Path
+import sys
 
-DEFAULT_TRACKLIST = r'.\data\tracklist.txt'
-DEFAULT_DOWNLOAD_DIR = r'.\data\iPod_Music'
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import settings
 
 class IPodDownloader:
     def __init__(self, tracklist_file=None, download_dir=None):
-        self.tracklist_file = tracklist_file if tracklist_file else DEFAULT_TRACKLIST
-        self.download_dir = os.path.expanduser(download_dir if download_dir else DEFAULT_DOWNLOAD_DIR)
+        cfg = settings.require()
+        self.tracklist_file = tracklist_file or settings.path("tracklist_file", cfg)
+        self.download_dir = os.path.expanduser(download_dir or settings.path("download_dir", cfg))
         
-        self.ffmpeg_path = str(Path('./bin/ffmpeg.exe').resolve())
+        self.ffmpeg_path = settings.ffmpeg(cfg)
+        # only pass a cookies file that actually exists
+        cookies = settings.path("cookies_file", cfg)
+        self.cookies_file = cookies if cookies and os.path.isfile(cookies) else None
         
         if not os.path.exists(self.download_dir):
             os.makedirs(self.download_dir, exist_ok=True)
 
     def process_list(self):
+        if not self.ffmpeg_path:
+            print("ffmpeg not found. Set its path on the Settings screen.")
+            return
         if not os.path.exists(self.tracklist_file):
             tracklist_dir = os.path.dirname(self.tracklist_file)
             if tracklist_dir and not os.path.exists(tracklist_dir):
@@ -79,7 +87,7 @@ class IPodDownloader:
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio', 
             'ffmpeg_location': self.ffmpeg_path,
-            'cookiefile': 'cookies.txt',
+            'cookiefile': self.cookies_file,
             'outtmpl': f"{temp_base}.%(ext)s",
             'quiet': False,
             'no_warnings': False,
