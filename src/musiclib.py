@@ -5,6 +5,7 @@ diverging copies of the same regex already caused one silent bug.
 """
 
 import re
+import unicodedata
 
 # Words that mark an edition. On its own such a word means nothing: what
 # matters is that it sits inside a bracket group or in the title's tail.
@@ -42,9 +43,16 @@ def norm(s):
 
     Absorbs differences in punctuation, case, ё/е, and the filesystem
     replacing forbidden characters with '_'.
+
+    The string is composed (NFC) first. 'й' can be stored as one code point
+    or as 'и' + a combining breve; some files use the second form, while
+    iTunes keeps the first. Without composing, the breve was stripped as
+    punctuation, 'знайде' became 'знаиде', the iPod copy never matched, and
+    every sync copied such tracks onto the iPod again.
     """
     if not s:
         return ""
+    s = unicodedata.normalize("NFC", s)
     s = s.lower().replace("ё", "е").replace("’", "'").replace("`", "'")
     return re.sub(r"[^0-9a-zа-яїієґ]+", "", s)
 

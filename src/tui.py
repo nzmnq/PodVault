@@ -152,7 +152,20 @@ def prompt(text):
     return line
 
 
+def drop_typeahead():
+    """Discard keys pressed while a tool was running.
+
+    Otherwise a key hit during a long dry run answers the next prompt —
+    possibly a confirmation — on its own.
+    """
+    if msvcrt is None:
+        return
+    while msvcrt.kbhit():
+        msvcrt.getwch()
+
+
 def confirm(text):
+    drop_typeahead()
     sys.stdout.write(f"\n\n {BOLD}{text}{RESET} {FG['grey']}[y/n]{RESET} ")
     flush()
     while True:
@@ -160,16 +173,24 @@ def confirm(text):
         # Check Esc BEFORE lowering: 'ESCAPE'.lower() is 'escape', and the
         # old version compared after lowering, so Esc never meant "no".
         if k == ESCAPE:
-            return False
-        k = k.lower()
-        # 'н'/'т' are the y/n keys on a Russian layout, 'д' is "да"
-        if k in ("y", "н", "д"):
-            return True
-        if k in ("n", "т"):
-            return False
+            answer = False
+        else:
+            k = k.lower()
+            # 'н'/'т' are the y/n keys on Russian and Ukrainian layouts, 'д' is "да"
+            if k in ("y", "н", "д"):
+                answer = True
+            elif k in ("n", "т"):
+                answer = False
+            else:
+                continue
+        # show that the key was taken — a long tool may start right after
+        sys.stdout.write(f"{BOLD}{'yes' if answer else 'no'}{RESET}\n")
+        flush()
+        return answer
 
 
 def pause(text="Press any key"):
+    drop_typeahead()
     sys.stdout.write(f"\n {FG['grey']}{text}{RESET}")
     flush()
     read_key()

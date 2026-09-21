@@ -13,6 +13,7 @@ On the first run a short wizard asks for the basic settings. They are
 saved to settings.json and can be changed later on the Settings screen.
 """
 
+import codecs
 import os
 import subprocess
 import sys
@@ -75,12 +76,20 @@ class App:
             p = subprocess.Popen(
                 [sys.executable, os.path.join(SRC, script), *args],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace",
                 env=env, cwd=HERE,
             )
-            for line in p.stdout:
-                sys.stdout.write(line)
+            # Pass output through as it arrives, not line by line: a prompt
+            # without a trailing newline (input("... ")) used to stay in the
+            # buffer, so the tool sat waiting for an answer to a question
+            # that never reached the screen.
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            while True:
+                chunk = os.read(p.stdout.fileno(), 4096)
+                if not chunk:
+                    break
+                sys.stdout.write(decoder.decode(chunk))
                 sys.stdout.flush()
+            sys.stdout.write(decoder.decode(b"", final=True))
             p.wait()
             code = p.returncode
         except Exception as e:
@@ -94,13 +103,18 @@ class App:
         self.albums = None       # the contents may have changed
         return code
 
-    def ask_apply(self, title, script, extra=(), flag="--apply", question="Apply the changes?"):
-        """Dry run first, then ask whether to apply for real."""
+    def ask_apply(self, title, script, extra=(), flag="--apply", question="Apply the changes?",
+                  apply_extra=()):
+        """Dry run first, then ask whether to apply for real.
+
+        apply_extra is added only to the real run — e.g. --yes for tools
+        that would otherwise ask again themselves, in their own style.
+        """
         self.run_tool(f"{title} — dry run", script, extra)
         tui.clear()
         print("\n".join(tui.header(title)))
         if tui.confirm(question):
-            self.run_tool(f"{title} — applying", script, [*extra, flag])
+            self.run_tool(f"{title} — applying", script, [*extra, flag, *apply_extra])
 
     def need_library(self):
         if self.library_ok():
@@ -394,13 +408,26 @@ class App:
                 k = {v: n for n, v in modes.items()}.get(default, "1")
             if k in modes:
                 mode = modes[k]
-                self.ask_apply(f"iPod sync ({mode})", "ipod_sync.py", ["--mode", mode])
+                if mode == "device":
+                    # One clear question here instead of the script asking
+                    # again in its own "type yes" style.
+                    self.ask_apply(
+                        "iPod sync (device)", "ipod_sync.py", ["--mode", mode],
+                        question="Apply: delete the archive tracks from the iPod "
+                                 "(can't be undone on the device), copy new ones, set covers?",
+                        apply_extra=["--yes"])
+                else:
+                    self.ask_apply(f"iPod sync ({mode})", "ipod_sync.py", ["--mode", mode])
                 return
             if k == "4":
                 drive = tui.prompt("iPod drive letter (e.g. E:): ").strip()
                 if not drive:
                     return
-                self.ask_apply("Mirror to disk", "ipod_sync.py", ["--disk", drive])
+                self.ask_apply(
+                    "Mirror to disk", "ipod_sync.py", ["--disk", drive],
+                    question="Apply: copy new files and DELETE the extras on the device "
+                             "(can't be undone)?",
+                    apply_extra=["--yes"])
                 return
 
     def screen_missing(self):
