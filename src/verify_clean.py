@@ -26,23 +26,16 @@ from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mutagen.id3 import ID3, TYER
+from mutagen.id3 import ID3
 from mutagen.mp3 import MP3
 
 import settings
-
-# Frames that only exist in ID3v2.4
-V24_ONLY = ("TDRC", "TDOR", "TDRL", "TIPL", "TMCL", "TSOA", "TSOP", "TSOT")
+from musiclib import V24_ONLY, drop_v24_frames
 
 
-def strip_v24(path, tags, present):
+def strip_v24(path, tags):
     """Remove v2.4 frames from a v2.3 tag without losing the year."""
-    if tags.get("TYER") is None and tags.get("TDRC") is not None:
-        m = re.search(r"\d{4}", str(tags["TDRC"].text[0]))
-        if m:
-            tags.add(TYER(encoding=1, text=[m.group(0)]))
-    for k in present:
-        tags.delall(k)
+    drop_v24_frames(tags)
     tags.save(path, v2_version=3, v1=2)
 
 
@@ -107,7 +100,7 @@ def main():
             present = [k for k in V24_ONLY if tags.get(k) is not None]
             if present:
                 if args.fix:
-                    strip_v24(fp, tags, present)
+                    strip_v24(fp, tags)
                     fixed += 1
                 else:
                     v24_frames.append((rel, ", ".join(present)))

@@ -189,8 +189,10 @@ present but sitting in the archive (no need to download — just mark it `[A]`).
 
 - Windows Explorer doesn't show `TPOS` and draws the artist separator `/` as
   `;`. Look at tags through mutagen.
-- When reading v2.3, mutagen substitutes `TDRC` for `TYER` and writes both on
-  save. Every writer must call `delall("TDRC")`; `verify_clean.py --fix` cleans up.
+- When reading v2.3, mutagen substitutes v2.4 frames (`TYER` → `TDRC`,
+  `IPLS` → `TIPL`) and writes them back into a v2.3 tag on save. Every writer
+  must call `musiclib.drop_v24_frames` before saving; `verify_clean.py --fix`
+  cleans up files written without it.
 - Stripping an edition suffix must remove the whole bracket group, or
   `Vol. 4 (2009 Remastered Version)` becomes `Vol. 4 (2009`.
 - A portable Python build ships without root certificates; HTTPS goes through

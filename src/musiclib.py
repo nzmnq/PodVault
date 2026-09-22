@@ -87,3 +87,26 @@ def first_artist(s):
     so use this only as a fallback, never as the primary split.
     """
     return re.split(r"\s*[,;]\s*", s or "")[0].strip()
+
+
+# Frames that only exist in ID3v2.4. mutagen reads a v2.3 tag into v2.4
+# frames (TYER -> TDRC, IPLS -> TIPL) and writes some of them back as they
+# are when saving with v2_version=3 — a mixed tag an old iPod trips over.
+V24_ONLY = ("TDRC", "TDOR", "TDRL", "TIPL", "TMCL", "TSOA", "TSOP", "TSOT")
+
+
+def drop_v24_frames(tags):
+    """Remove v2.4-only frames from a tag about to be saved as v2.3.
+
+    The year is kept: if it lived only in TDRC, it's moved into TYER.
+    Returns the names of the frames removed.
+    """
+    from mutagen.id3 import TYER
+    present = [k for k in V24_ONLY if tags.get(k) is not None]
+    if tags.get("TYER") is None and tags.get("TDRC") is not None:
+        m = re.search(r"\d{4}", str(tags["TDRC"].text[0]))
+        if m:
+            tags.add(TYER(encoding=1, text=[m.group(0)]))
+    for k in present:
+        tags.delall(k)
+    return present

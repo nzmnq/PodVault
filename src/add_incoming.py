@@ -34,7 +34,7 @@ from mutagen.id3 import ID3, ID3NoHeaderError, TALB, TCON, TIT2, TPE1, TPE2, TPO
 from mutagen.mp3 import MP3
 
 import settings
-from musiclib import norm, strip_edition, strip_feat
+from musiclib import drop_v24_frames, norm, strip_edition, strip_feat
 
 # Incoming files glue co-artists with a comma ('wifiskeleton, Jaydes'), the
 # older part of the library with a slash. Both are split, but the comma only
@@ -159,10 +159,19 @@ def load_library(library):
 # -------------------------------------------------------------- plan
 
 
+OTHER_AUDIO = (".m4a", ".flac", ".wav", ".ogg", ".opus", ".aac", ".wma", ".alac", ".aiff")
+
+
 def read_incoming(src, known):
-    """Read every mp3 in the folder. Returns (files, unreadable)."""
+    """Read every mp3 in the folder. Returns (files, unreadable).
+
+    Other audio formats are reported as unreadable rather than skipped
+    silently: the library is mp3-only, so they need converting first.
+    """
     files, broken = [], []
     for root, _, fs in os.walk(src):
+        for fn in sorted(f for f in fs if f.lower().endswith(OTHER_AUDIO)):
+            broken.append((fn, "not an mp3 — convert it first"))
         for fn in sorted(f for f in fs if f.lower().endswith(".mp3")):
             fp = os.path.join(root, fn)
             try:
@@ -238,6 +247,37 @@ def build_plan(files, known, spelling, dest_root):
     return plan, notes
 
 
+def unique_dests(items):
+    """Give every item a destination nothing else uses.
+
+    The same song downloaded twice maps to one path: the second copy is
+    dropped (it would only be a duplicate on the iPod). Different tracks
+    that happen to map to one path — or onto a file already sitting there —
+    get a ' (2)' suffix instead of silently overwriting it.
+    Returns (items to write, renamed count, dropped count).
+    """
+    taken = {}
+    keep, renamed, dropped = [], 0, 0
+    for it in items:
+        ident = (norm(it["album_artist"]), norm(it["album"] or ""), norm(it["out_title"]))
+        first = taken.get(os.path.normcase(it["dest"]))
+        if first == ident:
+            dropped += 1
+            continue
+        base, ext = os.path.splitext(it["dest"])
+        dest, n = it["dest"], 1
+        while os.path.normcase(dest) in taken or (os.path.exists(dest) and not it.get("replace")):
+            n += 1
+            dest = f"{base} ({n}){ext}"
+        if dest != it["dest"]:
+            renamed += 1
+        taken.setdefault(os.path.normcase(it["dest"]), ident)
+        taken[os.path.normcase(dest)] = ident
+        it["dest"] = dest
+        keep.append(it)
+    return keep, renamed, dropped
+
+
 def write_track(item):
     os.makedirs(os.path.dirname(item["dest"]), exist_ok=True)
     shutil.copy2(item["src"], item["dest"])
@@ -263,6 +303,10 @@ def write_track(item):
         m = re.search(r"\d{4}", str(item["year"]))
         if m:
             tags.add(TYER(encoding=enc, text=[m.group(0)]))
+    # Frames the source file brought along (TIPL from its IPLS, sort
+    # frames...) would otherwise be written into the v2.3 tag as v2.4 ones.
+    # Before the tools were merged a separate step stripped them afterwards.
+    drop_v24_frames(tags)
     tags.save(item["dest"], v2_version=3, v1=2)
 
     folder_jpg = os.path.join(os.path.dirname(item["dest"]), "folder.jpg")
@@ -347,7 +391,7 @@ def main():
             print(f"  ... {len(dupes) - 20} more")
 
     if broken:
-        print(f"\n--- UNREADABLE ({len(broken)}) ---")
+        print(f"\n--- WON'T BE ADDED: unreadable or not mp3 ({len(broken)}) ---")
         for fn, err in broken:
             print(f"  {fn}: {err}")
 
@@ -362,6 +406,14 @@ def main():
         return
 
     todo = plan if args.replace else fresh
+    for it in todo:
+        # --replace overwrites a dupe at its own path, nothing else
+        it["replace"] = args.replace and it in dupes
+    todo, renamed, dropped = unique_dests(todo)
+    if dropped:
+        print(f"  {dropped} tracks were in the folder twice; one copy of each is added")
+    if renamed:
+        print(f"  {renamed} tracks got a ' (2)' suffix: their file name was taken")
     for n, it in enumerate(todo, 1):
         write_track(it)
         if n % 50 == 0:

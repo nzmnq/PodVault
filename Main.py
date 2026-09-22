@@ -109,12 +109,15 @@ class App:
 
         apply_extra is added only to the real run — e.g. --yes for tools
         that would otherwise ask again themselves, in their own style.
+        Returns True if the changes were applied without an error.
         """
-        self.run_tool(f"{title} — dry run", script, extra)
+        if self.run_tool(f"{title} — dry run", script, extra):
+            return False     # the dry run failed: nothing sensible to apply
         tui.clear()
         print("\n".join(tui.header(title)))
         if tui.confirm(question):
-            self.run_tool(f"{title} — applying", script, [*extra, flag, *apply_extra])
+            return self.run_tool(f"{title} — applying", script, [*extra, flag, *apply_extra]) == 0
+        return False
 
     def need_library(self):
         if self.library_ok():
@@ -366,7 +369,12 @@ class App:
             target = other
 
         # the dry run doubles as the inspection of the incoming files
-        self.ask_apply("Adding", "add_incoming.py", [path, "--to", target])
+        added = self.ask_apply("Adding", "add_incoming.py", [path, "--to", target])
+        if added and target == "active":
+            tui.clear()
+            print("\n".join(tui.header("Adding")))
+            if tui.confirm("The new tracks are in Active. Sync the iPod now?"):
+                self.screen_sync()
 
     def screen_sync(self):
         default = self.cfg.get("ipod_sync_mode", "device")
