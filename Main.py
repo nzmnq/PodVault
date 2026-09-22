@@ -144,6 +144,7 @@ class App:
             ("Check tags",
              L(lambda: self.ask_apply("Check tags", "verify_clean.py", flag="--fix",
                                       question="Remove v2.4 frames if any were found (--fix)?"))),
+            ("AI vibe playlist", L(self.screen_vibe)),
             ("What's missing from my likes", L(self.screen_missing)),
             ("Export the list to a file", L(self.export_file)),
             ("AUDIO TOOLS", None),
@@ -451,6 +452,31 @@ class App:
                              "(can't be undone)?",
                     apply_extra=["--yes"])
                 return
+
+    def screen_vibe(self):
+        tui.clear()
+        print("\n".join(tui.header("AI VIBE PLAYLIST", "describe a mood, get a playlist")))
+        print(f"""
+  Describe it in your own words, in any language:
+    {FG['grey']}rainy night drive, slow, a bit sad
+    loud and fast for the gym
+    ранкова кава, щось легке{RESET}
+
+  Claude picks and orders tracks from Active, using what it knows about
+  the songs plus tempo/energy measured from the audio (the first run
+  analyses the whole library, a few minutes; after that only new tracks).
+  The result is saved as an .m3u8 playlist in the reports folder.
+  Needs an Anthropic API key in ANTHROPIC_API_KEY.
+""")
+        vibe = tui.prompt("Vibe (empty to go back): ").strip()
+        if not vibe:
+            return
+        count = tui.prompt("About how many tracks (Enter = 25): ").strip()
+        args = [vibe] + (["--count", count] if count.isdigit() else [])
+        # Only the pick: creating playlists on the iPod through iTunes was
+        # refused on the iPod this was built with (see vibe.push_to_ipod), so
+        # a button for it would mostly fail. `vibe.py --push-last` tries it.
+        self.run_tool("AI vibe playlist", "vibe.py", args)
 
     def screen_missing(self):
         tui.clear()

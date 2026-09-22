@@ -48,6 +48,7 @@ iPod sync through iTunes works on Windows only (it drives iTunes over COM).
 | Sync the iPod | Makes the device hold exactly what's in `Active`. |
 | Find missing cover art | Deezer, then MusicBrainz. Only applied when the artist matches. |
 | Check tags | Album Artist, ID3v2.3 / UTF-16, no v2.4 frames; can repair the latter. |
+| AI vibe playlist | Describe a mood in words; Claude picks and orders tracks from `Active`, helped by tempo/energy measured from the audio. Saved as `.m3u8`. |
 | What's missing from my likes | Compares a Spotify data export, an Apple Music playlist page or a text list with the library. |
 | Export the list to a file | The markup as a text file, for editing elsewhere. |
 
@@ -78,6 +79,7 @@ src/
   verify_clean.py       tag checks (--fix)
   import_likes.py       "what I listen to" lists -> one format
   find_missing.py       comparison with the library
+  vibe.py               AI vibe playlists
   build_clean.py        one-time initial build
   musiclib.py, tui.py   shared helpers
   flac_to_alac.py       FLAC -> ALAC
@@ -211,6 +213,29 @@ with restricted downloads.
 
 `find_missing.py` then reports what's complete, partial or missing, and what is
 present but sitting in the archive (no need to download — just mark it `[A]`).
+
+## AI vibe playlists
+
+```powershell
+python src\vibe.py "rainy night drive, slow, a bit sad"
+python src\vibe.py "gym, loud and fast" --count 40
+```
+
+Every `Active` track is analysed once from a 45-second excerpt — tempo,
+loudness, how busy, bright, bass-heavy and dynamic it is — and cached in
+`reports\vibe_features.json`; later runs analyse only new tracks. Claude
+(`claude-opus-5`) gets the whole catalogue with those numbers and the vibe,
+picks and orders the tracks and names the playlist. The library is sent as a
+cached prompt, so a second vibe within the hour costs a fraction of the first
+(the whole catalogue is roughly 50k tokens).
+
+Needs an Anthropic API key in `ANTHROPIC_API_KEY` (console.anthropic.com →
+API keys). The result is saved to `reports\playlists\<name>.m3u8`.
+
+`--apply` / `--push-last` try to create the playlist on the iPod through
+iTunes. With iTunes 12.13 and a manually managed iPod Video this was refused
+("The source is not modifiable"), although the same iPod accepts deletions
+and covers — so for now the playlist has to be assembled on the iPod by hand.
 
 ## Pitfalls already hit
 
