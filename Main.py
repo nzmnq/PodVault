@@ -401,11 +401,16 @@ class App:
      Copy with removal of extras. Only the subfolder the script manages
      is touched.
 
+  {BOLD}5. Save from the iPod{RESET} {FG['grey']}(no iTunes needed){RESET}
+     Tracks that are on the iPod but in neither Active nor Archive — the
+     iPod may hold the only copy. They're copied into the incoming folder,
+     then "Add new tracks" brings them into the library.
+
   {FG['grey']}None of them writes iTunesDB: iTunes edits it itself.{RESET}
 """)
         print(f"  {BOLD}Enter{RESET} default ({default})   {BOLD}1{RESET} device   "
               f"{BOLD}2{RESET} library   {BOLD}3{RESET} playlist   {BOLD}4{RESET} disk   "
-              f"{BOLD}Esc{RESET} back")
+              f"{BOLD}5{RESET} save from iPod   {BOLD}Esc{RESET} back")
         tui.flush()
         modes = {"1": "device", "2": "library", "3": "playlist"}
         while True:
@@ -422,10 +427,19 @@ class App:
                     self.ask_apply(
                         "iPod sync (device)", "ipod_sync.py", ["--mode", mode],
                         question="Apply: delete the archive tracks from the iPod "
-                                 "(can't be undone on the device), copy new ones, set covers?",
+                                 "(can't be undone on the device), copy new ones, set covers? "
+                                 "If covers change, iTunes is closed at the end to write them.",
                         apply_extra=["--yes"])
                 else:
                     self.ask_apply(f"iPod sync ({mode})", "ipod_sync.py", ["--mode", mode])
+                return
+            if k == "5":
+                if self.ask_apply("Save from the iPod", "ipod_sync.py", ["--rescue"],
+                                  question="Copy these tracks off the iPod into the incoming folder?"):
+                    tui.clear()
+                    print("\n".join(tui.header("Save from the iPod")))
+                    if tui.confirm("Add them to the library now?"):
+                        self.screen_incoming()
                 return
             if k == "4":
                 drive = tui.prompt("iPod drive letter (e.g. E:): ").strip()

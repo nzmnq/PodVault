@@ -122,18 +122,38 @@ def under(path, folder):
 # ------------------------------------------------------------ via iTunes
 
 
+RPC_E_CALL_REJECTED = -2147418111   # iTunes is busy (e.g. still starting)
+
+
+def when_ready(fn, seconds=120):
+    """Call fn, retrying while iTunes rejects calls because it's busy."""
+    import time
+    deadline = time.time() + seconds
+    while True:
+        try:
+            return fn()
+        except Exception as e:
+            busy = getattr(e, "hresult", None) == RPC_E_CALL_REJECTED or \
+                (e.args and e.args[0] == RPC_E_CALL_REJECTED)
+            if not busy or time.time() > deadline:
+                raise
+            time.sleep(2)
+
+
 def itunes_connect():
+    """Connect to iTunes, starting it if needed."""
     try:
         import comtypes.client
     except ImportError:
         sys.exit("comtypes is missing. Install: python\\python.exe -m pip install comtypes")
     try:
-        return comtypes.client.CreateObject("iTunes.Application")
+        itunes = comtypes.client.CreateObject("iTunes.Application")
+        when_ready(lambda: itunes.Version)
+        return itunes
     except Exception as e:
         sys.exit(
             f"Could not connect to iTunes: {e}\n\n"
-            "This usually means iTunes isn't running.\n"
-            "Open iTunes and try again."
+            "Check that iTunes is installed and not showing a dialog, then try again."
         )
 
 
@@ -323,6 +343,28 @@ def find_ipod(itunes):
     return None
 
 
+def wait_for_ipod(itunes, seconds=360):
+    """The iPod, waiting for it to show up. None if it never does.
+
+    Right after iTunes starts the iPod can take minutes to appear among its
+    sources (about 4.5 minutes on the iPod this was written with), and
+    during that time iTunes also rejects calls as busy.
+    """
+    import time
+    pod = when_ready(lambda: find_ipod(itunes))
+    if pod is not None:
+        return pod
+    print("  waiting for the iPod to appear in iTunes "
+          "(can take a few minutes after iTunes starts)...", flush=True)
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        time.sleep(5)
+        pod = when_ready(lambda: find_ipod(itunes))
+        if pod is not None:
+            return pod
+    return None
+
+
 def artist_variants(artist):
     """Artist keys a track can be recognised by.
 
@@ -348,6 +390,10 @@ def device_keys(artist, title):
     the player has its own internal path. Artist and title are what's left.
     """
     t = norm(strip_feat(title or ""))
+    # A title with no letters or digits at all (Иван Дорн's '???') used to
+    # normalise to nothing, so the track had no key and never matched —
+    # the iPod copy showed up as 'not recognised'. Use it as written.
+    t = t or (title or "").strip().lower()
     return {(a, t) for a in artist_variants(artist)} if t else set()
 
 
@@ -492,11 +538,54 @@ def delete_device_indices(itunes, device, indices):
 # ------------------------------------------------------------ artwork
 
 
+# What the iPod screen shows is not iTunes' Artwork.Count: the iPod draws
+# small copies iTunes writes into iPod_Control\Artwork. Tracks put on the
+# iPod long ago by another program (libgpod) have Artwork.Count = 1 and no
+# such copies at all — for iTunes they "have" a cover, the screen shows
+# none, and a check by Artwork.Count never repairs them. So the check reads
+# the iPod's own database (ipoddb) and matches tracks by their persistent
+# ID, which is the dbid in iTunesDB.
+
+
 def has_artwork(track):
     try:
         return track.Artwork.Count > 0
     except Exception:
         return True   # can't tell — don't touch it
+
+
+def track_dbid(itunes, track):
+    hi = itunes.ITObjectPersistentIDHigh(track)
+    lo = itunes.ITObjectPersistentIDLow(track)
+    return ((hi & 0xFFFFFFFF) << 32) | (lo & 0xFFFFFFFF)
+
+
+def device_thumbnails(pod):
+    """(drive root, dbids that have a thumbnail on the iPod), or (None, None).
+
+    None when the iPod's files can't be read (not in disk mode): then only
+    iTunes' own record is available.
+    """
+    import ipoddb
+    try:
+        root = ipoddb.find_root(pod.Playlists.Item(1).Tracks.Count)
+        if root:
+            return root, ipoddb.dbids_with_thumbnail(root)
+    except Exception as e:
+        print(f"  (could not read the iPod's artwork database: {e})")
+    return None, None
+
+
+def needs_cover(itunes, track, thumbs):
+    """True if the iPod shows no cover for this track."""
+    if not has_artwork(track):
+        return True
+    if thumbs is None:
+        return False
+    try:
+        return track_dbid(itunes, track) not in thumbs
+    except Exception:
+        return False
 
 
 def artwork_file(path):
@@ -540,14 +629,40 @@ def give_artwork(track, path):
         return False
 
 
-def refresh_device_artwork(itunes, active_by_key, text):
-    """Rewrite the cover of Active tracks whose artist or album contains text.
+def replace_artwork(track, path):
+    """Drop the track's cover in iTunes and set it again from the file.
 
-    For tracks that iTunes says have a cover but the iPod doesn't show one:
-    the cover is in iTunes' record, but the small copies the iPod actually
-    draws weren't written — typically when the iPod was unplugged before
-    iTunes finished. Setting the cover again makes iTunes regenerate them.
+    Setting it again is what makes iTunes regenerate the thumbnails the
+    iPod draws. Tracks whose file has no cover are left as they are.
     """
+    if not artwork_file(path):
+        return False
+    try:
+        while track.Artwork.Count > 0:
+            track.Artwork.Item(1).Delete()
+    except Exception as e:
+        print(f"\n  ! old cover not removed for {os.path.basename(path)}: {e}")
+    return give_artwork(track, path)
+
+
+def set_covers(itunes, todo):
+    """Rewrite covers for [(device index, path)]. Returns the dbids done."""
+    done = []
+    for i, (n, p) in enumerate(todo, 1):
+        # fetch the track fresh: device references go stale easily
+        t = find_ipod(itunes).Playlists.Item(1).Tracks.Item(n + 1)
+        if replace_artwork(t, p):
+            try:
+                done.append(track_dbid(itunes, t))
+            except Exception:
+                pass
+        if i % 10 == 0:
+            print(f"\r  covers set {i}/{len(todo)}", end="", flush=True)
+    return done
+
+
+def refresh_device_artwork(itunes, active_by_key, text):
+    """Rewrite the cover of Active tracks whose artist or album contains text."""
     text = text.lower()
     pod = find_ipod(itunes)
     device = read_device(pod)
@@ -555,35 +670,75 @@ def refresh_device_artwork(itunes, active_by_key, text):
     todo = [(n, p) for n, p in pairs.items()
             if text in (device[n][0].Artist or "").lower()
             or text in (device[n][0].Album or "").lower()]
-    done = 0
-    for n, p in todo:
-        t = find_ipod(itunes).Playlists.Item(1).Tracks.Item(n + 1)
-        try:
-            while t.Artwork.Count > 0:
-                t.Artwork.Item(1).Delete()
-        except Exception as e:
-            print(f"\n  ! old cover not removed for {t.Name}: {e}")
-        if give_artwork(t, p):
-            done += 1
-            print(f"  cover rewritten: {t.Artist} — {t.Album} — {t.Name}")
-    return done, len(todo)
+    return set_covers(itunes, todo), len(todo)
+
+
+def covers_to_fix(itunes, pod, device, pairs):
+    """Active tracks on the iPod that show no cover but whose file has one.
+
+    Returns (todo [(device index, path)], no_cover_in_file count, root).
+    """
+    root, thumbs = device_thumbnails(pod)
+    todo, bare = [], 0
+    for n, p in pairs.items():
+        if needs_cover(itunes, device[n][0], thumbs):
+            if artwork_file(p):
+                todo.append((n, p))
+            else:
+                bare += 1
+    return todo, bare, root
 
 
 def fix_device_artwork(itunes, active_by_key):
-    """Give a cover to every Active track on the iPod that has none."""
+    """Give a cover to every Active track the iPod shows without one."""
     pod = find_ipod(itunes)
     device = read_device(pod)
     pairs, _ = match_device(active_by_key, [(k, d) for _, k, d in device])
-    todo = [(n, p) for n, p in pairs.items() if not has_artwork(device[n][0])]
-    fixed = 0
-    for i, (n, p) in enumerate(todo, 1):
-        # fetch the track fresh: device references go stale easily
-        t = find_ipod(itunes).Playlists.Item(1).Tracks.Item(n + 1)
-        if give_artwork(t, p):
-            fixed += 1
-        if i % 10 == 0:
-            print(f"\r  covers set {i}/{len(todo)}", end="", flush=True)
-    return fixed, len(todo)
+    todo, _, root = covers_to_fix(itunes, pod, device, pairs)
+    return set_covers(itunes, todo), len(todo), root
+
+
+def write_and_verify(itunes, root, dbids):
+    """Make iTunes write its pending changes to the iPod, then check covers.
+
+    iTunes keeps changes to the iPod in memory and writes the device's
+    database only when the iPod is ejected or iTunes quits. Quitting keeps
+    the drive mounted, so the result can be read back and checked — ejecting
+    wouldn't allow that. A cover counts as delivered only if the iPod's own
+    artwork database now has a thumbnail for the track.
+    """
+    import subprocess
+    import time
+    import ipoddb
+
+    print("\n  closing iTunes so it writes the changes onto the iPod...")
+    try:
+        itunes.Quit()
+    except Exception as e:
+        print(f"  ! iTunes did not accept Quit: {e}")
+        return
+    for _ in range(100):   # up to 5 minutes: writing covers takes a while
+        time.sleep(3)
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq iTunes.exe"],
+                             capture_output=True).stdout
+        if b"iTunes.exe" not in out:
+            break
+    else:
+        print("  !! iTunes is still running after 5 minutes — perhaps it shows a")
+        print("     dialog. Close it by hand; the covers are written when it exits.")
+        return
+    if not root or not dbids:
+        return
+    try:
+        have = ipoddb.dbids_with_thumbnail(root)
+    except Exception as e:
+        print(f"  ! could not read the iPod back: {e}")
+        return
+    ok = sum(1 for d in dbids if d in have)
+    if ok == len(dbids):
+        print(f"  OK the iPod now has a cover thumbnail for all {ok} tracks")
+    else:
+        print(f"  !! covers on the iPod: {ok}/{len(dbids)}. Run 'covers' again.")
 
 
 def read_device(pod):
@@ -677,8 +832,12 @@ def add_to_device(itunes, paths):
     for n, p in enumerate(paths, 1):
         try:
             status = lib.AddFile(p)
-            # copying is asynchronous — wait for the file to arrive
+            # copying is asynchronous — wait for the file to arrive, but not
+            # forever: a stalled copy used to freeze the whole sync
+            deadline = time.time() + 180
             while status is not None and status.InProgress:
+                if time.time() > deadline:
+                    raise RuntimeError("still copying after 3 minutes, skipped")
                 time.sleep(0.2)
             added += 1
             new_tracks = getattr(status, "Tracks", None) if status is not None else None
@@ -720,7 +879,7 @@ def sync_device(apply_changes):
     itunes = itunes_connect()
     print(f"iTunes {itunes.Version}   mode: device")
 
-    pod = find_ipod(itunes)
+    pod = wait_for_ipod(itunes)
     if pod is None:
         sys.exit(
             "No iPod among the iTunes sources.\n\n"
@@ -755,7 +914,7 @@ def sync_device(apply_changes):
     to_delete = archive
     pairs, to_add = match_device(active_by_key, [(k, d) for _, k, d in device])
     dupes = find_duplicates(pairs, device, idx)
-    no_art = [(device[n][0], p) for n, p in pairs.items() if not has_artwork(device[n][0])]
+    no_art, bare, _ = covers_to_fix(itunes, pod, device, pairs)
 
     print()
     print("=" * 70)
@@ -767,7 +926,9 @@ def sync_device(apply_changes):
     print(f"  recognised as Archive    : {len(archive)}   <- delete, this is what plays in shuffle")
     print(f"  not recognised           : {len(unknown)}   (left alone)")
     print(f"  in Active, not on the iPod: {len(to_add)}")
-    print(f"  on the iPod without cover: {len(no_art)}   (cover will be set from the file)")
+    print(f"  shown without a cover    : {len(no_art)}   (cover will be set from the file)")
+    if bare:
+        print(f"    + no cover in the file : {bare}   (nothing to set; 'covers' in the menu fetches them)")
 
     if archive:
         print("\n--- WILL BE DELETED FROM THE IPOD (archive) ---")
@@ -787,7 +948,8 @@ def sync_device(apply_changes):
     if unknown:
         print("\n--- NOT RECOGNISED, WILL STAY ON THE IPOD ---")
         print("  In neither Active nor Archive. Possibly old versions or")
-        print("  things no longer in the library. The script doesn't delete them.")
+        print("  things no longer in the library. The script doesn't delete them;")
+        print("  --rescue (Sync -> 5 in the menu) copies them off the iPod.")
         for t in unknown[:25]:
             print(f"  {t.Artist} — {t.Album} — {t.Name}")
         if len(unknown) > 25:
@@ -801,17 +963,19 @@ def sync_device(apply_changes):
             print(f"  ... {len(to_add) - 15} more")
 
     if no_art:
-        print("\n--- ON THE IPOD WITHOUT A COVER ---")
-        for t, p in no_art[:15]:
-            img = artwork_file(p)
-            src = ("none in the file either" if not img else
-                   "from folder.jpg" if img.endswith("folder.jpg") else "embedded in the file")
+        print("\n--- THE IPOD SHOWS NO COVER ---")
+        for n, p in no_art[:15]:
+            t = device[n][0]
+            src = "from folder.jpg" if artwork_file(p).endswith("folder.jpg") else "embedded in the file"
             print(f"  {t.Artist} — {t.Album} — {t.Name}   [{src}]")
         if len(no_art) > 15:
             print(f"  ... {len(no_art) - 15} more")
 
     if not apply_changes:
         print("\nNothing changed. Add --apply.")
+        return
+    if not (to_delete or dupes or to_add or no_art):
+        print("\nNothing to do: the iPod already matches Active.")
         return
 
     if to_delete or dupes:
@@ -839,10 +1003,10 @@ def sync_device(apply_changes):
         print(f"\r  copied {added}/{len(to_add)}          ")
 
     # Covers: everything that is on the iPod now (including what was just
-    # copied) and still has no cover gets it from the file.
+    # copied) and still shows no cover gets it from the file.
     print("\n  setting missing covers...")
-    fixed, wanted_art = fix_device_artwork(itunes, active_by_key)
-    print(f"\r  covers set {fixed}/{wanted_art}          ")
+    covered, wanted_art, root = fix_device_artwork(itunes, active_by_key)
+    print(f"\r  covers set {len(covered)}/{wanted_art}          ")
 
     # Check the actual result: re-read the device and count how much
     # archive is really left on it.
@@ -858,18 +1022,7 @@ def sync_device(apply_changes):
         print(f"  !! extra copies left: {len(copies_left)}")
     else:
         print("  OK no extra copies")
-    art_left = [p for n, p in pairs.items()
-                if not has_artwork(device[n][0]) and artwork_file(p)]
     print(f"  tracks on the iPod: {total_now}")
-    # This is iTunes' record of the cover. The iPod draws small copies iTunes
-    # writes into iPod_Control\Artwork when it updates the device (on eject),
-    # and iTunes doesn't expose those — so a track can pass this check and
-    # still show no cover if the iPod was unplugged before they were written.
-    if art_left:
-        print(f"  !! iTunes has no cover for {len(art_left)} tracks although the file has one")
-    else:
-        print("  OK iTunes has a cover for every track whose file has one")
-        print("     (eject the iPod in iTunes so it writes them to the device)")
     if left:
         print(f"  !! archive left: {left}. Run again.")
     else:
@@ -879,7 +1032,19 @@ def sync_device(apply_changes):
     else:
         print("  OK the whole Active folder is on the iPod")
 
-    print("\nDone. Disconnect the iPod with Eject in iTunes and check shuffle.")
+    finish(itunes, root, covered)
+
+
+def finish(itunes, root, covered):
+    """Write pending changes to the iPod (checking covers) and say goodbye."""
+    if covered and root:
+        write_and_verify(itunes, root, covered)
+        print("\nDone. iTunes was closed to write everything onto the iPod.")
+        print("Unplug it with 'Safely Remove Hardware' in Windows,")
+        print("or open iTunes again and press Eject.")
+    else:
+        print("\nDone. Eject the iPod in iTunes before unplugging it —")
+        print("that's when iTunes writes the changes onto the device.")
 
 
 def sync_itunes(apply_changes, mode, playlist_name):
@@ -994,6 +1159,71 @@ Done. One last step — configure the iPod once:
 After that, just run this script and press Sync.""")
 
 
+# ------------------------------------------------------ save from the iPod
+
+
+def rescue_from_ipod(apply_changes, dest):
+    """Copy tracks that are on the iPod but in neither Active nor Archive.
+
+    For such a track the iPod may hold the only copy. They're never deleted
+    by the sync, but they aren't in the library either — so they're copied
+    off the iPod into the incoming folder, where "Add new tracks" fixes
+    their tags and brings them in like any other new track.
+
+    Reads the iPod's own database and files directly (disk mode), without
+    iTunes. Only reads from the iPod.
+    """
+    import ipoddb
+
+    root = ipoddb.find_root()
+    if not root:
+        sys.exit("No iPod drive found. It needs 'Enable disk use' in iTunes "
+                 "(always on in manual mode).")
+    print(f"  iPod at {root}")
+    print("  indexing the library...")
+    idx, _ = index_library()
+
+    found = []
+    for t in ipoddb.read_itunesdb(root):
+        states = set()
+        for k in device_keys(t["artist"], t["title"]):
+            states |= idx.get(k, set())
+        if states:
+            continue
+        src = os.path.join(root, (t["location"] or "").replace(":", os.sep).lstrip(os.sep))
+        name = f"{t['artist'] or 'Unknown'} - {t['title'] or os.path.basename(src)}"
+        name = re.sub(r'[<>:"/\\|?*]', "_", name).strip().rstrip(". ")[:150]
+        found.append((t, src, os.path.join(dest, name + os.path.splitext(src)[1].lower())))
+
+    print()
+    print("=" * 70)
+    print("ON THE IPOD, NOT IN THE LIBRARY")
+    print("=" * 70)
+    if not found:
+        print("  nothing — every track on the iPod is in Active or Archive")
+        return
+    todo = []
+    for t, src, dst in found:
+        if not os.path.isfile(src):
+            state = "file missing on the iPod"
+        elif os.path.isfile(dst) and os.path.getsize(dst) == os.path.getsize(src):
+            state = "already saved"
+        else:
+            state = "will be saved"
+            todo.append((src, dst))
+        print(f"  {t['artist']} — {t['album']} — {t['title']}   [{state}]")
+    print(f"\n  into: {dest}")
+
+    if not apply_changes:
+        print("\nNothing copied. Add --apply.")
+        return
+    os.makedirs(dest, exist_ok=True)
+    for src, dst in todo:
+        shutil.copy2(src, dst)
+    print(f"\nSaved {len(todo)} tracks. Now 'Add new tracks' brings them into the library;")
+    print("after that the sync recognises them.")
+
+
 # -------------------------------------------------------------- to disk
 
 
@@ -1096,6 +1326,9 @@ def main():
     ap.add_argument("--refresh-covers", metavar="TEXT",
                     help="device: rewrite the cover of tracks whose artist or album "
                          "contains TEXT (for covers iTunes has but the iPod doesn't show)")
+    ap.add_argument("--rescue", action="store_true",
+                    help="copy tracks that are on the iPod but not in the library "
+                         "into <incoming>\\From iPod (reads the iPod, no iTunes needed)")
     args = ap.parse_args()
 
     global ASSUME_YES
@@ -1104,19 +1337,28 @@ def main():
     if not os.path.isdir(ACTIVE):
         sys.exit(f"Active folder not found: {ACTIVE}")
 
+    if args.rescue:
+        incoming = settings.path("incoming_dir", cfg)
+        if not incoming:
+            sys.exit("The incoming folder isn't set (Settings).")
+        return rescue_from_ipod(args.apply, os.path.join(incoming, "From iPod"))
+
     if args.covers_only or args.refresh_covers:
         itunes = itunes_connect()
-        if find_ipod(itunes) is None:
+        if wait_for_ipod(itunes) is None:
             sys.exit("No iPod among the iTunes sources.")
         _, active_by_key = index_library()
+        covered, root = [], None
         if args.refresh_covers:
             done, total = refresh_device_artwork(itunes, active_by_key, args.refresh_covers)
-            print(f"covers rewritten: {done}/{total}")
+            print(f"covers rewritten: {len(done)}/{total}")
+            covered += done
+            root, _ = device_thumbnails(find_ipod(itunes))
         if args.covers_only:
-            fixed, total = fix_device_artwork(itunes, active_by_key)
-            print(f"\rmissing covers set: {fixed}/{total}          ")
-        print("\nNow eject the iPod in iTunes and wait until it says it's safe to "
-              "disconnect — the covers are written to the device at that point.")
+            done, total, root = fix_device_artwork(itunes, active_by_key)
+            print(f"\rmissing covers set: {len(done)}/{total}          ")
+            covered += done
+        finish(itunes, root, covered)
         return
 
     if args.disk:

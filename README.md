@@ -73,6 +73,7 @@ src/
   library.py            library contents, Active/Archive moves
   add_incoming.py       adding new tracks
   ipod_sync.py          iPod sync
+  ipoddb.py             reads the iPod's own databases (covers check)
   fetch_covers.py       missing cover art for the library
   verify_clean.py       tag checks (--fix)
   import_likes.py       "what I listen to" lists -> one format
@@ -154,6 +155,32 @@ If iTunes has "Copy files to iTunes Media folder when adding to library" on (the
 default), adding the library would silently duplicate it. The library and
 playlist modes test this on one file first and stop with an explanation.
 
+### Covers on the iPod
+
+The cover an iPod draws is neither the picture inside the mp3 nor what iTunes
+reports: it's a small pre-rendered copy in `iPod_Control\Artwork`, linked to the
+track in the device's own database. iTunes can say a track has artwork while
+the iPod has no such copy — tracks put on the iPod by other programs
+(libgpod-based ones) typically look like that. So the device mode reads the
+iPod's databases directly (`src/ipoddb.py`, read-only) to find tracks the
+screen shows without a cover, and sets their cover again from the file, which
+makes iTunes render the copies.
+
+iTunes writes its changes to the iPod only when the iPod is ejected or iTunes
+quits. When covers were changed, the sync closes iTunes at the end, reads the
+iPod back and reports how many covers really landed. Afterwards unplug the
+iPod with "Safely Remove Hardware" (or reopen iTunes and eject).
+
+`python src\ipoddb.py` prints what the iPod really has at any time.
+
+### Tracks only on the iPod
+
+The sync never deletes tracks it can't find in `Active` or `Archive` — the
+iPod may hold the only copy. `ipod_sync.py --rescue` (Sync → 5 in the menu)
+copies them into `<incoming>\From iPod`, reading the iPod's own database and
+files directly, without iTunes; "Add new tracks" then brings them into the
+library like any other new track. Already saved tracks aren't copied again.
+
 ## Tracklist format
 
 Used by the downloader and the iTunes cover fetcher. One track per line in
@@ -201,10 +228,15 @@ present but sitting in the archive (no need to download — just mark it `[A]`).
   device by album, and delete only what's positively identified.
 - iTunes COM invalidates references to device tracks after the first deletion:
   fetch each track fresh, walking from the end.
+- Right after iTunes starts, the iPod can take minutes to appear among its
+  sources, and iTunes rejects calls as busy meanwhile. The sync waits for it.
 - `comtypes` exposes the iPod library as `IITPlaylist` without `AddFile`;
   `QueryInterface(IITLibraryPlaylist)` is needed.
 - The same song exists as album, compilation and live versions; they're told
   apart by duration.
+- iTunes' `Artwork.Count` says nothing about what the iPod screen shows, and
+  iTunes writes the iPod's databases only on eject or quit — check covers with
+  `ipoddb.py` after that, not before.
 - PowerShell 5.1 prepends a BOM to piped input.
 - The Spotify Web API refuses every request (403) unless the app owner has
   Premium, and doesn't accept `localhost` as a redirect URI.
