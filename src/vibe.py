@@ -19,8 +19,8 @@ create it on the iPod through iTunes — but iTunes 12.13 refused that
 built with, so treat it as an attempt. Nothing is deleted anywhere: if a
 playlist with that name exists, the new one gets a number.
 
-Needs an Anthropic API key: set ANTHROPIC_API_KEY in the environment (or
-log in once with `ant auth login`).
+The model is reached through ai.py: Claude Code on a subscription, free
+Gemini, or the paid Anthropic API (setting 'AI through', or --backend).
 
   python src\\vibe.py analyze                        # analyse new tracks
   python src\\vibe.py "rainy night, slow, a bit sad"  # show the pick
@@ -38,9 +38,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 from mutagen.id3 import ID3
 
+import ai
 import settings
 
-MODEL = "claude-opus-5"
 EXCERPT_SECONDS = 45
 FEATURES_VERSION = 1   # bump when the analysis changes, to redo the cache
 
@@ -127,7 +127,19 @@ def track_tags(path):
 
     year = one("TYER") or one("TDRC")
     return {"artist": one("TPE1"), "title": one("TIT2"), "album": one("TALB"),
-            "genre": one("TCON"), "year": year[:4]}
+            "genre": one("TCON"), "style": one("TIT1"), "year": year[:4]}
+
+
+def audio_stamp(path):
+    """What identifies the audio: tag edits (genres!) must not trigger a
+    re-analysis, so the file's size and mtime can't be used."""
+    from mutagen.mp3 import MP3
+    try:
+        info = MP3(path).info
+        return f"{info.length:.3f}:{info.bitrate}"
+    except Exception:
+        st = os.stat(path)
+        return f"{st.st_size}:{int(st.st_mtime)}"
 
 
 def active_tracks(active):
@@ -170,11 +182,17 @@ def update_features(cfg, active):
     fresh = {}
     todo = []
     for p in files:
-        st = os.stat(p)
-        stamp = f"{st.st_size}:{int(st.st_mtime)}"
+        stamp = audio_stamp(p)
         old = cache.get(p)
+        if old and old.get("stamp") != stamp:
+            # entries from before audio_stamp() used size:mtime — keep them
+            # if the file is untouched since
+            st = os.stat(p)
+            if old.get("stamp") == f"{st.st_size}:{int(st.st_mtime)}":
+                old = {**old, "stamp": stamp}
         if old and old.get("stamp") == stamp:
-            fresh[p] = old
+            # tags are cheap to read and may have changed (genres, styles)
+            fresh[p] = {**old, "tags": track_tags(p)}
         else:
             todo.append((p, stamp))
     if todo:
@@ -215,13 +233,13 @@ def catalogue(entries):
     """One compact line per track, numbered. Returns (text, [paths])."""
     ranks = percentiles(entries)
     paths = sorted(entries, key=lambda p: (entries[p]["tags"].get("artist", "").lower(), p))
-    lines = ["id | artist | title | album | genre | year | bpm | loud | busy | bright | bass | dyn"]
+    lines = ["id | artist | title | album | genre | style | year | bpm | loud | busy | bright | bass | dyn"]
     for i, p in enumerate(paths):
         t = entries[p]["tags"]
         a = entries[p]["audio"] or {}
         r = ranks.get(p, {})
         cells = [str(i), t.get("artist", ""), t.get("title", ""), t.get("album", ""),
-                 t.get("genre", ""), t.get("year", ""),
+                 t.get("genre", ""), t.get("style", ""), t.get("year", ""),
                  str(int(a["bpm"])) if a.get("bpm") else "",
                  *(str(r.get(k, "")) for k in AUDIO_KEYS)]
         lines.append(" | ".join(c.replace("|", "/") for c in cells))
@@ -230,7 +248,9 @@ def catalogue(entries):
 
 SYSTEM = """You build playlists from one person's music library for their iPod.
 
-The library is below, one track per line. Besides the tags, each track has
+The library is below, one track per line. 'genre' is broad, 'style' is the
+precise style the owner confirmed — trust it over your own guesses. Besides
+the tags, each track has
 numbers measured from the audio: bpm, and five 0-100 ranks within this
 library — loud (loudness), busy (how many hits and onsets per second),
 bright (treble vs. dark), bass (low-end weight), dyn (how much the volume
@@ -257,58 +277,6 @@ SCHEMA = {
     "required": ["name", "description", "track_ids"],
     "additionalProperties": False,
 }
-
-
-def ask_claude(catalogue_text, vibe, count):
-    """Claude's pick: {'name', 'description', 'track_ids'}."""
-    try:
-        import anthropic
-    except ImportError:
-        sys.exit("The anthropic package is missing: python\\python.exe -m pip install anthropic")
-
-    try:
-        client = anthropic.Anthropic()
-        # The library goes into a cached system block: asking for another
-        # vibe within the hour reuses it instead of paying for it again.
-        # fallbacks="default": if a safety classifier declines the request,
-        # the API retries it on a fallback model instead of refusing.
-        response = client.beta.messages.create(
-            model=MODEL,
-            max_tokens=16000,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            thinking={"type": "adaptive"},
-            system=[{"type": "text", "text": SYSTEM + catalogue_text,
-                     "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
-            messages=[{"role": "user", "content":
-                       f"Vibe: {vibe}\n\nAbout {count} tracks."}],
-            output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
-        )
-    except anthropic.AuthenticationError:
-        sys.exit("The Anthropic API key was rejected. Check ANTHROPIC_API_KEY.")
-    except anthropic.PermissionDeniedError as e:
-        sys.exit(f"The API key may not use {MODEL}: {e.message}")
-    except anthropic.RateLimitError:
-        sys.exit("Rate limited by the Anthropic API. Try again in a minute.")
-    except anthropic.APIStatusError as e:
-        sys.exit(f"Anthropic API error {e.status_code}: {e.message}")
-    except anthropic.APIConnectionError:
-        sys.exit("Could not reach the Anthropic API. Check the internet connection.")
-    except TypeError as e:
-        # the SDK reports missing credentials as a TypeError
-        if "authentication" not in str(e):
-            raise
-        sys.exit("No Anthropic API key found.\n\n"
-                 "Create one at console.anthropic.com -> API keys, then set it once:\n"
-                 "  setx ANTHROPIC_API_KEY \"sk-ant-...\"\n"
-                 "and open a new terminal (or restart Music Utility).")
-
-    if response.stop_reason == "refusal":
-        sys.exit("Claude declined this request. Try describing the vibe differently.")
-    if response.stop_reason == "max_tokens":
-        sys.exit("The answer was cut off. Ask for fewer tracks.")
-    text = next((b.text for b in response.content if b.type == "text"), "")
-    return json.loads(text)
 
 
 # ------------------------------------------------------------ delivering
@@ -405,8 +373,14 @@ def main():
 
     ap = argparse.ArgumentParser(description="AI vibe playlists")
     ap.add_argument("vibe", nargs="?", default="", help="the mood in your own words, or 'analyze'")
-    ap.add_argument("--count", type=int, default=25, help="about how many tracks (default 25)")
+    count = int(cfg.get("vibe_count") or 25)
+    ap.add_argument("--count", type=int, default=count,
+                    help=f"about how many tracks (setting: {count})")
     ap.add_argument("--apply", action="store_true", help="create the playlist on the iPod")
+    ap.add_argument("--backend", choices=ai.BACKENDS,
+                    help="cli = Claude Code on a subscription, gemini = Google Gemini "
+                         "(free key), api = Anthropic API key "
+                         f"(setting: {cfg.get('vibe_backend', 'auto')})")
     ap.add_argument("--push-last", action="store_true",
                     help="create the last pick on the iPod, without asking Claude again")
     args = ap.parse_args()
@@ -429,8 +403,10 @@ def main():
         return
 
     text, paths = catalogue(entries)
-    print(f"  asking Claude for \"{args.vibe}\"...")
-    answer = ask_claude(text, args.vibe, args.count)
+    backend = ai.pick_backend(cfg, args.backend)
+    print(f"  asking {ai.backend_name(backend)} for \"{args.vibe}\"... (usually under a minute)")
+    answer = ai.ask_json(cfg, SYSTEM + text, f"Vibe: {args.vibe}\n\nAbout {args.count} tracks.",
+                         SCHEMA, backend)
     seen = set()
     picked = []
     for i in answer["track_ids"]:

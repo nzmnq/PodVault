@@ -49,6 +49,7 @@ iPod sync through iTunes works on Windows only (it drives iTunes over COM).
 | Find missing cover art | Deezer, then MusicBrainz. Only applied when the artist matches. |
 | Check tags | Album Artist, ID3v2.3 / UTF-16, no v2.4 frames; can repair the latter. |
 | AI vibe playlist | Describe a mood in words; Claude picks and orders tracks from `Active`, helped by tempo/energy measured from the audio. Saved as `.m3u8`. |
+| Genres | The AI suggests a genre and a precise style per album, you correct the file, then they're written into the tags. |
 | What's missing from my likes | Compares a Spotify data export, an Apple Music playlist page or a text list with the library. |
 | Export the list to a file | The markup as a text file, for editing elsewhere. |
 
@@ -80,6 +81,8 @@ src/
   import_likes.py       "what I listen to" lists -> one format
   find_missing.py       comparison with the library
   vibe.py               AI vibe playlists
+  genres.py             genre and style per album
+  ai.py                 one question to an AI model (Claude Code, Gemini, API)
   build_clean.py        one-time initial build
   musiclib.py, tui.py   shared helpers
   flac_to_alac.py       FLAC -> ALAC
@@ -119,7 +122,8 @@ What's written:
 
 - **TPE2** — set everywhere
 - **TPE1** — the main artist only; features move into the title as `(feat. X)`
-- **TCON** — the first genre before a separator (`Rap/Hip Hop` → `Hip-Hop`)
+- **TCON** — the first genre before a separator (`Rap/Hip Hop` → `Hip-Hop`);
+  see [Genres](#genres) for fixing them
 - **APIC + folder.jpg** — cover art
 - **ID3v2.3 / UTF-16** — otherwise an old iPod garbles Cyrillic; v2.4 frames
   such as `TDRC` are removed, the year goes into `TYER`
@@ -214,6 +218,29 @@ with restricted downloads.
 `find_missing.py` then reports what's complete, partial or missing, and what is
 present but sitting in the archive (no need to download — just mark it `[A]`).
 
+## Genres
+
+Genres were cut down to one broad word when the library was cleaned, and many
+were wrong to begin with (hyperpop under `Alternative`). Two tags now:
+
+- **Genre** (`TCON`) — broad: Rock, Hip-Hop, Electronic… It's what the iPod's
+  Genres menu shows, so it stays short.
+- **Grouping** (`TIT1`) — the precise style: Hyperpop, Cloud Rap, Post-punk…
+  The AI playlists read it; the iPod menu isn't cluttered.
+
+`data\genres.txt` (a setting, git-ignored) holds one line per album —
+`Artist folder/Album folder | Genre | Style` — and is the source of truth:
+
+```powershell
+python src\genres.py suggest          # the AI fills in albums not in the file yet
+python src\genres.py apply            # what would change in the tags
+python src\genres.py apply --apply    # write them
+```
+
+`suggest` never touches lines already in the file, so corrections stay; new
+albums get their line the next time it runs. The device sync then sets the
+genre on the iPod copies too, through iTunes.
+
 ## AI vibe playlists
 
 ```powershell
@@ -223,14 +250,31 @@ python src\vibe.py "gym, loud and fast" --count 40
 
 Every `Active` track is analysed once from a 45-second excerpt — tempo,
 loudness, how busy, bright, bass-heavy and dynamic it is — and cached in
-`reports\vibe_features.json`; later runs analyse only new tracks. Claude
-(`claude-opus-5`) gets the whole catalogue with those numbers and the vibe,
-picks and orders the tracks and names the playlist. The library is sent as a
-cached prompt, so a second vibe within the hour costs a fraction of the first
-(the whole catalogue is roughly 50k tokens).
+`reports\vibe_features.json`; later runs analyse only new tracks. Claude gets
+the whole catalogue with those numbers and the vibe (roughly 50k tokens),
+picks and orders the tracks and names the playlist. The result is saved to
+`reports\playlists\<name>.m3u8`.
 
-Needs an Anthropic API key in `ANTHROPIC_API_KEY` (console.anthropic.com →
-API keys). The result is saved to `reports\playlists\<name>.m3u8`.
+Settings → AI holds the mode, the default number of tracks and the
+model for each mode. Where the pick comes from (`--backend` overrides it):
+
+- **auto** (default) — `cli` if Claude Code is installed, else `gemini` if
+  `GEMINI_API_KEY` is set, else `api`. The same project works for everyone.
+- **gemini** — Google Gemini through its OpenAI-compatible endpoint, for
+  anyone without a Claude subscription. The key is free (aistudio.google.com →
+  Get API key, no card); set it once with `setx GEMINI_API_KEY "..."`. The
+  free tier's limits (a few requests a minute, some hundreds a day) are plenty
+  for playlists. On the free tier Google may use requests to improve its
+  models — here that's the list of track names. The model is a setting.
+- **cli** — the Claude Code command line, on a Claude subscription, no API
+  costs. `auto` finds `claude` in `PATH` or the copy
+  bundled with the Claude desktop app. Log in once: run `claude`, type
+  `/login`, then `/exit`. Tools, MCP servers and project settings are switched
+  off for the call, and nothing is saved to the session history.
+- **api** — the Anthropic API (`claude-opus-5`), paid per use; needs
+  `ANTHROPIC_API_KEY` (console.anthropic.com → API keys). The library is sent
+  as a cached prompt, so a second vibe within the hour costs a fraction of the
+  first.
 
 `--apply` / `--push-last` try to create the playlist on the iPod through
 iTunes. With iTunes 12.13 and a manually managed iPod Video this was refused

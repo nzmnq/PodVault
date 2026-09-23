@@ -54,6 +54,9 @@ FIELDS = [
           "Library", first_run=True, optional=True),
     Field("reports_dir", "reports", "dir", "Reports folder",
           "Where the tools write their reports.", "Library"),
+    Field("genres_file", os.path.join("data", "genres.txt"), "file", "Genres file",
+          "Genre and style per album: suggested by the AI, edited by you, "
+          "written into the tags by 'Genres'.", "Library"),
 
     # ---------------------------------------------------------------- iPod
     Field("ipod_sync_mode", "device", "choice", "iPod sync mode",
@@ -72,6 +75,31 @@ FIELDS = [
     # --------------------------------------------------------------- cover
     Field("cover_size", 500, "int", "Cover size, px",
           "Size covers are resized to when embedded.", "Covers"),
+
+    # ------------------------------------------------------------------ AI
+    Field("vibe_backend", "auto", "choice", "AI through",
+          "auto = Claude Code if installed, else Gemini if GEMINI_API_KEY is "
+          "set, else the Anthropic API; "
+          "cli = the Claude Code command line, on a Claude subscription "
+          "(log in once with `claude`, then /login); "
+          "gemini = Google Gemini, free key from aistudio.google.com in "
+          "GEMINI_API_KEY; "
+          "api = the Anthropic API, paid per use, needs ANTHROPIC_API_KEY.",
+          "AI", options=["auto", "cli", "gemini", "api"]),
+    Field("vibe_count", 25, "int", "Tracks per playlist",
+          "About how many tracks to pick; asked each time, this is the default.",
+          "AI"),
+    Field("claude_cli_path", "auto", "file", "Claude Code (claude)",
+          "'auto' looks in PATH, then in the copy bundled with the Claude "
+          "desktop app.", "AI"),
+    Field("claude_cli_model", "", "text", "Claude Code model",
+          "Empty = your subscription's default; or e.g. sonnet, opus.",
+          "AI", optional=True),
+    Field("gemini_model", "gemini-3.8-flash", "text", "Gemini model",
+          "Any model your key can use; Flash models are in the free tier.",
+          "AI"),
+    Field("anthropic_model", "claude-opus-5", "text", "Anthropic API model",
+          "Model for the 'api' mode.", "AI"),
 
     # --------------------------------------------------------------- tools
     Field("ffmpeg_path", "auto", "file", "ffmpeg",
@@ -169,6 +197,32 @@ def ffmpeg(values=None):
         p = os.path.join(ROOT, "bin", name)
         if os.path.isfile(p):
             return p
+    return None
+
+
+def claude_cli(values=None):
+    """Path to the Claude Code command line, or None if it can't be found."""
+    values = values if values is not None else require()
+    v = str(values.get("claude_cli_path") or "auto")
+    if v.lower() != "auto":
+        p = resolve(v)
+        return p if p and os.path.isfile(p) else None
+    found = shutil.which("claude")
+    if found:
+        return found
+    # the Claude desktop app keeps its own copy, one folder per version
+    bundled = os.path.join(os.environ.get("APPDATA", ""), "Claude", "claude-code")
+    try:
+        versions = [d for d in os.listdir(bundled)
+                    if os.path.isfile(os.path.join(bundled, d, "claude.exe"))]
+    except OSError:
+        versions = []
+
+    def version_key(d):
+        return [int(x) if x.isdigit() else 0 for x in d.split(".")]
+
+    if versions:
+        return os.path.join(bundled, max(versions, key=version_key), "claude.exe")
     return None
 
 

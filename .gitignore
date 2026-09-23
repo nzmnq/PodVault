@@ -10,6 +10,9 @@ settings.json
 # Tool output
 reports/
 
+# Personal library data: genres per album
+data/genres.txt
+
 # Binaries
 ffmpeg.exe
 bin/

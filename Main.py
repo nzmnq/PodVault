@@ -145,6 +145,7 @@ class App:
              L(lambda: self.ask_apply("Check tags", "verify_clean.py", flag="--fix",
                                       question="Remove v2.4 frames if any were found (--fix)?"))),
             ("AI vibe playlist", L(self.screen_vibe)),
+            ("Genres (AI suggests, you correct)", L(self.screen_genres)),
             ("What's missing from my likes", L(self.screen_missing)),
             ("Export the list to a file", L(self.export_file)),
             ("AUDIO TOOLS", None),
@@ -460,23 +461,60 @@ class App:
   Describe it in your own words, in any language:
     {FG['grey']}rainy night drive, slow, a bit sad
     loud and fast for the gym
-    ранкова кава, щось легке{RESET}
+    morning coffee, something light{RESET}
 
   Claude picks and orders tracks from Active, using what it knows about
   the songs plus tempo/energy measured from the audio (the first run
   analyses the whole library, a few minutes; after that only new tracks).
   The result is saved as an .m3u8 playlist in the reports folder.
-  Needs an Anthropic API key in ANTHROPIC_API_KEY.
+  Goes through Claude Code on a Claude subscription, or Google Gemini
+  with a free key (aistudio.google.com -> GEMINI_API_KEY), or the paid
+  Anthropic API — see Settings -> AI.
 """)
         vibe = tui.prompt("Vibe (empty to go back): ").strip()
         if not vibe:
             return
-        count = tui.prompt("About how many tracks (Enter = 25): ").strip()
+        default = self.cfg.get("vibe_count", 25)
+        count = tui.prompt(f"About how many tracks (Enter = {default}): ").strip()
         args = [vibe] + (["--count", count] if count.isdigit() else [])
         # Only the pick: creating playlists on the iPod through iTunes was
         # refused on the iPod this was built with (see vibe.push_to_ipod), so
         # a button for it would mostly fail. `vibe.py --push-last` tries it.
         self.run_tool("AI vibe playlist", "vibe.py", args)
+
+    def screen_genres(self):
+        path = settings.path("genres_file", self.cfg)
+        while True:
+            tui.clear()
+            print("\n".join(tui.header("GENRES", "genre + precise style per album")))
+            print(f"""
+  {BOLD}Genre{RESET}    — broad (Rock, Hip-Hop, Electronic...): the iPod's Genres menu.
+  {BOLD}Grouping{RESET} — the precise style (Hyperpop, Cloud Rap...): read by the AI
+             playlists, doesn't clutter the iPod menu.
+
+  {BOLD}1{RESET} Suggest   the AI fills in albums not yet in the file
+  {BOLD}2{RESET} Edit      open the file and correct what's wrong
+  {BOLD}3{RESET} Apply     write the genres into the tags (dry run first)
+
+  {FG['grey']}File: {path}
+  Your corrections are never overwritten; the next sync updates the iPod.{RESET}
+
+  {BOLD}Esc{RESET} back""")
+            tui.flush()
+            k = tui.read_key()
+            if k == tui.ESCAPE:
+                return
+            if k == "1":
+                self.run_tool("Genres — suggest", "genres.py", ["suggest"])
+            elif k == "2":
+                if os.path.isfile(path):
+                    os.startfile(path)
+                else:
+                    print(f"\n  {FG['red']}No file yet — run Suggest first.{RESET}")
+                    tui.pause()
+            elif k == "3":
+                self.ask_apply("Genres", "genres.py", ["apply"],
+                               question="Write these genres into the tags?")
 
     def screen_missing(self):
         tui.clear()

@@ -741,6 +741,40 @@ def write_and_verify(itunes, root, dbids):
         print(f"  !! covers on the iPod: {ok}/{len(dbids)}. Run 'covers' again.")
 
 
+def file_genre(path):
+    try:
+        v = ID3(path).get("TCON")
+        return str(v.text[0]).strip() if v and v.text else ""
+    except Exception:
+        return ""
+
+
+def genres_to_fix(device, pairs):
+    """[(device index, genre)] where the iPod copy's genre isn't the file's."""
+    out = []
+    for n, p in pairs.items():
+        g = file_genre(p)
+        try:
+            have = device[n][0].Genre or ""
+        except Exception:
+            continue
+        if g and have != g:
+            out.append((n, g))
+    return out
+
+
+def set_genres(itunes, todo):
+    done = 0
+    for n, g in todo:
+        try:
+            # fetch fresh: device references go stale easily
+            find_ipod(itunes).Playlists.Item(1).Tracks.Item(n + 1).Genre = g
+            done += 1
+        except Exception as e:
+            print(f"\n  ! genre not set on track #{n + 1}: {e}")
+    return done
+
+
 def read_device(pod):
     """iPod tracks: object, keys, duration."""
     pl = pod.Playlists.Item(1)
@@ -915,6 +949,7 @@ def sync_device(apply_changes):
     pairs, to_add = match_device(active_by_key, [(k, d) for _, k, d in device])
     dupes = find_duplicates(pairs, device, idx)
     no_art, bare, _ = covers_to_fix(itunes, pod, device, pairs)
+    regenre = genres_to_fix(device, pairs)
 
     print()
     print("=" * 70)
@@ -927,6 +962,7 @@ def sync_device(apply_changes):
     print(f"  not recognised           : {len(unknown)}   (left alone)")
     print(f"  in Active, not on the iPod: {len(to_add)}")
     print(f"  shown without a cover    : {len(no_art)}   (cover will be set from the file)")
+    print(f"  genre differs from file  : {len(regenre)}   (updated from the file)")
     if bare:
         print(f"    + no cover in the file : {bare}   (nothing to set; 'covers' in the menu fetches them)")
 
@@ -974,7 +1010,7 @@ def sync_device(apply_changes):
     if not apply_changes:
         print("\nNothing changed. Add --apply.")
         return
-    if not (to_delete or dupes or to_add or no_art):
+    if not (to_delete or dupes or to_add or no_art or regenre):
         print("\nNothing to do: the iPod already matches Active.")
         return
 
@@ -1007,6 +1043,14 @@ def sync_device(apply_changes):
     print("\n  setting missing covers...")
     covered, wanted_art, root = fix_device_artwork(itunes, active_by_key)
     print(f"\r  covers set {len(covered)}/{wanted_art}          ")
+
+    # Genres: the iPod keeps the tags a track had when it was copied, so a
+    # genre fixed in the library (genres.py) is set on the iPod copy too.
+    device = read_device(find_ipod(itunes))
+    pairs, _ = match_device(active_by_key, [(k, d) for _, k, d in device])
+    todo = genres_to_fix(device, pairs)
+    if todo:
+        print(f"  genres updated {set_genres(itunes, todo)}/{len(todo)}")
 
     # Check the actual result: re-read the device and count how much
     # archive is really left on it.
