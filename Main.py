@@ -160,6 +160,7 @@ class App:
             ("Initial build from an old collection",
              lambda: self.ask_apply("Initial build", "build_clean.py")),
             ("", None),
+            ("Open the window (iTunes-style)", self.open_window),
             ("Settings", self.screen_settings),
         ]
         selectable = [i for i, (_, fn) in enumerate(items) if fn]
@@ -568,6 +569,22 @@ class App:
         print(f"  python src\\library.py --import \"{path}\" --apply{RESET}")
         tui.pause()
 
+    def open_window(self):
+        """Start the PyQt6 window as its own process; this menu stays usable."""
+        try:
+            import PyQt6  # noqa: F401
+        except ImportError:
+            tui.clear()
+            print("\n".join(tui.header("THE WINDOW")))
+            print("\n  PyQt6 isn't installed. Install it with:")
+            print(f"  {sys.executable} -m pip install -r requirements.txt")
+            tui.pause()
+            return
+        exe = sys.executable
+        windowed = os.path.join(os.path.dirname(exe), "pythonw.exe")
+        subprocess.Popen([windowed if os.path.isfile(windowed) else exe,
+                          os.path.join(HERE, "Main.py"), "--gui"], cwd=HERE)
+
     # ------------------------------------------------------------ settings
 
     def edit_field(self, values, f):
@@ -734,6 +751,9 @@ def main():
     if "--selftest" in sys.argv:
         selftest()
         return
+    if "--gui" in sys.argv:
+        from gui.window import run
+        sys.exit(run())
     tui.enable_ansi()
     try:
         app = App()

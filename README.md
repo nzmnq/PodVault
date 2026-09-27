@@ -17,6 +17,43 @@ iPod. Everything can be changed later on the **Settings** screen.
 
 Settings are stored in `settings.json` in the project folder. The file is
 git-ignored: it holds personal paths and must not end up in the repository.
+`MUSIC_UTILITY_SETTINGS` can point at another settings file (a second library,
+a test setup).
+
+## The window
+
+```
+gui.bat
+```
+
+or `python Main.py --gui`, or "Open the window" in the menu. The same tools in
+a window (PyQt6) laid out like iTunes — a source list, an LCD in the toolbar,
+views of one library — with its own look.
+
+- **Source list** — places only: the **Library**, the **iPod** when it's
+  connected (with a capacity bar and an eject button right in its row), and
+  **Playlists** with "New vibe playlist…".
+- **Library** — three views: **Albums** (a grid of covers), **Artists** (the
+  same grid, one artist at a time) and **Genres** (a table: type the genre and
+  style, Save, "Write into the tags…"). Filters: All / Active / Archive, plus
+  Ukrainian and No cover. Click an album's A / R badge, or select albums and
+  press `A` / `R` (`Space` toggles), to mark it; the status bar collects the
+  marks and "Move the files…" applies them. Double-click or `Enter` opens an
+  album with its tracks.
+- **Needs attention** — a strip above the library: albums without a cover or a
+  genre, archive tracks still on the iPod, tracks only on the iPod — each with
+  the button that fixes it.
+- **Status bar** — how big Active is and whether it fits the iPod.
+- **☰ menu** — the library tools (covers, tag check, likes, export, initial
+  build), the audio tools, Settings. **Add** takes a folder of new tracks; so
+  does dropping a folder onto the window.
+- Every tool that changes something runs as a dry run first, in a sheet with
+  its full output; **Apply** does it for real. Only one tool runs at a time.
+
+Shortcuts: `Ctrl+S` sync, `Ctrl+N` add tracks, `Ctrl+F` search, `Ctrl+1/2/3`
+albums / artists / genres, `Ctrl+R` read the library again, `Ctrl+E` eject,
+`Ctrl+,` settings. Light or dark follows the system. Colours, symbols, sizes
+and timings all live in `src/gui/theme.py`.
 
 ## Installation
 
@@ -74,13 +111,15 @@ Everything that changes files runs as a dry run first and asks before applying.
 
 ```
 Main.py                 the program (menu, first-run wizard, settings screen)
-run.bat                 launcher
+run.bat                 launcher (text menu)
+gui.bat                 launcher (the window)
 src/
   settings.py           settings: defaults, load/save, validation
   library.py            library contents, Active/Archive moves
   add_incoming.py       adding new tracks
   ipod_sync.py          iPod sync, saving tracks off the iPod, disk mirror
   ipod.py               the iPod through podsync: find, read, covers, backups
+  gui/                  the window (PyQt6): backend.py runs the same tools
   fetch_covers.py       missing cover art for the library
   verify_clean.py       tag checks (--fix)
   import_likes.py       "what I listen to" lists -> one format
@@ -331,4 +370,5 @@ python srcibe.py --push-last
 
 ## License
 
-MIT, see `LICENSE`.
+GPL-2.0-or-later, see `LICENSE`. podsync (`vendor/podsync`) is under the same
+license.

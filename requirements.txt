@@ -9,6 +9,9 @@ certifi==2026.7.22
 # and Linux), wasmtime (only for writing to an iPod nano 6G/7G).
 pycryptodome==3.23.0
 
+# The window (gui.bat / Main.py --gui)
+PyQt6==6.11.0
+
 # AI vibe playlists: audio decoding (no ffmpeg needed) and the Claude API
 soundfile==0.14.0
 anthropic==1.8.0

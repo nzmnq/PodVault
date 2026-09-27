@@ -52,6 +52,15 @@ def itunes_running():
     return b"iTunes.exe" in out
 
 
+def mounted(cfg):
+    """Roots of the mounted volumes that look like an iPod. Cheap: no probing."""
+    given = str(cfg.get("ipod_mount") or "").strip()
+    if given and given.lower() != "auto":
+        return [given] if os.path.isdir(os.path.join(given, "iPod_Control")) else []
+    from podsync.hardware.discovery.scan import _find_ipod_volumes
+    return [root for root, _ in _find_ipod_volumes()]
+
+
 def open_ipod(cfg, given=None):
     """Find and identify the iPod, and make it the device podsync writes to.
 

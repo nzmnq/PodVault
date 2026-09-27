@@ -19,7 +19,8 @@ import shutil
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FILE = os.path.join(ROOT, "settings.json")
+# MUSIC_UTILITY_SETTINGS points at another settings file (a test setup, a second library)
+FILE = os.environ.get("MUSIC_UTILITY_SETTINGS") or os.path.join(ROOT, "settings.json")
 
 
 class Field:
