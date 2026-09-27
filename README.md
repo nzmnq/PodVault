@@ -23,6 +23,7 @@ git-ignored: it holds personal paths and must not end up in the repository.
 Python 3.10+.
 
 ```powershell
+git clone --recurse-submodules <this repository>
 py -m venv .venv
 .venv\Scripts\activate
 python -m pip install -r requirements.txt
@@ -35,7 +36,11 @@ FFmpeg is needed by the FLAC → ALAC converter, the downloader and the spatial
 sound tool. Set its path on the Settings screen, or leave it on `auto` to use
 the one in `PATH` or in `bin\`. The library tools don't need it.
 
-iPod sync through iTunes works on Windows only (it drives iTunes over COM).
+The iPod's databases are read and written by
+[podsync](https://github.com/bla1r1/podsync), a git submodule in
+`vendor\podsync`. In a copy cloned without `--recurse-submodules`, fetch it
+with `git submodule update --init`. No iTunes is needed, on Windows, macOS or
+Linux.
 
 ## The main screen
 
@@ -74,8 +79,8 @@ src/
   settings.py           settings: defaults, load/save, validation
   library.py            library contents, Active/Archive moves
   add_incoming.py       adding new tracks
-  ipod_sync.py          iPod sync
-  ipoddb.py             reads the iPod's own databases (covers check)
+  ipod_sync.py          iPod sync, saving tracks off the iPod, disk mirror
+  ipod.py               the iPod through podsync: find, read, covers, backups
   fetch_covers.py       missing cover art for the library
   verify_clean.py       tag checks (--fix)
   import_likes.py       "what I listen to" lists -> one format
@@ -91,6 +96,8 @@ src/
   sur_sound.py          spatial sound
 data/
   tracklist.txt         the tracklist
+vendor/
+  podsync/              the iPod database engine (git submodule)
 ```
 
 Each script in `src/` also runs on its own: `python src\library.py`,
@@ -141,50 +148,59 @@ a tag value already written into files, so it isn't translated.
 
 ## iPod sync
 
-The script **never writes `iTunesDB`**: a bad write there wipes all music on the
-device at once. Everything goes through iTunes. The default mode is a setting.
+Sync → 1 (or `python src\ipod_sync.py`) makes the device hold exactly what's
+in `Active`: archive tracks leave the iPod, new tracks arrive, and every synced
+track gets its cover and its genre from the file. The iPod's own databases —
+tracks, playlists, covers — are written by podsync; iTunes isn't involved and
+must be closed (on eject it would write its own copy of the database over
+ours).
 
-- **device** — cleans the iPod itself. Needed when the iPod is set to
-  "Manually manage music and videos": then iTunes removes nothing from the
-  device on its own, and archived tracks keep playing in shuffle however much
-  the library is cleaned. Matching is by tags and duration; only tracks
-  **positively recognised** as archive are deleted, unknown ones are left alone.
-- **library** — the iTunes library is brought in line with `Active`, iTunes
-  stays in "sync entire library" mode.
-- **playlist** — the library isn't touched, a playlist equal to `Active` is
-  kept. The iPod must be set once to sync only that playlist, otherwise archived
-  tracks still reach it and play in shuffle.
-- **disk** — a plain mirror for Rockbox or disk mode; only the managed
-  subfolder is touched.
+Matching is by tags and duration: a file on the iPod has its own internal path,
+and it keeps the tags it had when it was copied. Only tracks **positively
+recognised** as archive are deleted; unknown ones are left alone (see
+[below](#tracks-only-on-the-ipod)). Existing playlists, smart playlists
+included, are kept; deleted tracks drop out of them.
 
-If iTunes has "Copy files to iTunes Media folder when adding to library" on (the
-default), adding the library would silently duplicate it. The library and
-playlist modes test this on one file first and stop with an explanation.
+The iPod is found automatically (a drive letter on Windows, `/Volumes` on
+macOS, `/media` on Linux) and identified by podsync, or set in Settings → iPod.
+
+A bad write to the database can wipe the iPod's music list, so:
+
+- before every write `iPod_Control\iTunes` and `\Artwork` (~250 MB) are copied
+  to `<reports>\ipod-backups` (the last 3 are kept); Sync → 5 (or `--restore`)
+  puts the latest one back;
+- podsync checks and locks the volume, refuses to write if the database
+  changed since it was read, and reads the new database back — every track
+  and every file — before it counts as written;
+- files of deleted tracks are removed only after that.
+
+```powershell
+python src\ipod_sync.py                  # what would change
+python src\ipod_sync.py --apply
+python src\ipod_sync.py --restore
+python src\ipod.py                       # what the iPod has (read only)
+python src\ipod.py --eject
+```
+
+Sync → 4 (`--disk E:`) is a plain mirror for Rockbox or disk mode instead;
+only the managed subfolder is touched.
 
 ### Covers on the iPod
 
-The cover an iPod draws is neither the picture inside the mp3 nor what iTunes
-reports: it's a small pre-rendered copy in `iPod_Control\Artwork`, linked to the
-track in the device's own database. iTunes can say a track has artwork while
-the iPod has no such copy — tracks put on the iPod by other programs
-(libgpod-based ones) typically look like that. So the device mode reads the
-iPod's databases directly (`src/ipoddb.py`, read-only) to find tracks the
-screen shows without a cover, and sets their cover again from the file, which
-makes iTunes render the copies.
-
-iTunes writes its changes to the iPod only when the iPod is ejected or iTunes
-quits. When covers were changed, the sync closes iTunes at the end, reads the
-iPod back and reports how many covers really landed. Afterwards unplug the
-iPod with "Safely Remove Hardware" (or reopen iTunes and eject).
-
-`python src\ipoddb.py` prints what the iPod really has at any time.
+The cover an iPod draws is neither the picture inside the mp3 nor what other
+programs report: it's a small pre-rendered copy in `iPod_Control\Artwork`,
+linked to the track in the device's own database. Tracks put on the iPod by
+other programs often have an artwork record and no such copy. So the sync
+asks podsync which tracks really have a thumbnail, and gives the rest their
+cover from the file (the embedded picture first, `folder.jpg` otherwise).
+Sync → 2 (`python src\ipod.py`) lists what the screen shows without a cover.
 
 ### Tracks only on the iPod
 
 The sync never deletes tracks it can't find in `Active` or `Archive` — the
-iPod may hold the only copy. `ipod_sync.py --rescue` (Sync → 5 in the menu)
+iPod may hold the only copy. `ipod_sync.py --rescue` (Sync → 3 in the menu)
 copies them into `<incoming>\From iPod`, reading the iPod's own database and
-files directly, without iTunes; "Add new tracks" then brings them into the
+files; "Add new tracks" then brings them into the
 library like any other new track. Already saved tracks aren't copied again.
 
 ## Tracklist format
@@ -238,8 +254,8 @@ python src\genres.py apply --apply    # write them
 ```
 
 `suggest` never touches lines already in the file, so corrections stay; new
-albums get their line the next time it runs. The device sync then sets the
-genre on the iPod copies too, through iTunes.
+albums get their line the next time it runs. The iPod sync then sets the
+genre on the iPod copies too.
 
 ## AI vibe playlists
 
@@ -276,10 +292,16 @@ model for each mode. Where the pick comes from (`--backend` overrides it):
   as a cached prompt, so a second vibe within the hour costs a fraction of the
   first.
 
-`--apply` / `--push-last` try to create the playlist on the iPod through
-iTunes. With iTunes 12.13 and a manually managed iPod Video this was refused
-("The source is not modifiable"), although the same iPod accepts deletions
-and covers — so for now the playlist has to be assembled on the iPod by hand.
+`--apply` / `--push-last` (or "yes" in the menu after a pick) create the
+playlist right on the iPod, written into its database by podsync, with a
+backup first. Picked tracks that aren't on the iPod yet are copied along with
+their covers; nothing is deleted or changed. If a playlist with that name
+exists, the new one gets a number.
+
+```powershell
+python srcibe.py "gym, loud and fast" --apply
+python srcibe.py --push-last
+```
 
 ## Pitfalls already hit
 
@@ -295,17 +317,12 @@ and covers — so for now the playlist has to be assembled on the iPod by hand.
   `certifi`. HTTP headers are latin-1, so no Cyrillic in the `User-Agent`.
 - The iPod holds tracks with the tags they had when copied. Don't match the
   device by album, and delete only what's positively identified.
-- iTunes COM invalidates references to device tracks after the first deletion:
-  fetch each track fresh, walking from the end.
-- Right after iTunes starts, the iPod can take minutes to appear among its
-  sources, and iTunes rejects calls as busy meanwhile. The sync waits for it.
-- `comtypes` exposes the iPod library as `IITPlaylist` without `AddFile`;
-  `QueryInterface(IITLibraryPlaylist)` is needed.
 - The same song exists as album, compilation and live versions; they're told
   apart by duration.
-- iTunes' `Artwork.Count` says nothing about what the iPod screen shows, and
-  iTunes writes the iPod's databases only on eject or quit — check covers with
-  `ipoddb.py` after that, not before.
+- An artwork record in the database says nothing about what the iPod screen
+  shows: only a thumbnail in an existing `.ithmb` file counts.
+- iTunes left open writes its own copy of the iPod's database on eject, over
+  whatever was written in the meantime. The sync refuses to run while it is.
 - PowerShell 5.1 prepends a BOM to piped input.
 - The Spotify Web API refuses every request (403) unless the app owner has
   Premium, and doesn't accept `localhost` as a redirect URI.

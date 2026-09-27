@@ -13,10 +13,10 @@ Two halves:
      names the playlist. It knows most artists and songs by name; the
      numbers help with everything it doesn't know.
 
-The playlist is saved as .m3u8 next to the reports. --apply also tries to
-create it on the iPod through iTunes — but iTunes 12.13 refused that
-('source is not modifiable') for the manually managed iPod Video this was
-built with, so treat it as an attempt. Nothing is deleted anywhere: if a
+The playlist is saved as .m3u8 next to the reports. --apply (or --push-last
+later) also creates it on the iPod, written into the iPod's database by
+podsync (through ipod_sync.py, a backup first, no iTunes). Picked tracks not
+on the iPod yet are copied along; nothing is deleted or changed. If a
 playlist with that name exists, the new one gets a number.
 
 The model is reached through ai.py: Claude Code on a subscription, free
@@ -305,66 +305,26 @@ def write_m3u(cfg, name, picked):
 
 
 def read_last(cfg):
-    """(name, paths) of the last pick, so it can be sent without asking again."""
+    """Path of the last pick's .m3u8, so it can be sent without asking again."""
     try:
         with open(os.path.join(playlists_dir(cfg), "last.json"), encoding="utf-8") as f:
-            last = json.load(f)
-        with open(last["m3u"], encoding="utf-8") as f:
-            paths = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+            m3u = json.load(f)["m3u"]
     except (OSError, ValueError, KeyError):
         sys.exit("No saved pick yet — describe a vibe first.")
-    return last["name"], paths
+    if not os.path.isfile(m3u):
+        sys.exit(f"The last pick's file is gone: {m3u}")
+    return m3u
 
 
-def push_to_ipod(name, picked):
-    """Create the playlist on the iPod. Returns (playlist name, tracks added)."""
-    import ipod_sync as s
-    from comtypes.gen import iTunesLib
+def push_to_ipod(cfg, m3u):
+    """Put the playlist on the iPod, written into its database by podsync.
 
-    s.configure()
-    itunes = s.itunes_connect()
-    pod = s.wait_for_ipod(itunes)
-    if pod is None:
-        sys.exit("No iPod among the iTunes sources — connect it and open iTunes.")
-    print("  matching the tracks with the iPod...")
-    _, active_by_key = s.index_library()
-    wanted = {p: active_by_key[p] for p in picked if p in active_by_key}
-    device = s.read_device(pod)
-    pairs, missing = s.match_device(wanted, [(k, d) for _, k, d in device])
-    by_path = {p: n for n, p in pairs.items()}
-
-    existing = {pod.Playlists.Item(i).Name for i in range(1, pod.Playlists.Count + 1)}
-    final, n = name, 1
-    while final in existing:
-        n += 1
-        final = f"{name} {n}"
-    try:
-        pl = itunes.CreatePlaylistInSource(final, pod).QueryInterface(iTunesLib.IITUserPlaylist)
-    except Exception as e:
-        # Seen with iTunes 12.13 and an iPod Video in manual mode: iTunes
-        # answers 'The source is not modifiable' although it lets the same
-        # iPod's tracks be deleted and their covers set. We don't work around
-        # it by writing the iPod's database ourselves.
-        sys.exit(f"iTunes refused to create a playlist on the iPod: {e}\n\n"
-                 "The playlist is saved as .m3u8 in reports\\playlists; its tracks\n"
-                 "are on the iPod already, so it can be put together there by hand.")
-
-    added = 0
-    for p in picked:
-        if p not in by_path:
-            continue
-        # fetch fresh: device references go stale easily
-        t = s.find_ipod(itunes).Playlists.Item(1).Tracks.Item(by_path[p] + 1)
-        try:
-            pl.AddTrack(t)
-            added += 1
-        except Exception as e:
-            print(f"  ! {os.path.basename(p)}: {e}")
-    if missing:
-        print(f"  {len(missing)} picked tracks aren't on the iPod yet (run Sync first):")
-        for p in missing[:10]:
-            print(f"    {os.path.basename(p)}")
-    return final, added
+    A backup of the iPod's database is made first. Picked tracks the iPod
+    doesn't have yet are copied; nothing is deleted or changed.
+    """
+    import ipod_sync
+    ipod_sync.ASSUME_YES = True
+    ipod_sync.run(cfg, True, playlist=m3u, playlist_only=True)
 
 
 def main():
@@ -376,22 +336,17 @@ def main():
     count = int(cfg.get("vibe_count") or 25)
     ap.add_argument("--count", type=int, default=count,
                     help=f"about how many tracks (setting: {count})")
-    ap.add_argument("--apply", action="store_true", help="create the playlist on the iPod")
+    ap.add_argument("--apply", action="store_true", help="also create the playlist on the iPod")
     ap.add_argument("--backend", choices=ai.BACKENDS,
                     help="cli = Claude Code on a subscription, gemini = Google Gemini "
                          "(free key), api = Anthropic API key "
                          f"(setting: {cfg.get('vibe_backend', 'auto')})")
     ap.add_argument("--push-last", action="store_true",
-                    help="create the last pick on the iPod, without asking Claude again")
+                    help="put the last pick on the iPod, without asking Claude again")
     args = ap.parse_args()
 
     if args.push_last:
-        name, picked = read_last(cfg)
-        final, added = push_to_ipod(name, picked)
-        print(f"\n  playlist '{final}' created on the iPod: {added}/{len(picked)} tracks")
-        print("\nDone. Eject the iPod in iTunes before unplugging it —")
-        print("that's when iTunes writes the playlist onto the device.")
-        return
+        return push_to_ipod(cfg, read_last(cfg))
     if not args.vibe.strip():
         ap.error("describe the vibe, e.g. \"rainy night, slow\"")
     if not os.path.isdir(active):
@@ -429,12 +384,9 @@ def main():
     print(f"\n  saved: {m3u}")
 
     if not args.apply:
-        print("\n--apply (or --push-last now) tries to create it on the iPod.")
+        print("\n--push-last creates it on the iPod.")
         return
-    final, added = push_to_ipod(name, picked)
-    print(f"\n  playlist '{final}' created on the iPod: {added}/{len(picked)} tracks")
-    print("\nDone. Eject the iPod in iTunes before unplugging it —")
-    print("that's when iTunes writes the playlist onto the device.")
+    push_to_ipod(cfg, m3u)
 
 
 if __name__ == "__main__":

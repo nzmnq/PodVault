@@ -1,0 +1,3 @@
+[submodule "vendor/podsync"]
+	path = vendor/podsync
+	url = https://github.com/bla1r1/podsync.git

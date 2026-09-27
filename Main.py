@@ -379,63 +379,60 @@ class App:
                 self.screen_sync()
 
     def screen_sync(self):
-        default = self.cfg.get("ipod_sync_mode", "device")
         tui.clear()
         print("\n".join(tui.header("SYNC THE IPOD",
                                    "the device should hold exactly what's in Active")))
         print(f"""
-  {BOLD}1. Clean the iPod itself{RESET} {FG['grey']}(device){RESET}
-     Works in "Manually manage music" mode, where iTunes removes nothing
-     from the device on its own. Matching by tags and duration; only
-     tracks positively recognised as archive are deleted. Needs iTunes
-     running and the iPod connected.
+  {BOLD}1. Sync{RESET} {FG['grey']}(Enter){RESET}
+     Archive tracks leave the iPod, new Active tracks arrive, covers and
+     genres come from the files. Matching by tags and duration; only
+     tracks positively recognised as archive are deleted. The iPod's
+     database is written by podsync — no iTunes (it must be closed).
+     A backup of the database is made before every write.
 
-  {BOLD}2. Library = Active{RESET} {FG['grey']}(library){RESET}
-     The iTunes library is brought in line with Active, iTunes stays in
-     "sync entire library" mode. Needs iTunes running.
+  {BOLD}2. What's on the iPod{RESET}
+     Model, tracks, playlists, tracks the screen shows without a cover.
 
-  {BOLD}3. Separate playlist{RESET} {FG['grey']}(playlist){RESET}
-     The library isn't touched; a playlist equal to Active is kept. The
-     iPod must be set once to sync only that playlist, otherwise archive
-     tracks still reach it and play in shuffle. Needs iTunes running.
+  {BOLD}3. Save from the iPod{RESET}
+     Tracks that are on the iPod but in neither Active nor Archive — the
+     iPod may hold the only copy. They're copied into the incoming folder,
+     then "Add new tracks" brings them into the library.
 
   {BOLD}4. Mirror to disk{RESET} {FG['grey']}(Rockbox or disk mode){RESET}
      Copy with removal of extras. Only the subfolder the script manages
      is touched.
 
-  {BOLD}5. Save from the iPod{RESET} {FG['grey']}(no iTunes needed){RESET}
-     Tracks that are on the iPod but in neither Active nor Archive — the
-     iPod may hold the only copy. They're copied into the incoming folder,
-     then "Add new tracks" brings them into the library.
+  {BOLD}5. Restore the last backup{RESET}
+     Puts the iPod's database back as it was before the last sync.
 
-  {FG['grey']}None of them writes iTunesDB: iTunes edits it itself.{RESET}
+  {BOLD}6. Eject{RESET}
+     Flushes and ejects the iPod, so it can be unplugged.
 """)
-        print(f"  {BOLD}Enter{RESET} default ({default})   {BOLD}1{RESET} device   "
-              f"{BOLD}2{RESET} library   {BOLD}3{RESET} playlist   {BOLD}4{RESET} disk   "
-              f"{BOLD}5{RESET} save from iPod   {BOLD}Esc{RESET} back")
+        print(f"  {BOLD}1{RESET} sync   {BOLD}2{RESET} what's on it   {BOLD}3{RESET} save from it   "
+              f"{BOLD}4{RESET} disk   {BOLD}5{RESET} restore   {BOLD}6{RESET} eject   "
+              f"{BOLD}Esc{RESET} back")
         tui.flush()
-        modes = {"1": "device", "2": "library", "3": "playlist"}
         while True:
             k = tui.read_key()
             if k == tui.ESCAPE:
                 return
-            if k == tui.ENTER:
-                k = {v: n for n, v in modes.items()}.get(default, "1")
-            if k in modes:
-                mode = modes[k]
-                if mode == "device":
-                    # One clear question here instead of the script asking
-                    # again in its own "type yes" style.
-                    self.ask_apply(
-                        "iPod sync (device)", "ipod_sync.py", ["--mode", mode],
-                        question="Apply: delete the archive tracks from the iPod "
-                                 "(can't be undone on the device), copy new ones, set covers? "
-                                 "If covers change, iTunes is closed at the end to write them.",
-                        apply_extra=["--yes"])
-                else:
-                    self.ask_apply(f"iPod sync ({mode})", "ipod_sync.py", ["--mode", mode])
+            if k in ("1", tui.ENTER):
+                # One clear question here instead of the script asking
+                # again in its own "type yes" style.
+                if self.ask_apply(
+                        "iPod sync", "ipod_sync.py",
+                        question="Apply: back up the iPod's database, then delete the archive "
+                                 "tracks, copy new ones, set covers and genres?",
+                        apply_extra=["--yes"]):
+                    tui.clear()
+                    print("\n".join(tui.header("iPod sync")))
+                    if tui.confirm("Eject the iPod now?"):
+                        self.run_tool("Eject the iPod", "ipod.py", ["--eject"])
                 return
-            if k == "5":
+            if k == "2":
+                self.run_tool("What's on the iPod", "ipod.py")
+                return
+            if k == "3":
                 if self.ask_apply("Save from the iPod", "ipod_sync.py", ["--rescue"],
                                   question="Copy these tracks off the iPod into the incoming folder?"):
                     tui.clear()
@@ -453,6 +450,15 @@ class App:
                              "(can't be undone)?",
                     apply_extra=["--yes"])
                 return
+            if k == "5":
+                tui.clear()
+                print("\n".join(tui.header("Restore the last backup")))
+                if tui.confirm("Replace the iPod's database with the latest backup?"):
+                    self.run_tool("Restore the last backup", "ipod_sync.py", ["--restore", "--yes"])
+                return
+            if k == "6":
+                self.run_tool("Eject the iPod", "ipod.py", ["--eject"])
+                return
 
     def screen_vibe(self):
         tui.clear()
@@ -466,7 +472,7 @@ class App:
   Claude picks and orders tracks from Active, using what it knows about
   the songs plus tempo/energy measured from the audio (the first run
   analyses the whole library, a few minutes; after that only new tracks).
-  The result is saved as an .m3u8 playlist in the reports folder.
+  The result is saved as an .m3u8 playlist and can go onto the iPod.
   Goes through Claude Code on a Claude subscription, or Google Gemini
   with a free key (aistudio.google.com -> GEMINI_API_KEY), or the paid
   Anthropic API — see Settings -> AI.
@@ -477,10 +483,15 @@ class App:
         default = self.cfg.get("vibe_count", 25)
         count = tui.prompt(f"About how many tracks (Enter = {default}): ").strip()
         args = [vibe] + (["--count", count] if count.isdigit() else [])
-        # Only the pick: creating playlists on the iPod through iTunes was
-        # refused on the iPod this was built with (see vibe.push_to_ipod), so
-        # a button for it would mostly fail. `vibe.py --push-last` tries it.
-        self.run_tool("AI vibe playlist", "vibe.py", args)
+        # The pick is made once and saved; confirming sends that same pick
+        # rather than asking the AI again for a different one.
+        if self.run_tool("AI vibe playlist", "vibe.py", args):
+            return   # no pick this time — don't offer to send an older one
+        tui.clear()
+        print("\n".join(tui.header("AI VIBE PLAYLIST")))
+        if tui.confirm("Create this playlist on the iPod? (written into its database; "
+                       "picked tracks not on it yet are copied, nothing is deleted)"):
+            self.run_tool("AI vibe playlist — to the iPod", "vibe.py", ["--push-last"])
 
     def screen_genres(self):
         path = settings.path("genres_file", self.cfg)

@@ -3,8 +3,11 @@ mutagen==1.48.1
 pillow==12.3.0
 certifi==2026.7.22
 
-# iPod sync through iTunes (Windows only)
-comtypes==1.4.16; sys_platform == "win32"
+# iPod sync: podsync (vendor/podsync, a git submodule) — database signing of
+# iPod classic / nano 3G+; covers use pillow and mutagen from above.
+# Optional, see vendor/podsync/requirements.txt: pyusb (USB identity on macOS
+# and Linux), wasmtime (only for writing to an iPod nano 6G/7G).
+pycryptodome==3.23.0
 
 # AI vibe playlists: audio decoding (no ffmpeg needed) and the Claude API
 soundfile==0.14.0

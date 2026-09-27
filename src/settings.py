@@ -59,13 +59,9 @@ FIELDS = [
           "written into the tags by 'Genres'.", "Library"),
 
     # ---------------------------------------------------------------- iPod
-    Field("ipod_sync_mode", "device", "choice", "iPod sync mode",
-          "device = clean the iPod itself (works in manual mode); "
-          "library = iTunes library equals Active; "
-          "playlist = keep a separate playlist.",
-          "iPod", first_run=True, options=["device", "library", "playlist"]),
-    Field("ipod_playlist", "iPod Active", "text", "Playlist name",
-          "Used by the 'playlist' sync mode.", "iPod"),
+    Field("ipod_mount", "auto", "text", "iPod drive / mount point",
+          "'auto' finds it (a drive letter on Windows, /Volumes on macOS, "
+          "/media on Linux); or e.g. E:\\ or /media/me/IPOD.", "iPod"),
     Field("ipod_disk_subdir", "Music", "text", "Folder on the device",
           "Used when mirroring to a Rockbox / disk-mode iPod.", "iPod"),
     Field("duration_tolerance", 3, "int", "Duration tolerance, s",
