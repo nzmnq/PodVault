@@ -54,7 +54,7 @@ def _count(params):
 def _drive(params):
     v = _text(params, "drive")
     if not re.fullmatch(r"[A-Za-z]:\\?|/.+", v):
-        raise ValueError("A drive letter like E: is expected.")
+        raise ValueError("A drive like E: or a mount point like /Volumes/NAME is expected.")
     return v
 
 

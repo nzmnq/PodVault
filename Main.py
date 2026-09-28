@@ -442,7 +442,7 @@ class App:
                         self.screen_incoming()
                 return
             if k == "4":
-                drive = tui.prompt("iPod drive letter (e.g. E:): ").strip()
+                drive = tui.prompt("Device drive or mount point (E: or /Volumes/NAME): ").strip()
                 if not drive:
                     return
                 self.ask_apply(

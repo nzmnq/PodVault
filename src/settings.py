@@ -51,7 +51,7 @@ FIELDS = [
           "Library", first_run=True, options=["active", "archive"]),
     Field("source_dir", "", "dir", "Initial build source",
           "Only for the one-time build of the library from an old, unsorted "
-          "collection (build_clean.py). Leave empty if you don't need it.",
+          "collection (build_clean.py).",
           "Library", first_run=True, optional=True),
     Field("reports_dir", "reports", "dir", "Reports folder",
           "Where the tools write their reports.", "Library"),

@@ -876,7 +876,7 @@ class IpodPage(Page):
 
     def _disk(self):
         drive, ok = QInputDialog.getText(self, "Mirror to disk",
-                                         "Drive letter of the Rockbox / disk-mode device (e.g. E:):")
+                                         "The Rockbox / disk-mode device — a drive like E: or a mount point like /Volumes/NAME:")
         if ok and drive.strip():
             self.win.run_tool("disk", {"drive": drive.strip()})
 

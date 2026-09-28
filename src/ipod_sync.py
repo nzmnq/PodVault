@@ -646,8 +646,13 @@ def rescue_from_ipod(cfg, apply_changes, dest, ipod_path=None):
 
 def sync_disk(drive, apply_changes, subdir):
     """Mirror Active as plain folders, for Rockbox or disk mode."""
-    root = os.path.join(drive if drive.endswith(os.sep) else drive + os.sep, subdir)
-    if not os.path.isdir(os.path.splitdrive(root)[0] + os.sep):
+    # E: alone means the drive's current folder, not its root
+    if len(drive) == 2 and drive[1] == ":":
+        drive += os.sep
+    root = os.path.join(drive, subdir)
+    # the device itself must be there: a mistyped mount point must not
+    # become a new folder on the system disk
+    if not os.path.isdir(drive):
         sys.exit(f"Drive not available: {drive}")
 
     files = active_files()
@@ -738,7 +743,7 @@ def main():
     ap.add_argument("--rescue", action="store_true",
                     help="copy tracks that are on the iPod but not in the library "
                          "into <incoming>\\From iPod")
-    ap.add_argument("--disk", metavar="X:", help="mirror to a drive (Rockbox / disk mode)")
+    ap.add_argument("--disk", metavar="DRIVE", help="mirror to a drive: E: or /Volumes/NAME (Rockbox / disk mode)")
     ap.add_argument("--subdir", default=cfg["ipod_disk_subdir"],
                     help=f"folder on the device, with --disk (setting: {cfg['ipod_disk_subdir']})")
     args = ap.parse_args()
