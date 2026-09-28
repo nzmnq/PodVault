@@ -231,7 +231,7 @@ def main():
             print(f"  ... {len(in_arc) - 15} more")
 
     if missing:
-        print(f"\n--- MISSING (top 25) ---")
+        print("\n--- MISSING (top 25) ---")
         for r in missing[:25]:
             if r["liked_here"]:
                 n = f"{r['liked_here']} liked"
@@ -245,7 +245,7 @@ def main():
             print(f"  ... {len(missing) - 25} more")
 
     if partial:
-        print(f"\n--- PARTIAL (top 20) ---")
+        print("\n--- PARTIAL (top 20) ---")
         for r in partial[:20]:
             print(f"  missing {r['tracks_missing']:2d} of {r['tracks_total']:2d}"
                   f"  {r['artist']} — {r['album'] or '(album unknown)'}")

@@ -5,8 +5,10 @@ library) but the look is our own: flat light chrome, an indigo accent. Light by
 default; dark when the system is dark. Nothing visual is hard-coded elsewhere.
 """
 
+import functools
+
 from PyQt6.QtCore import QRect, Qt
-from PyQt6.QtGui import QColor, QFont, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
+from PyQt6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
 
 # Colours are "#RRGGBB" or "#AARRGGBB"; the ones only the stylesheet uses may be rgba().
 LIGHT = dict(
@@ -57,7 +59,7 @@ DARK = dict(
 )
 
 FONTS = dict(
-    mono='"Cascadia Mono", Consolas, Menlo, monospace',
+    mono=["Cascadia Mono", "Consolas", "Menlo", "DejaVu Sans Mono"],
     # symbol fonts first, so a symbol is drawn as a plain glyph, never as a colour emoji
     symbols=["Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols 2", "DejaVu Sans"],
 )
@@ -87,7 +89,7 @@ UI = dict(
     side_w=220, side_min=180, side_row=26, side_device_row=44, side_head=28, icon=16,
     side_capacity_h=4, side_eject=22, side_pad=6, side_gap=10,
     tile=150, tile_range=(100, 240), thumb=256, cover_large=640, detail_cover=220,
-    artists_w=230, ipod_picture=(112, 184), capacity_h=40, vibe_text_h=80,
+    artists_w=190, ipod_picture=(112, 184), capacity_h=40, vibe_text_h=80,
     close_button_w=30, slider_w=110,
     poll_ms=3000, sheet_refresh_ms=150, lcd_refresh_ms=250, eject_repoll_ms=1500,
     note_s=6, toast_ms=5000, toast_bad_ms=8000, toast_w=420, toast_gap=14, list_preview=12,
@@ -235,9 +237,16 @@ QToolTip {{ color: {text}; background: {sheet}; border: 1px solid {line}; }}
 """
 
 
+@functools.cache
+def _installed(kind):
+    # only the installed ones: a missing family makes Qt rebuild its font aliases
+    have = set(QFontDatabase.families())
+    return [f for f in FONTS[kind] if f in have] or FONTS[kind][-1:]
+
+
 def symbol_font(px):
     f = QFont()
-    f.setFamilies(FONTS["symbols"])
+    f.setFamilies(_installed("symbols"))
     f.setPixelSize(px)
     return f
 
@@ -276,4 +285,4 @@ def apply(app):
                       (QPalette.ColorRole.Link, "accent")):
         pal.setColor(role, QColor(C[key]))
     app.setPalette(pal)
-    app.setStyleSheet(QSS.format(**C, mono=FONTS["mono"]))
+    app.setStyleSheet(QSS.format(**C, mono=", ".join(f'"{f}"' for f in _installed("mono")) + ", monospace"))

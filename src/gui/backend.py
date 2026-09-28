@@ -159,8 +159,8 @@ ABOUT = {
     "genres_suggest": ("The AI fills in a genre and a style for albums that aren't in the genres file yet. "
                        'Your corrections are never overwritten.'),
 }
-for _name, _text in ABOUT.items():
-    TOOLS[_name]["about"] = _text
+for _name, _about in ABOUT.items():
+    TOOLS[_name]["about"] = _about
 
 def tool_steps(tool, params, applying):
     """[[script, args...], ...] for one run. Raises ValueError on bad params."""

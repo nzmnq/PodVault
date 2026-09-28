@@ -1,6 +1,7 @@
 # PodVault — Music Utility
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+[![CI](https://github.com/nzmnq/PodVault/actions/workflows/ci.yml/badge.svg)](https://github.com/nzmnq/PodVault/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![PyQt6](https://img.shields.io/badge/GUI-PyQt6-41CD52?logo=qt&logoColor=white)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![mutagen](https://img.shields.io/badge/tags-mutagen-8A2BE2)
@@ -51,7 +52,7 @@ a test setup).
 
 ## Installation
 
-Python 3.10+.
+Python 3.12+ (the pinned NumPy and SciPy need it).
 
 ```bash
 git clone --recurse-submodules https://github.com/nzmnq/PodVault.git
@@ -182,8 +183,10 @@ src/
   fetch_cover.py        iTunes covers for the tracklist
   sur_sound.py          spatial sound
 data/
-  tracklist.txt         the tracklist
+  tracklist.example.txt a sample tracklist (your own data/tracklist.txt is git-ignored)
 docs/screenshots/       README pictures
+tests/                  smoke tests: python -m unittest discover tests
+.github/workflows/      CI: lint and tests on Windows, macOS, Linux
 vendor/
   podsync/              the iPod database engine (git submodule)
 ```
@@ -294,7 +297,8 @@ library like any other new track. Already saved tracks aren't copied again.
 ## Tracklist format
 
 Used by the downloader and the iTunes cover fetcher. One track per line in
-`data/tracklist.txt` (the path is a setting):
+`data/tracklist.txt` (the path is a setting; the file is git-ignored). Start
+from the sample: copy `data/tracklist.example.txt` to `data/tracklist.txt`.
 
 ```text
 Artist | Title | Album | Composer | Year | Genre | Track Number | Disc Number | Cover Art URL

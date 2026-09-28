@@ -124,7 +124,7 @@ class App:
             return True
         tui.clear()
         print("\n".join(tui.header("NO LIBRARY FOLDER")))
-        print(f"\n  The library folder isn't set or doesn't exist:")
+        print("\n  The library folder isn't set or doesn't exist:")
         print(f"  {FG['grey']}{self.cfg.get('library_dir') or '(empty)'}{RESET}")
         print("\n  Open Settings and set it.")
         tui.pause()

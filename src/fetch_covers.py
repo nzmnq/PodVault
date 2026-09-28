@@ -19,7 +19,6 @@ import argparse
 import io
 import json
 import os
-import re
 import ssl
 import sys
 import time

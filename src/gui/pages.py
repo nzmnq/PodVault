@@ -4,21 +4,27 @@ import os
 
 import settings
 from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QKeySequence, QShortcut
-from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QCompleter,
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QButtonGroup, QCheckBox, QComboBox, QCompleter,
                              QDialog, QListWidget, QListWidgetItem, QPushButton,
                              QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
                              QInputDialog, QLabel, QLineEdit, QListView, QPlainTextEdit,
                              QRadioButton, QScrollArea, QSlider, QSpinBox, QSplitter,
-                             QStackedWidget, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
+                             QStackedWidget, QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem,
                              QTabWidget,
                              QVBoxLayout, QWidget)
 
 from gui import backend
 from gui.theme import C, COLUMNS, GLYPHS, UI
-from gui.widgets import (AlbumDelegate, AlbumModel, CapacityBar, Card, IpodPicture, ask,
+from gui.widgets import (AlbumDelegate, AlbumModel, CapacityBar, Card, ElidedLabel, IpodPicture, ask,
                          button, covers, fmt_gb, fmt_time, fmt_total, inform, muted, placeholder,
                          plural, run_async)
+
+
+# how the stored values of choice settings read in the window
+CHOICE_LABELS = {"active": "Active", "archive": "Archive", "auto": "Auto",
+                 "cli": "Claude Code (subscription)", "gemini": "Gemini (free key)",
+                 "api": "Anthropic API (paid)"}
 
 
 class Page(QWidget):
@@ -39,7 +45,8 @@ class Page(QWidget):
         self.head.setSpacing(10)
         self.title = QLabel(title)
         self.title.setObjectName("viewTitle")
-        self.sub = muted("", wrap=False)
+        self.sub = ElidedLabel()
+        self.sub.setProperty("muted", True)
         self.head.addWidget(self.title)
         self.head.addWidget(self.sub)
         self.head.addStretch(1)
@@ -154,6 +161,28 @@ class Grid(QListView):
     key_mark = pyqtSignal(str)
     key_open = pyqtSignal()
     key_escape = pyqtSignal()
+
+    def justify(self):
+        """Spread the columns over the whole width: no empty strip on the right."""
+        m, d = self.model(), self.itemDelegate()
+        if m is None or d is None or not m.rowCount():
+            return
+        hint = d.sizeHint(QStyleOptionViewItem(), m.index(0, 0))
+        # the view keeps a spacing-wide margin on both sides
+        width = self.viewport().width() - 2 * self.spacing() - 1
+        cols = max(1, width // (hint.width() + self.spacing()))
+        size = QSize(width // cols, hint.height() + self.spacing())
+        if size != self.gridSize():
+            self.setGridSize(size)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.justify()
+
+    def updateGeometries(self):
+        # also runs when the scroll bar comes or goes and the viewport changes width
+        super().updateGeometries()
+        QTimer.singleShot(0, self.justify)
 
     def keyPressEvent(self, e):
         k, t = e.key(), e.text().lower()
@@ -975,6 +1004,8 @@ class VibePage(Page):
         chips.addStretch(1)
         card.lay.addLayout(chips)
         self.count = QSpinBox()
+        # the styled frame leaves the native up/down arrows as specks: type, wheel or ↑↓
+        self.count.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.count.setRange(5, 200)
         go = button("Make the playlist", primary=True)
         go.clicked.connect(self._go)
@@ -1325,7 +1356,7 @@ class SettingsPage(Page):
         values = values or settings.defaults()
         self.title.setText("Welcome to Music Utility" if self.first else "Settings")
         self.sub.setText("a few basic settings — everything can be changed later" if self.first
-                         else settings.FILE)
+                         else settings.FILE.replace(os.path.expanduser("~"), "~", 1))
         self.widgets.clear()
         self.errors.clear()
         section = None
@@ -1348,18 +1379,19 @@ class SettingsPage(Page):
             v = values.get(f.key)
             if f.kind == "choice":
                 w = QComboBox()
-                w.addItems(f.options)
-                if v in f.options:
-                    w.setCurrentText(v)
+                for opt in f.options:
+                    w.addItem(CHOICE_LABELS.get(opt, opt), opt)
+                w.setCurrentIndex(max(0, w.findData(v)))
             elif f.kind == "int":
                 w = QSpinBox()
+                w.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
                 w.setRange(1, 2 ** 31 - 1)       # settings.validate: any whole number > 0
                 try:
                     w.setValue(int(v))
                 except (TypeError, ValueError):
                     w.setValue(int(f.default))
-            elif f.kind in ("dir", "file"):
-                w = PathField(f.kind, "" if v is None else v)
+            elif f.kind in ("dir", "file") or f.key == "ipod_mount":
+                w = PathField("dir" if f.key == "ipod_mount" else f.kind, "" if v is None else v)
             else:
                 w = QLineEdit("" if v is None else str(v))
             grid.addWidget(label, 0, 0, Qt.AlignmentFlag.AlignTop)
@@ -1393,7 +1425,7 @@ class SettingsPage(Page):
         out = {}
         for key, w in self.widgets.items():
             if isinstance(w, QComboBox):
-                out[key] = w.currentText()
+                out[key] = w.currentData()
             elif isinstance(w, QSpinBox):
                 out[key] = str(w.value())
             elif isinstance(w, PathField):

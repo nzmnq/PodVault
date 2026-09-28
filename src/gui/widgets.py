@@ -119,6 +119,38 @@ def button(text, primary=False, danger=False, tip=None):
     return b
 
 
+class ElidedLabel(QLabel):
+    """One line that fits: a long text (a path) is cut in the middle, whole in the tooltip."""
+
+    def __init__(self, text=""):
+        super().__init__()
+        self._full = ""
+        self.setText(text)
+
+    def setText(self, text):
+        self._full = str(text)
+        self._fit()
+        self.updateGeometry()
+
+    def text(self):
+        return self._full
+
+    def sizeHint(self):
+        return QSize(self.fontMetrics().horizontalAdvance(self._full) + 2, super().sizeHint().height())
+
+    def minimumSizeHint(self):
+        return QSize(0, super().minimumSizeHint().height())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
+
+    def _fit(self):
+        shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideMiddle, self.width())
+        super().setText(shown)
+        self.setToolTip(self._full if shown != self._full else "")
+
+
 def muted(text="", wrap=True):
     lab = QLabel(text)
     lab.setProperty("muted", True)
