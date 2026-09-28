@@ -7,9 +7,9 @@ and playlists, ArtworkDB with the small cover copies the screen really draws
 is involved anywhere. This module is the thin layer the rest of the project
 uses: finding the iPod, reading it, the covers check, backups and eject.
 
-    python src\\ipod.py             # what the iPod has: model, tracks, covers
-    python src\\ipod.py E:          # the same for a given drive
-    python src\\ipod.py --eject     # flush and eject it
+    python src/ipod.py             # what the iPod has: model, tracks, covers
+    python src/ipod.py E:          # the same for a given drive
+    python src/ipod.py --eject     # flush and eject it
 """
 
 import argparse

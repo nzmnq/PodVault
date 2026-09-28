@@ -106,7 +106,7 @@ def main():
     LIBRARY = settings.library_paths(cfg)[0]
 
     if not os.path.exists(LIKES):
-        sys.exit(f"No {LIKES}\nFirst run: python src\\import_likes.py <file>")
+        sys.exit(f"No {LIKES}\nFirst run: python src/import_likes.py <file>")
 
     with open(LIKES, encoding="utf-8") as f:
         data = json.load(f)

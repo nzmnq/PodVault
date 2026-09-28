@@ -14,9 +14,9 @@ first-run wizard has created the settings.
 
 Used both by the TUI and from the command line:
 
-    python src\\library.py                 # show contents
-    python src\\library.py --export f.txt  # export for marking up
-    python src\\library.py --import f.txt  # apply the markup
+    python src/library.py                 # show contents
+    python src/library.py --export f.txt  # export for marking up
+    python src/library.py --import f.txt  # apply the markup
 """
 
 import argparse

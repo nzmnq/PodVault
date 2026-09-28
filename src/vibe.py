@@ -22,10 +22,10 @@ playlist with that name exists, the new one gets a number.
 The model is reached through ai.py: Claude Code on a subscription, free
 Gemini, or the paid Anthropic API (setting 'AI through', or --backend).
 
-  python src\\vibe.py analyze                        # analyse new tracks
-  python src\\vibe.py "rainy night, slow, a bit sad"  # show the pick
-  python src\\vibe.py "gym, loud and fast" --count 40 --apply
-  python src\\vibe.py --push-last                    # send the last pick
+  python src/vibe.py analyze                        # analyse new tracks
+  python src/vibe.py "rainy night, slow, a bit sad"  # show the pick
+  python src/vibe.py "gym, loud and fast" --count 40 --apply
+  python src/vibe.py --push-last                    # send the last pick
 """
 
 import argparse

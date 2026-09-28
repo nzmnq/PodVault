@@ -14,11 +14,11 @@ tracks are already in the library. It replaces the old scan_incoming.py.
 Where new tracks go (Active or Archive) and which folder they're picked up
 from come from the settings; both can be overridden on the command line.
 
-  python src\\add_incoming.py                      # show the plan
-  python src\\add_incoming.py --apply              # add
-  python src\\add_incoming.py --apply --to archive # set aside in the archive
-  python src\\add_incoming.py --apply --replace    # and overwrite dupes
-  python src\\add_incoming.py "D:\\other\\folder"   # a different source
+  python src/add_incoming.py                      # show the plan
+  python src/add_incoming.py --apply              # add
+  python src/add_incoming.py --apply --to archive # set aside in the archive
+  python src/add_incoming.py --apply --replace    # and overwrite dupes
+  python src/add_incoming.py "D:\\other\\folder"   # a different source
 """
 
 import argparse

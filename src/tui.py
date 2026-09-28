@@ -3,8 +3,9 @@ A small toolkit for the text interface.
 
 No third-party libraries: Windows has no curses, and pulling in a package
 just for menus isn't worth it — the portable Python build already let us
-down once by shipping without root certificates. Only msvcrt and ANSI
-codes, which Windows 10 understands if asked to.
+down once by shipping without root certificates. msvcrt on Windows,
+termios on macOS and Linux, and ANSI codes everywhere (Windows 10
+understands them if asked to).
 """
 
 import os
@@ -12,8 +13,11 @@ import sys
 
 try:
     import msvcrt
-except ImportError:  # in case this ever runs outside Windows
+except ImportError:  # macOS / Linux
     msvcrt = None
+    import select
+    import termios
+    import tty
 
 ESC = "\x1b"
 RESET = f"{ESC}[0m"
@@ -35,6 +39,13 @@ ENTER, ESCAPE, BACKSPACE, TAB = "ENTER", "ESCAPE", "BACKSPACE", "TAB"
 _SPECIAL = {
     "H": UP, "P": DOWN, "K": LEFT, "M": RIGHT,
     "G": HOME, "O": END, "I": PGUP, "Q": PGDN, "S": DEL,
+}
+
+# the same keys as ANSI escape sequences (after ESC), macOS / Linux terminals
+_ANSI = {
+    "[A": UP, "[B": DOWN, "[D": LEFT, "[C": RIGHT,
+    "[H": HOME, "[F": END, "OH": HOME, "OF": END,
+    "[1~": HOME, "[4~": END, "[5~": PGUP, "[6~": PGDN, "[3~": DEL,
 }
 
 
@@ -82,18 +93,46 @@ def flush():
     sys.stdout.flush()
 
 
+def _read_posix():
+    """One key from a raw terminal.
+
+    Bytes, not sys.stdin: its buffer would swallow the rest of an escape
+    sequence, and an arrow key would read as a bare Esc. A key's bytes
+    (an escape sequence, a Cyrillic letter) arrive in one read.
+    """
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        data = os.read(fd, 32)
+        # a slow link can split an escape sequence: give the rest a moment
+        if data == b"\x1b" and select.select([fd], [], [], 0.05)[0]:
+            data += os.read(fd, 32)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    ch = data.decode("utf-8", errors="replace")
+    if len(ch) > 1 and ch[0] == "\x1b":
+        return _ANSI.get(ch[1:], "")
+    return ch[:1]
+
+
 def read_key():
     """Wait for a key. Arrows and other special keys come back as names."""
     if msvcrt is None:
-        return sys.stdin.read(1)
-    ch = msvcrt.getwch()
-    if ch in ("\x00", "\xe0"):          # special-key prefix
-        return _SPECIAL.get(msvcrt.getwch(), "")
-    if ch == "\r":
+        ch = _read_posix() if sys.stdin.isatty() else sys.stdin.read(1)
+        if not ch:                         # stdin closed: nobody left to answer
+            sys.exit(0)
+        if ch in _ANSI.values():
+            return ch
+    else:
+        ch = msvcrt.getwch()
+        if ch in ("\x00", "\xe0"):          # special-key prefix
+            return _SPECIAL.get(msvcrt.getwch(), "")
+    if ch in ("\r", "\n"):
         return ENTER
     if ch == "\x1b":
         return ESCAPE
-    if ch == "\x08":
+    if ch in ("\x08", "\x7f"):
         return BACKSPACE
     if ch == "\t":
         return TAB
@@ -159,6 +198,8 @@ def drop_typeahead():
     possibly a confirmation — on its own.
     """
     if msvcrt is None:
+        if sys.stdin.isatty():
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
         return
     while msvcrt.kbhit():
         msvcrt.getwch()

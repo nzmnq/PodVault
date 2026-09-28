@@ -489,10 +489,6 @@ def settings_save(raw, create_library=False):
 
 
 def open_in_explorer(path):
-    import subprocess
     if not path or not os.path.exists(path):
         raise ValueError(f"Not there yet: {path}")
-    if sys.platform == "win32":
-        os.startfile(path)
-    else:
-        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", path])
+    settings.open_path(path)

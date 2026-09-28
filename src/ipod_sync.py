@@ -26,12 +26,12 @@ Safety:
   - it refuses to run while iTunes is open: iTunes would write its own copy
     of the database over ours when the iPod is ejected.
 
-  python src\\ipod_sync.py                          # what would change
-  python src\\ipod_sync.py --apply                  # do it
-  python src\\ipod_sync.py --playlist X.m3u8 --apply   # also add a playlist
-  python src\\ipod_sync.py --restore                # put the last backup back
-  python src\\ipod_sync.py --rescue --apply         # save tracks only on the iPod
-  python src\\ipod_sync.py --disk E: --apply        # mirror for Rockbox / disk mode
+  python src/ipod_sync.py                          # what would change
+  python src/ipod_sync.py --apply                  # do it
+  python src/ipod_sync.py --playlist X.m3u8 --apply   # also add a playlist
+  python src/ipod_sync.py --restore                # put the last backup back
+  python src/ipod_sync.py --rescue --apply         # save tracks only on the iPod
+  python src/ipod_sync.py --disk E: --apply        # mirror for Rockbox / disk mode
 """
 
 import argparse

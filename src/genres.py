@@ -15,9 +15,9 @@ album and is the source of truth:
 
   Artist folder/Album folder | Genre | Style
 
-  python src\\genres.py suggest          # AI fills in albums not in the file yet
-  python src\\genres.py apply            # show what would change in the tags
-  python src\\genres.py apply --apply    # write the tags
+  python src/genres.py suggest          # AI fills in albums not in the file yet
+  python src/genres.py apply            # show what would change in the tags
+  python src/genres.py apply --apply    # write the tags
 
 'suggest' never touches lines already in the file, so your corrections stay.
 """

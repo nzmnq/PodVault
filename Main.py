@@ -1,7 +1,7 @@
 """
 Music Utility — the main program.
 
-Run:  run.bat      (or: python Main.py)
+Run:  run.bat / ./run.sh      (or: python Main.py)
 
 One text interface over all the tools: the library (Active/Archive
 markup, adding tracks, iPod sync, cover art, tag checks) and the audio
@@ -520,7 +520,7 @@ class App:
                 self.run_tool("Genres — suggest", "genres.py", ["suggest"])
             elif k == "2":
                 if os.path.isfile(path):
-                    os.startfile(path)
+                    settings.open_path(path)
                 else:
                     print(f"\n  {FG['red']}No file yet — run Suggest first.{RESET}")
                     tui.pause()
@@ -566,7 +566,7 @@ class App:
         print(f"\n  List written: {BOLD}{path}{RESET}")
         print(f"\n  {FG['grey']}Letters are filled in from the current state.")
         print("  Edit it and come back — to apply:")
-        print(f"  python src\\library.py --import \"{path}\" --apply{RESET}")
+        print(f"  python src/library.py --import \"{path}\" --apply{RESET}")
         tui.pause()
 
     def open_window(self):

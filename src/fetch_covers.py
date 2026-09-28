@@ -11,8 +11,8 @@ doubtful. A wrong cover is worse than none, so the default is a dry run.
 
 The library folder and the cover size come from the settings.
 
-  python src\\fetch_covers.py            # show what was found
-  python src\\fetch_covers.py --apply    # embed what matched
+  python src/fetch_covers.py            # show what was found
+  python src/fetch_covers.py --apply    # embed what matched
 """
 
 import argparse

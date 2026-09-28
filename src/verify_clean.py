@@ -14,8 +14,8 @@ it's moved into TYER.
 If the initial build source is set in the settings, the track count is
 also compared against it.
 
-  python src\\verify_clean.py          # check
-  python src\\verify_clean.py --fix    # check and remove v2.4 frames
+  python src/verify_clean.py          # check
+  python src/verify_clean.py --fix    # check and remove v2.4 frames
 """
 
 import argparse

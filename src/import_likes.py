@@ -26,7 +26,7 @@ compares track by track — and says so in its report. When a source has no
 album (Apple Music pages), the album stays empty and the track is looked
 for across all of the artist's albums.
 
-  python src\\import_likes.py <file or folder>
+  python src/import_likes.py <file or folder>
 """
 
 import json
@@ -252,7 +252,7 @@ def main():
     print(f"\nDone: {out}")
     print(f"  albums       : {len(albums)}")
     print(f"  liked tracks : {sum(len(a['liked']) for a in albums)}")
-    print("\nNext: python src\\find_missing.py")
+    print("\nNext: python src/find_missing.py")
 
 
 if __name__ == "__main__":

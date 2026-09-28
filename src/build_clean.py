@@ -27,9 +27,9 @@ has already been split into Active/Archive: a full rebuild would ignore the
 archive markup and duplicate the library. Use add_incoming.py to add tracks;
 to rebuild from scratch, pass --dest with an empty folder.
 
-  python src\\build_clean.py                    # show the plan
-  python src\\build_clean.py --apply            # build into the library folder
-  python src\\build_clean.py --apply --dest X   # build into another folder
+  python src/build_clean.py                    # show the plan
+  python src/build_clean.py --apply            # build into the library folder
+  python src/build_clean.py --apply --dest X   # build into another folder
 """
 
 import argparse

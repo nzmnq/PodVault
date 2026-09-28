@@ -168,7 +168,7 @@ def _ask_api(cfg, system, user, schema):
     try:
         import anthropic
     except ImportError:
-        sys.exit("The anthropic package is missing: python\\python.exe -m pip install anthropic")
+        sys.exit(f"The anthropic package is missing: {sys.executable} -m pip install anthropic")
 
     model = str(cfg.get("anthropic_model") or "claude-opus-5")
     try:

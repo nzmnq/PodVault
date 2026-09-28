@@ -153,7 +153,7 @@ def require():
     if values is None:
         sys.exit(
             "No settings yet.\n"
-            "Run Main.py (or run.bat) once — it asks for the basic settings\n"
+            "Run Main.py (run.bat / run.sh) once — it asks for the basic settings\n"
             f"and saves them to {FILE}."
         )
     return values
@@ -208,10 +208,16 @@ def claude_cli(values=None):
     if found:
         return found
     # the Claude desktop app keeps its own copy, one folder per version
-    bundled = os.path.join(os.environ.get("APPDATA", ""), "Claude", "claude-code")
+    if sys.platform == "win32":
+        bundled, exe = os.path.join(os.environ.get("APPDATA", ""), "Claude", "claude-code"), "claude.exe"
+    elif sys.platform == "darwin":
+        bundled = os.path.expanduser("~/Library/Application Support/Claude/claude-code")
+        exe = os.path.join("claude.app", "Contents", "MacOS", "claude")
+    else:
+        bundled, exe = os.path.expanduser("~/.config/Claude/claude-code"), "claude"
     try:
         versions = [d for d in os.listdir(bundled)
-                    if os.path.isfile(os.path.join(bundled, d, "claude.exe"))]
+                    if os.path.isfile(os.path.join(bundled, d, exe))]
     except OSError:
         versions = []
 
@@ -219,8 +225,17 @@ def claude_cli(values=None):
         return [int(x) if x.isdigit() else 0 for x in d.split(".")]
 
     if versions:
-        return os.path.join(bundled, max(versions, key=version_key), "claude.exe")
+        return os.path.join(bundled, max(versions, key=version_key), exe)
     return None
+
+
+def open_path(path):
+    """Open a file or folder with the system's default app."""
+    if sys.platform == "win32":
+        os.startfile(path)
+    else:
+        import subprocess
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", path])
 
 
 def validate(key, raw):
