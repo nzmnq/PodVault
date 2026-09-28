@@ -420,5 +420,5 @@ python srcibe.py --push-last
 
 ## License
 
-GPL-3.0-only, see `LICENSE`. podsync (`vendor/podsync`) is under
-GPL-2.0-or-later, which allows it to be used in a GPL-3.0 program.
+GPL-3.0-only, see `LICENSE`. podsync (`vendor/podsync`) is under the same
+license.
