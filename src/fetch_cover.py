@@ -6,6 +6,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import settings
+from i18n import _
 
 
 def get_cover(artist, title):
@@ -29,12 +30,12 @@ def get_cover(artist, title):
 
 def cover_processing():
     tracklist_file = settings.path("tracklist_file")
-    print("Starting cover finding by iTunes API...\n")
+    print(_("Looking for covers through the iTunes Search API...\n"))
 
     if not os.path.exists(tracklist_file):
         os.makedirs(os.path.dirname(tracklist_file), exist_ok=True)
         with open(tracklist_file, 'w', encoding='utf-8') as test_track:
-            test_track.write("#Here is exapmle:\n Rick Astley | Never Gonna Give You Up | Whenever You Need Somebody | Rick Astley | 1987 | Pop/Dance-Pop | 1 | 1 |  | https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+            test_track.write("#Here is an example:\n Rick Astley | Never Gonna Give You Up | Whenever You Need Somebody | Rick Astley | 1987 | Pop/Dance-Pop | 1 | 1 |  | https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
     with open(tracklist_file, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -53,7 +54,7 @@ def cover_processing():
         if len(parts) >= 2:
             artist = parts[0]
             title = parts[1]
-            print(f"Looking for: {artist} - {title}...", end=" ")
+            print(_("Looking for: {artist} - {title}...").format(artist=artist, title=title), end=" ")
 
             cover_url = get_cover(artist, title)
             while len(parts) < 9:
@@ -61,9 +62,9 @@ def cover_processing():
 
             if cover_url:
                 parts[8] = cover_url
-                print("✓ Found!")
+                print("✓ " + _("Found!"))
             else:
-                print("✕ Not found")
+                print("✕ " + _("Not found"))
 
             new_line = " | ".join(parts)
             if not new_line.endswith("|"):
@@ -78,7 +79,7 @@ def cover_processing():
     with open(tracklist_file, "w", encoding="utf-8") as out:
         out.writelines(processed_lines)
 
-    print(f"\nAll task done, open: {tracklist_file}")
+    print(_("\nAll done, open: {file}").format(file=tracklist_file))
 
 
 if __name__ == "__main__":

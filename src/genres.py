@@ -33,6 +33,7 @@ from mutagen.id3 import ID3, TCON, TIT1
 
 import ai
 import settings
+from i18n import _
 from musiclib import drop_v24_frames
 
 GENRES = ["Rock", "Alternative", "Pop", "Hip-Hop", "Electronic", "Metal", "Punk",
@@ -51,7 +52,7 @@ HEADER = f"""\
 
 def albums(cfg):
     """{key: info} for every album folder in Active and Archive."""
-    _, active, archive = settings.library_paths(cfg)
+    _skip, active, archive = settings.library_paths(cfg)
     out = {}
     for part, root in (("Active", active), ("Archive", archive)):
         if not os.path.isdir(root):
@@ -103,7 +104,7 @@ def read_file(path):
                 continue
             parts = [p.strip() for p in line.split("|")]
             if len(parts) < 2 or not parts[0] or not parts[1]:
-                print(f"  ! line {n} skipped (expected 'Artist/Album | Genre | Style'): {line}")
+                print(_("  ! line {n} skipped (expected 'Artist/Album | Genre | Style'): {line}").format(n=n, line=line))
                 continue
             out[parts[0]] = (parts[1], parts[2] if len(parts) > 2 else "")
     return out
@@ -148,9 +149,9 @@ def suggest(cfg, path, backend):
     known = read_file(path)
     todo = [k for k in lib if k not in known]
     if not todo:
-        print(f"  every album is already in {path}")
+        print(_("  every album is already in {file}").format(file=path))
         return
-    print(f"  {len(todo)} albums without a genre line; asking the AI...")
+    print(_("  {n} albums without a genre line; asking the AI...").format(n=len(todo)))
     lines = ["id | artist | album | year | current genre | some titles"]
     for i, k in enumerate(todo):
         d = describe(lib[k])
@@ -158,7 +159,7 @@ def suggest(cfg, path, backend):
                                 (i, d["artist"], d["album"], d["year"], d["genre"],
                                  "; ".join(d["titles"]))))
     backend = ai.pick_backend(cfg, backend)
-    print(f"  through {ai.backend_name(backend)} (usually under a minute)")
+    print(_("  through {ai} (usually under a minute)").format(ai=ai.backend_name(backend)))
     answer = ai.ask_json(cfg, SYSTEM, "\n".join(lines), SCHEMA, backend)
 
     got = {}
@@ -175,14 +176,14 @@ def suggest(cfg, path, backend):
             if k in got:
                 f.write(f"{k} | {got[k][0]} | {got[k][1]}\n")
     missing = [k for k in todo if k not in got]
-    print(f"\n  suggested {len(got)} albums -> {path}")
+    print(_("\n  suggested {n} albums -> {file}").format(n=len(got), file=path))
     for k in list(got)[:15]:
         print(f"    {k}  ->  {got[k][0]} / {got[k][1]}")
     if len(got) > 15:
-        print(f"    ... {len(got) - 15} more")
+        print("  " + _("  ... {n} more").format(n=len(got) - 15))
     if missing:
-        print(f"  !! no answer for {len(missing)} albums; run suggest again")
-    print("\nCheck the file, correct what's wrong, then apply.")
+        print(_("  !! no answer for {n} albums; run suggest again").format(n=len(missing)))
+    print(_("\nCheck the file, correct what's wrong, then apply."))
 
 
 # --------------------------------------------------------------- apply
@@ -192,7 +193,7 @@ def apply(cfg, path, write):
     lib = albums(cfg)
     wanted = read_file(path)
     if not wanted:
-        sys.exit(f"No genres yet in {path}. Run 'suggest' first.")
+        sys.exit(_("No genres yet in {file}. Run 'suggest' first.").format(file=path))
     changes = []   # (key, files to change, old genre, new genre, new style)
     for key, (genre, style) in sorted(wanted.items()):
         if key not in lib:
@@ -212,23 +213,27 @@ def apply(cfg, path, write):
     missing = [k for k in lib if k not in wanted]
 
     print("=" * 70)
-    print(f"GENRES  ({path})")
+    print(_("GENRES  ({file})").format(file=path))
     print("=" * 70)
-    print(f"  albums in the file        : {len(wanted)}")
-    print(f"  albums whose tags change  : {len(changes)}  ({sum(len(c[1]) for c in changes)} tracks)")
-    print(f"  albums not in the file    : {len(missing)}  (run 'suggest')")
+    rows = [(_("albums in the file"), len(wanted)),
+            (_("albums whose tags change"), _("{n}  ({tracks} tracks)").format(
+                n=len(changes), tracks=sum(len(c[1]) for c in changes))),
+            (_("albums not in the file"), _("{n}  (run 'suggest')").format(n=len(missing)))]
     if gone:
-        print(f"  lines for missing albums  : {len(gone)}  (moved or deleted; ignored)")
+        rows.append((_("lines for missing albums"), _("{n}  (moved or deleted; ignored)").format(n=len(gone))))
+    width = max(len(label) for label, _v in rows)
+    for label, value in rows:
+        print(f"  {label.ljust(width)} : {value}")
     for key, files, old, genre, style in changes[:40]:
         print(f"  {key}\n      {old}  ->  {genre} / {style}")
     if len(changes) > 40:
-        print(f"  ... {len(changes) - 40} more")
+        print(_("  ... {n} more").format(n=len(changes) - 40))
 
     if not write:
-        print("\nNothing written. Add --apply.")
+        print(_("\nNothing written. Add --apply."))
         return
     done = 0
-    for key, files, _, genre, style in changes:
+    for key, files, _skip, genre, style in changes:
         for p in files:
             tags = ID3(p)
             tags.delall("TCON")
@@ -239,16 +244,17 @@ def apply(cfg, path, write):
             drop_v24_frames(tags)
             tags.save(p, v2_version=3, v1=2)
             done += 1
-    print(f"\nTags written: {done} tracks in {len(changes)} albums.")
-    print("The iPod gets the new genres on the next sync.")
+    print(_("\nTags written: {tracks} tracks in {albums} albums.").format(tracks=done, albums=len(changes)))
+    print(_("The iPod gets the new genres on the next sync."))
 
 
 def main():
     cfg = settings.require()
-    ap = argparse.ArgumentParser(description="genres per album")
-    ap.add_argument("step", choices=("suggest", "apply"))
-    ap.add_argument("--apply", action="store_true", help="apply: actually write the tags")
-    ap.add_argument("--backend", choices=ai.BACKENDS, help="suggest: which AI to ask")
+    ap = argparse.ArgumentParser(description=_("genres per album"))
+    ap.add_argument("step", choices=("suggest", "apply"),
+                    help=_("suggest: the AI fills in the file; apply: write it into the tags"))
+    ap.add_argument("--apply", action="store_true", help=_("apply: actually write the tags"))
+    ap.add_argument("--backend", choices=ai.BACKENDS, help=_("suggest: which AI to ask"))
     args = ap.parse_args()
     path = settings.path("genres_file", cfg)
     if args.step == "suggest":

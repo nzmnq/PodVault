@@ -40,6 +40,7 @@ from mutagen.id3 import ID3
 
 import ai
 import settings
+from i18n import _
 
 EXCERPT_SECONDS = 45
 FEATURES_VERSION = 1   # bump when the analysis changes, to redo the cache
@@ -144,7 +145,7 @@ def audio_stamp(path):
 
 def active_tracks(active):
     out = []
-    for root, _, files in os.walk(active):
+    for root, _skip, files in os.walk(active):
         for fn in files:
             if fn.lower().endswith(".mp3"):
                 out.append(os.path.join(root, fn))
@@ -196,14 +197,14 @@ def update_features(cfg, active):
         else:
             todo.append((p, stamp))
     if todo:
-        print(f"  analysing {len(todo)} tracks (once; cached afterwards)...")
+        print(_("  analysing {n} tracks (once; cached afterwards)...").format(n=len(todo)))
     for i, (p, stamp) in enumerate(todo, 1):
         fresh[p] = {"stamp": stamp, "tags": track_tags(p), "audio": analyse(p)}
         if i % 25 == 0:
-            print(f"\r  analysed {i}/{len(todo)}", end="", flush=True)
+            print("\r" + _("  analysed {n}/{total}").format(n=i, total=len(todo)), end="", flush=True)
             save_cache(cfg, {**cache, **fresh})
     if todo:
-        print(f"\r  analysed {len(todo)}/{len(todo)}      ")
+        print("\r" + _("  analysed {n}/{total}").format(n=len(todo), total=len(todo)) + "      ")
     save_cache(cfg, fresh)   # also drops tracks no longer in Active
     return fresh
 
@@ -310,9 +311,9 @@ def read_last(cfg):
         with open(os.path.join(playlists_dir(cfg), "last.json"), encoding="utf-8") as f:
             m3u = json.load(f)["m3u"]
     except (OSError, ValueError, KeyError):
-        sys.exit("No saved pick yet — describe a vibe first.")
+        sys.exit(_("No saved pick yet — describe a vibe first."))
     if not os.path.isfile(m3u):
-        sys.exit(f"The last pick's file is gone: {m3u}")
+        sys.exit(_("The last pick's file is gone: {file}").format(file=m3u))
     return m3u
 
 
@@ -329,37 +330,39 @@ def push_to_ipod(cfg, m3u):
 
 def main():
     cfg = settings.require()
-    _, active, _ = settings.library_paths(cfg)
+    _skip1, active, _skip2 = settings.library_paths(cfg)
 
-    ap = argparse.ArgumentParser(description="AI vibe playlists")
-    ap.add_argument("vibe", nargs="?", default="", help="the mood in your own words, or 'analyze'")
+    ap = argparse.ArgumentParser(description=_("AI vibe playlists"))
+    ap.add_argument("vibe", nargs="?", default="", help=_("the mood in your own words, or 'analyze'"))
     count = int(cfg.get("vibe_count") or 25)
     ap.add_argument("--count", type=int, default=count,
-                    help=f"about how many tracks (setting: {count})")
-    ap.add_argument("--apply", action="store_true", help="also create the playlist on the iPod")
+                    help=_("about how many tracks (setting: {value})").format(value=count))
+    ap.add_argument("--apply", action="store_true", help=_("also create the playlist on the iPod"))
     ap.add_argument("--backend", choices=ai.BACKENDS,
-                    help="cli = Claude Code on a subscription, gemini = Google Gemini "
-                         "(free key), api = Anthropic API key "
-                         f"(setting: {cfg.get('vibe_backend', 'auto')})")
+                    help=_("cli = Claude Code on a subscription, gemini = Google Gemini "
+                           "(free key), api = Anthropic API key (setting: {value})").format(
+                        value=cfg.get('vibe_backend', 'auto')))
     ap.add_argument("--push-last", action="store_true",
-                    help="put the last pick on the iPod, without asking Claude again")
+                    help=_("put the last pick on the iPod, without asking the AI again"))
     args = ap.parse_args()
 
     if args.push_last:
         return push_to_ipod(cfg, read_last(cfg))
     if not args.vibe.strip():
-        ap.error("describe the vibe, e.g. \"rainy night, slow\"")
+        ap.error(_("describe the vibe, e.g. \"rainy night, slow\""))
     if not os.path.isdir(active):
-        sys.exit(f"Active folder not found: {active}")
+        sys.exit(_("Active folder not found: {folder}").format(folder=active))
     entries = update_features(cfg, active)
     no_audio = sum(1 for e in entries.values() if not e["audio"])
-    print(f"  {len(entries)} tracks in Active" + (f", {no_audio} couldn't be analysed" if no_audio else ""))
+    print(_("  {n} tracks in Active").format(n=len(entries))
+          + (_(", {n} couldn't be analysed").format(n=no_audio) if no_audio else ""))
     if args.vibe.strip().lower() == "analyze":
         return
 
     text, paths = catalogue(entries)
     backend = ai.pick_backend(cfg, args.backend)
-    print(f"  asking {ai.backend_name(backend)} for \"{args.vibe}\"... (usually under a minute)")
+    print(_("  asking {ai} for \"{vibe}\"... (usually under a minute)").format(
+        ai=ai.backend_name(backend), vibe=args.vibe))
     answer = ai.ask_json(cfg, SYSTEM + text, f"Vibe: {args.vibe}\n\nAbout {args.count} tracks.",
                          SCHEMA, backend)
     seen = set()
@@ -369,22 +372,22 @@ def main():
             seen.add(i)
             picked.append(paths[i])
     if not picked:
-        sys.exit("Claude found nothing that fits. Try a broader description.")
+        sys.exit(_("The AI found nothing that fits. Try a broader description."))
 
     name = answer["name"].strip()[:30] or "Vibe"
     print()
     print("=" * 70)
-    print(f"{name}   ({len(picked)} tracks)")
+    print(f"{name}   " + _("({n} tracks)").format(n=len(picked)))
     print("=" * 70)
     print(f"  {answer['description']}\n")
     for n, p in enumerate(picked, 1):
         t = entries[p]["tags"]
         print(f"  {n:2d}. {t.get('artist')} — {t.get('title')}")
     m3u = write_m3u(cfg, name, picked)
-    print(f"\n  saved: {m3u}")
+    print(_("\n  saved: {file}").format(file=m3u))
 
     if not args.apply:
-        print("\n--push-last creates it on the iPod.")
+        print(_("\n--push-last creates it on the iPod."))
         return
     push_to_ipod(cfg, m3u)
 

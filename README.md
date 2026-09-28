@@ -50,6 +50,20 @@ git-ignored: it holds personal paths and must not end up in the repository.
 `MUSIC_UTILITY_SETTINGS` can point at another settings file (a second library,
 a test setup).
 
+The interface is in English. A translation is one JSON file,
+`locale/<lang>.json`: the English text on the left, the translation on the
+right, empty = not translated yet. [`locale/template.json`](locale/template.json)
+lists every string the interface has. Pick the language with the
+**Interface language** setting (`en` by default, `auto` follows the system).
+
+```bash
+python src/i18n.py update uk
+```
+
+rescans the code, refreshes the template and starts (or tops up)
+`locale/uk.json`; existing translations are kept. Details are at the top of
+[`src/i18n.py`](src/i18n.py).
+
 ## Installation
 
 Python 3.12+ (the pinned NumPy and SciPy need it).
@@ -227,8 +241,8 @@ What's written:
   such as `TDRC` are removed, the year goes into `TYER`
 - one-track folders become a `Singles` album per artist
 
-Compilations get the Album Artist `Разные исполнители` ("Various Artists"). It's
-a tag value already written into files, so it isn't translated.
+Compilations get the Album Artist from the **Compilation artist** setting
+(`Various Artists` by default; any language works).
 
 ## Artist separators
 

@@ -30,6 +30,7 @@ from mutagen.id3 import ID3
 from mutagen.mp3 import MP3
 
 import settings
+from i18n import _
 from musiclib import V24_ONLY, drop_v24_frames
 
 
@@ -40,15 +41,15 @@ def strip_v24(path, tags):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--fix", action="store_true", help="remove v2.4 frames from v2.3 tags")
+    ap = argparse.ArgumentParser(description=_("check the library's tags"))
+    ap.add_argument("--fix", action="store_true", help=_("remove v2.4 frames from v2.3 tags"))
     args = ap.parse_args()
 
     cfg = settings.require()
     dest = settings.library_paths(cfg)[0]
     source = settings.path("source_dir", cfg)
     if not os.path.isdir(dest):
-        sys.exit(f"Library not found: {dest}")
+        sys.exit(_("Library not found: {folder}").format(folder=dest))
 
     total = 0
     no_album_artist = []
@@ -63,7 +64,7 @@ def main():
     albums = set()
     by_artist = defaultdict(set)
 
-    for root, _, files in os.walk(dest):
+    for root, _skip, files in os.walk(dest):
         for fn in files:
             if not fn.lower().endswith(".mp3"):
                 continue
@@ -118,49 +119,49 @@ def main():
         for i in items[:limit]:
             print(f"     {i}")
         if len(items) > limit:
-            print(f"     ... {len(items) - limit} more")
+            print("   " + _("  ... {n} more").format(n=len(items) - limit))
 
     print("=" * 72)
-    print(f"CHECKING {dest}")
+    print(_("CHECKING {folder}").format(folder=dest))
     print("=" * 72)
 
     if source and os.path.isdir(source):
         src_count = sum(
             1
-            for root, _, files in os.walk(source)
+            for root, _skip, files in os.walk(source)
             if ".covers" not in root
             for f in files
             if f.lower().endswith(".mp3")
         )
         # The library legitimately grows: add_incoming.py adds what wasn't in
         # the original source. It's only alarming if there are FEWER tracks.
-        print(f"\ntracks in the build source : {src_count}")
-        print(f"tracks in the library      : {total}")
+        print(_("\ntracks in the build source: {n}").format(n=src_count))
+        print(_("tracks in the library: {n}").format(n=total))
         if total < src_count:
-            print(f"!! tracks missing: {src_count - total}")
+            print(_("!! tracks missing: {n}").format(n=src_count - total))
         elif total > src_count:
-            print(f"OK all originals present, added since: {total - src_count}")
+            print(_("OK all originals present, added since: {n}").format(n=total - src_count))
         else:
-            print("OK all tracks present")
+            print(_("OK all tracks present"))
     else:
-        print(f"\ntracks in the library : {total}")
+        print(_("\ntracks in the library: {n}").format(n=total))
 
-    print(f"\nartists  : {len(artists)}")
-    print(f"albums   : {len(albums)}")
-    print(f"bitrates : {dict(bitrates.most_common())}")
+    print(_("\nartists: {n}").format(n=len(artists)))
+    print(_("albums: {n}").format(n=len(albums)))
+    print(_("bitrates: {list}").format(list=dict(bitrates.most_common())))
 
-    block("no Album Artist", no_album_artist)
-    block("not ID3v2.3", bad_version)
-    block("not UTF-16 (Cyrillic will break)", bad_encoding)
+    block(_("no Album Artist"), no_album_artist)
+    block(_("not ID3v2.3"), bad_version)
+    block(_("not UTF-16 (Cyrillic will break)"), bad_encoding)
     if args.fix:
-        print(f"\nOK v2.4 frames removed from: {fixed} files")
+        print(_("\nOK v2.4 frames removed from: {n} files").format(n=fixed))
     else:
-        block("v2.4 frames left (run with --fix)", v24_frames)
-    block("artist still glued", still_multi)
-    block("no embedded cover art", no_art, limit=30)
+        block(_("v2.4 frames left (run with --fix)"), v24_frames)
+    block(_("artist still glued"), still_multi)
+    block(_("no embedded cover art"), no_art, limit=30)
 
     singles = [a for a, albs in by_artist.items() if "Singles" in albs]
-    print(f"\nOK artists with a 'Singles' album: {len(singles)}")
+    print(_("\nOK artists with a 'Singles' album: {n}").format(n=len(singles)))
 
 
 if __name__ == "__main__":

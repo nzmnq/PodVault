@@ -32,6 +32,7 @@ from mutagen.id3 import ID3
 from mutagen.mp3 import MP3
 
 import settings
+from i18n import _
 from musiclib import norm
 
 # Letters that don't exist in Russian. A sign of the Ukrainian LANGUAGE,
@@ -206,7 +207,7 @@ def export_list(albums, path):
     def block(rows):
         out = []
         for a in rows:
-            meta = f"{a['tracks']} tr., {a['bytes'] / 1024 / 1024:.0f} MB"
+            meta = _("{tracks} tr., {mb} MB").format(tracks=a['tracks'], mb=f"{a['bytes'] / 1024 / 1024:.0f}")
             if a["year"]:
                 meta += f", {a['year']}"
             if a["genre"]:
@@ -214,21 +215,22 @@ def export_list(albums, path):
             out.append(f"[{a['state']}] {a['artist']} — {a['album']}   ({meta})")
         return out
 
+    # the comment lines are for the reader: parse_list skips everything after '#'
     lines = [
-        "# MARKUP: [A] goes to the iPod, [R] stays in the archive.",
-        "# Letters are pre-filled from the current state — change only what you need.",
-        "# Lines starting with # are ignored.",
+        "# " + _("MARKUP: [A] goes to the iPod, [R] stays in the archive."),
+        "# " + _("Letters are pre-filled from the current state — change only what you need."),
+        "# " + _("Lines starting with # are ignored."),
         "",
-        f"# UKRAINIAN-LANGUAGE — {len(ua)} albums",
-        "# Detected by the letters і/ї/є/ґ. This is about LANGUAGE, not genre:",
-        "# folk, rock and rap are all mixed in here.",
+        "# " + _("UKRAINIAN-LANGUAGE — {n} albums").format(n=len(ua)),
+        "# " + _("Detected by the letters і/ї/є/ґ. This is about LANGUAGE, not genre:"),
+        "# " + _("folk, rock and rap are all mixed in here."),
         "",
     ]
     lines += block(ua)
-    lines += ["", f"# EVERYTHING ELSE — {len(rest)} albums", ""]
+    lines += ["", "# " + _("EVERYTHING ELSE — {n} albums").format(n=len(rest)), ""]
     lines += block(rest)
-    lines += ["", f"# TOTAL: {len(albums)} albums, "
-                  f"{sum(a['tracks'] for a in albums)} tracks"]
+    lines += ["", "# " + _("TOTAL: {albums} albums, {tracks} tracks").format(
+        albums=len(albums), tracks=sum(a['tracks'] for a in albums))]
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -254,56 +256,59 @@ def parse_list(path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="library contents and the Active/Archive split")
-    ap.add_argument("--export", metavar="FILE", help="export the list for marking up")
-    ap.add_argument("--import", dest="imp", metavar="FILE", help="apply the markup from a file")
-    ap.add_argument("--apply", action="store_true", help="with --import: actually move albums")
+    ap = argparse.ArgumentParser(description=_("library contents and the Active/Archive split"))
+    ap.add_argument("--export", metavar="FILE", help=_("export the list for marking up"))
+    ap.add_argument("--import", dest="imp", metavar="FILE", help=_("apply the markup from a file"))
+    ap.add_argument("--apply", action="store_true", help=_("with --import: actually move albums"))
     args = ap.parse_args()
 
     root = paths()[0]
     if not os.path.isdir(root):
-        sys.exit(f"Library not found: {root}")
+        sys.exit(_("Library not found: {folder}").format(folder=root))
 
     albums = scan()
     s = stats(albums)
 
-    print(f"Albums: {len(albums)}   tracks: {sum(a['tracks'] for a in albums)}")
-    for name, key in (("Active ", "active"), ("Archive", "archive")):
+    print(_("Albums: {albums}   tracks: {tracks}").format(albums=len(albums),
+                                                        tracks=sum(a['tracks'] for a in albums)))
+    names = {"active": _("Active"), "archive": _("Archive")}
+    width = max(len(n) for n in names.values())
+    for key, name in names.items():
         p = s[key]
-        print(f"  {name}: {p['albums']:3d} albums, {p['tracks']:4d} tracks, "
-              f"{p['gb']:.1f} GB, {p['artists']} artists")
+        print(f"  {name.ljust(width)}: " + _("{albums:3d} albums, {tracks:4d} tracks, {gb} GB, {artists} artists")
+              .format(albums=p['albums'], tracks=p['tracks'], gb=f"{p['gb']:.1f}", artists=p['artists']))
     if s["no_art"]:
-        print(f"  without cover art: {s['no_art']} tracks")
+        print(_("  without cover art: {n} tracks").format(n=s['no_art']))
 
     if args.export:
         export_list(albums, args.export)
-        print(f"\nList for marking up: {args.export}")
+        print(_("\nList for marking up: {file}").format(file=args.export))
         return
 
     if args.imp:
         marks, bad = parse_list(args.imp)
         for n, line in bad[:10]:
-            print(f"  ! line {n} not understood: {line}")
+            print(_("  ! line {n} not understood: {line}").format(n=n, line=line))
 
         todo = [a for a in albums
                 if marks.get((norm(a["artist"]), norm(a["album"])), a["state"]) != a["state"]]
         unknown = [a for a in albums
                    if (norm(a["artist"]), norm(a["album"])) not in marks]
 
-        print(f"\nAlbums to move: {len(todo)}")
+        print(_("\nAlbums to move: {n}").format(n=len(todo)))
         for a in todo:
-            arrow = "-> Archive" if marks[(norm(a["artist"]), norm(a["album"]))] == "R" else "-> Active"
-            print(f"  {arrow}  {a['artist']} — {a['album']}  ({a['tracks']} tr.)")
+            arrow = _("-> Archive") if marks[(norm(a["artist"]), norm(a["album"]))] == "R" else _("-> Active")
+            print(f"  {arrow}  {a['artist']} — {a['album']}  " + _("({n} tr.)").format(n=a['tracks']))
         if unknown:
-            print(f"\nNot in the markup, will stay where they are: {len(unknown)}")
+            print(_("\nNot in the markup, will stay where they are: {n}").format(n=len(unknown)))
             for a in unknown[:10]:
                 print(f"  {a['artist']} — {a['album']}")
 
         if not args.apply:
-            print("\nNothing moved. Add --apply.")
+            print(_("\nNothing moved. Add --apply."))
             return
         moved = apply_marks(albums, marks)
-        print(f"\nMoved: {len(moved)}")
+        print(_("\nMoved: {n}").format(n=len(moved)))
 
 
 if __name__ == "__main__":

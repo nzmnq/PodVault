@@ -16,6 +16,7 @@ import time
 from PyQt6.QtCore import QObject, pyqtSignal
 
 import settings
+from i18n import _
 from gui import backend
 from gui.theme import UI
 
@@ -35,9 +36,9 @@ class Job(QObject):
         super().__init__()
         spec = backend.TOOLS[tool]
         self.tool, self.params, self.applying, self.steps = tool, params, applying, steps
-        self.title = spec["title"] + (" — applying" if applying else
-                                      " — dry run" if spec.get("apply") else "")
-        self.base_title = spec["title"]
+        self.title = (_("{title} — applying") if applying else
+                      _("{title} — dry run") if spec.get("apply") else "{title}").format(title=_(spec["title"]))
+        self.base_title = _(spec["title"])
         self.cancelable = spec.get("cancel", True) and not (
             applying and spec.get("cancel_apply") is False)
         self.confirm = spec.get("confirm", "")
@@ -140,10 +141,10 @@ class Job(QObject):
                 if code:
                     break
         except Exception as e:
-            self.note(f"\n!! Could not run it: {e}")
+            self.note("\n" + _("!! Could not run it: {error}").format(error=e))
             code = -1
         if self.cancelled:
-            self.note("\n— cancelled —")
+            self.note("\n" + _("— cancelled —"))
             code = code or -2
         with self.lock:
             if self.cur:
@@ -180,7 +181,7 @@ class Jobs(QObject):
     def start(self, tool, params=None, applying=False):
         """Start a tool; raises ValueError (bad input) or RuntimeError (busy)."""
         if self.busy():
-            raise RuntimeError(f"“{self.current.base_title}” is still running.")
+            raise RuntimeError(_("“{tool}” is still running.").format(tool=self.current.base_title))
         params = params or {}
         job = Job(tool, params, applying, backend.tool_steps(tool, params, applying))
         job.done.connect(lambda code, j=job: self.finished.emit(j))

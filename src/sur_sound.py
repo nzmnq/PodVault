@@ -8,6 +8,7 @@ from scipy.signal import butter, lfilter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import settings
+from i18n import _
 
 SURROUND_DELAY_MS = 20
 SURROUND_CUTOFF = 7000
@@ -31,7 +32,7 @@ Audio spatial method using binaural proccesing
 
 
 def process_spatial_audio(input_path, output_path, ffmpeg):
-    print(f"\nProcessing: {os.path.basename(input_path)}")
+    print("\n" + _("Processing: {file}").format(file=os.path.basename(input_path)))
 
     # temp files next to the output, not in whatever the current folder is
     work_dir = os.path.dirname(output_path)
@@ -47,7 +48,7 @@ def process_spatial_audio(input_path, output_path, ffmpeg):
         fs, data = wavfile.read(temp_in_wav)
 
         if len(data.shape) != 2 or data.shape[1] != 2:
-            print("File is not stereo!")
+            print(_("The file isn't stereo."))
             return False
 
         # float32 converting
@@ -100,14 +101,14 @@ def process_spatial_audio(input_path, output_path, ffmpeg):
             output_path
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        print(f"Ready! saved into: {output_path}")
+        print(_("Ready, saved to: {file}").format(file=output_path))
         return True
 
     except subprocess.CalledProcessError:
-        print("ffmpeg failed on this file")
+        print(_("ffmpeg failed on this file"))
         return False
     except Exception as e:
-        print(f"Error occurred: {e}")
+        print(_("Error: {error}").format(error=e))
         return False
     finally:
         if os.path.exists(temp_in_wav): os.remove(temp_in_wav)
@@ -121,7 +122,7 @@ def audio_processing():
     output_dir = settings.path("spatial_output_dir", cfg)
 
     if not ffmpeg:
-        print("\nffmpeg not found. Set its path on the Settings screen.")
+        print("\n" + _("ffmpeg not found. Set its path on the Settings screen."))
         return
 
     os.makedirs(input_dir, exist_ok=True)
@@ -142,9 +143,9 @@ def audio_processing():
 
         if process_spatial_audio(input_path, output_path, ffmpeg):
             success_count += 1
-            print(f"Succesfuly coonverted: {success_count}/{len(files_to_process)}")
+            print(_("Converted: {n}/{total}").format(n=success_count, total=len(files_to_process)))
 
-    print(f"\nAll task done, open: {output_dir}")
+    print(_("\nAll done, open: {folder}").format(folder=output_dir))
 
 
 if __name__ == "__main__":

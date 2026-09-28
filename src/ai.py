@@ -24,6 +24,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import settings
+from i18n import _
 
 BACKENDS = ("auto", "cli", "gemini", "api")
 
@@ -67,8 +68,8 @@ def _ask_cli(cfg, system, user, schema):
     """
     exe = settings.claude_cli(cfg)
     if not exe:
-        sys.exit("Claude Code (claude) not found. Install it, or set its path in "
-                 "Settings -> AI, or switch to another mode there.")
+        sys.exit(_("Claude Code (claude) not found. Install it, or set its path in "
+                   "Settings -> AI, or switch to another mode there."))
     with tempfile.NamedTemporaryFile("w", suffix=".txt", encoding="utf-8",
                                      delete=False) as f:
         f.write(system)
@@ -83,7 +84,7 @@ def _ask_cli(cfg, system, user, schema):
     try:
         r = subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=900)
     except subprocess.TimeoutExpired:
-        sys.exit("Claude Code didn't answer within 15 minutes.")
+        sys.exit(_("Claude Code didn't answer within 15 minutes."))
     finally:
         os.remove(system_file)
 
@@ -92,20 +93,22 @@ def _ask_cli(cfg, system, user, schema):
         data = json.loads(out)
     except ValueError:
         err = r.stderr.decode("utf-8", "replace").strip()
-        sys.exit(f"Unexpected answer from Claude Code (exit {r.returncode}):\n{(err or out)[:1000]}")
+        sys.exit(_("Unexpected answer from Claude Code (exit {code}):").format(code=r.returncode)
+                 + "\n" + (err or out)[:1000])
     if data.get("is_error"):
-        msg = str(data.get("result") or data.get("subtype") or "unknown error")
+        msg = str(data.get("result") or data.get("subtype") or _("unknown error"))
         if "login" in msg.lower():
-            sys.exit("Claude Code isn't logged in. Once, in a terminal:\n"
-                     f"  \"{exe}\"\n"
-                     "then type /login, sign in with your Claude account, and /exit.")
+            sys.exit(_("Claude Code isn't logged in. Once, in a terminal:\n"
+                       "  \"{exe}\"\n"
+                       "then type /login, sign in with your Claude account, and /exit.").format(exe=exe))
         sys.exit(f"Claude Code: {msg}")
     answer = data.get("structured_output")
     if answer is None:
         try:
             answer = json.loads(data.get("result") or "")
         except ValueError:
-            sys.exit(f"Claude Code didn't return the expected JSON:\n{str(data.get('result'))[:1000]}")
+            sys.exit(_("Claude Code didn't return the expected JSON:") + "\n"
+                     + str(data.get('result'))[:1000])
     return answer
 
 
@@ -126,10 +129,11 @@ def _ask_gemini(cfg, system, user, schema):
 
     key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
-        sys.exit("No Gemini API key found.\n\n"
-                 "Get a free one at aistudio.google.com -> Get API key, then set it once:\n"
-                 "  setx GEMINI_API_KEY \"...\"\n"
-                 "and open a new terminal (or restart Music Utility).")
+        sys.exit(_("No Gemini API key found.\n\n"
+                   "Get a free one at aistudio.google.com -> Get API key, then set it once:\n"
+                   "  Windows:        setx GEMINI_API_KEY \"...\"\n"
+                   "  macOS / Linux:  export GEMINI_API_KEY=\"...\"  (in ~/.zshrc or ~/.bashrc)\n"
+                   "and open a new terminal (or restart Music Utility)."))
     model = str(cfg.get("gemini_model") or "gemini-3.8-flash")
     body = {
         "model": model,
@@ -142,22 +146,22 @@ def _ask_gemini(cfg, system, user, schema):
         r = requests.post(GEMINI_URL, json=body, timeout=300,
                           headers={"Authorization": f"Bearer {key}"})
     except requests.RequestException as e:
-        sys.exit(f"Could not reach Gemini: {e}")
+        sys.exit(_("Could not reach Gemini: {error}").format(error=e))
     if r.status_code in (400, 401, 403) and "key" in r.text.lower():
-        sys.exit("Gemini rejected the API key. Check GEMINI_API_KEY.")
+        sys.exit(_("Gemini rejected the API key. Check GEMINI_API_KEY."))
     if r.status_code == 404:
-        sys.exit(f"Gemini doesn't know the model '{model}'. Set another one in Settings -> AI.")
+        sys.exit(_("Gemini doesn't know the model '{model}'. Set another one in Settings -> AI.").format(model=model))
     if r.status_code == 429:
-        sys.exit("Gemini's free-tier limit is reached for now. "
-                 "Wait a minute (or until tomorrow for the daily limit).")
+        sys.exit(_("Gemini's free-tier limit is reached for now. "
+                   "Wait a minute (or until tomorrow for the daily limit)."))
     if r.status_code != 200:
-        sys.exit(f"Gemini error {r.status_code}: {r.text[:500]}")
+        sys.exit(_("Gemini error {code}: {text}").format(code=r.status_code, text=r.text[:500]))
     try:
         text = r.json()["choices"][0]["message"]["content"]
         # tolerate a ```json fence around the object
         return json.loads(text[text.index("{"):text.rindex("}") + 1])
     except (ValueError, KeyError, IndexError):
-        sys.exit(f"Gemini didn't return the expected JSON:\n{r.text[:1000]}")
+        sys.exit(_("Gemini didn't return the expected JSON:") + "\n" + r.text[:1000])
 
 
 # ---------------------------------------------------------- Anthropic API
@@ -168,7 +172,8 @@ def _ask_api(cfg, system, user, schema):
     try:
         import anthropic
     except ImportError:
-        sys.exit(f"The anthropic package is missing: {sys.executable} -m pip install anthropic")
+        sys.exit(_("The anthropic package is missing: {command}").format(
+            command=f"{sys.executable} -m pip install anthropic"))
 
     model = str(cfg.get("anthropic_model") or "claude-opus-5")
     try:
@@ -189,27 +194,28 @@ def _ask_api(cfg, system, user, schema):
             output_config={"format": {"type": "json_schema", "schema": schema}},
         )
     except anthropic.AuthenticationError:
-        sys.exit("The Anthropic API key was rejected. Check ANTHROPIC_API_KEY.")
+        sys.exit(_("The Anthropic API key was rejected. Check ANTHROPIC_API_KEY."))
     except anthropic.PermissionDeniedError as e:
-        sys.exit(f"The API key may not use {model}: {e.message}")
+        sys.exit(_("The API key may not use {model}: {error}").format(model=model, error=e.message))
     except anthropic.RateLimitError:
-        sys.exit("Rate limited by the Anthropic API. Try again in a minute.")
+        sys.exit(_("Rate limited by the Anthropic API. Try again in a minute."))
     except anthropic.APIStatusError as e:
-        sys.exit(f"Anthropic API error {e.status_code}: {e.message}")
+        sys.exit(_("Anthropic API error {code}: {error}").format(code=e.status_code, error=e.message))
     except anthropic.APIConnectionError:
-        sys.exit("Could not reach the Anthropic API. Check the internet connection.")
+        sys.exit(_("Could not reach the Anthropic API. Check the internet connection."))
     except TypeError as e:
         # the SDK reports missing credentials as a TypeError
         if "authentication" not in str(e):
             raise
-        sys.exit("No Anthropic API key found.\n\n"
-                 "Create one at console.anthropic.com -> API keys, then set it once:\n"
-                 "  setx ANTHROPIC_API_KEY \"sk-ant-...\"\n"
-                 "and open a new terminal (or restart Music Utility).")
+        sys.exit(_("No Anthropic API key found.\n\n"
+                   "Create one at console.anthropic.com -> API keys, then set it once:\n"
+                   "  Windows:        setx ANTHROPIC_API_KEY \"sk-ant-...\"\n"
+                   "  macOS / Linux:  export ANTHROPIC_API_KEY=\"sk-ant-...\"  (in ~/.zshrc or ~/.bashrc)\n"
+                   "and open a new terminal (or restart Music Utility)."))
 
     if response.stop_reason == "refusal":
-        sys.exit("Claude declined this request. Try wording it differently.")
+        sys.exit(_("Claude declined this request. Try wording it differently."))
     if response.stop_reason == "max_tokens":
-        sys.exit("The answer was cut off (too long).")
+        sys.exit(_("The answer was cut off (too long)."))
     text = next((b.text for b in response.content if b.type == "text"), "")
     return json.loads(text)

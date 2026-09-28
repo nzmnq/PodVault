@@ -40,6 +40,7 @@ from html.parser import HTMLParser
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import settings
+from i18n import N_, _
 
 
 def add(bucket, artist, album, title=None, year="", url=""):
@@ -193,10 +194,10 @@ def read_json_any(path, bucket):
         data = json.load(f)
     if isinstance(data, dict):
         if "playlists" in data:
-            return from_playlists(data, bucket), "Spotify export: playlists"
+            return from_playlists(data, bucket), N_("Spotify export: playlists")
         if "tracks" in data or "albums" in data:
-            return from_your_library(data, bucket), "Spotify export: library"
-    raise ValueError("can't make sense of this JSON's structure")
+            return from_your_library(data, bucket), N_("Spotify export: library")
+    raise ValueError(_("can't make sense of this JSON's structure"))
 
 
 # ---------------------------------------------------------------- main
@@ -207,20 +208,20 @@ def main():
     out = os.path.join(settings.path("reports_dir", cfg), "likes.json")
 
     if len(sys.argv) < 2:
-        sys.exit(__doc__.strip().splitlines()[-1])
+        sys.exit(_("usage: python src/import_likes.py <file or folder>"))
     target = sys.argv[1]
     if not os.path.exists(target):
-        sys.exit(f"Not found: {target}")
+        sys.exit(_("Not found: {path}").format(path=target))
 
     exts = (".json", ".txt", ".html", ".htm")
     files = []
     if os.path.isdir(target):
-        for root, _, fs in os.walk(target):
+        for root, _skip, fs in os.walk(target):
             for fn in sorted(fs):
                 if fn.lower().endswith(exts):
                     files.append(os.path.join(root, fn))
         if not files:
-            sys.exit(f"No .json, .txt or .html in the folder: {target}")
+            sys.exit(_("No .json, .txt or .html in the folder: {folder}").format(folder=target))
     else:
         files = [target]
 
@@ -233,26 +234,26 @@ def main():
             if low.endswith(".json"):
                 n, kind = read_json_any(path, bucket)
             elif low.endswith((".html", ".htm")):
-                n, kind = from_apple_html(path, bucket), "Apple Music page"
+                n, kind = from_apple_html(path, bucket), N_("Apple Music page")
             else:
-                n, kind = from_text(path, bucket), "text list"
+                n, kind = from_text(path, bucket), N_("text list")
         except Exception as e:
-            print(f"  skipped {name}: {e}")
+            print(_("  skipped {file}: {error}").format(file=name, error=e))
             continue
         if n:
-            print(f"  {name}: {n} entries ({kind})")
+            print(_("  {file}: {n} entries ({kind})").format(file=name, n=n, kind=_(kind)))
             sources.append(kind)
         else:
-            print(f"  {name}: nothing recognised")
+            print(_("  {file}: nothing recognised").format(file=name))
 
     if not bucket:
-        sys.exit("Nothing could be read.")
+        sys.exit(_("Nothing could be read."))
 
     albums = write(bucket, ", ".join(sorted(set(sources))) or "?", out)
-    print(f"\nDone: {out}")
-    print(f"  albums       : {len(albums)}")
-    print(f"  liked tracks : {sum(len(a['liked']) for a in albums)}")
-    print("\nNext: python src/find_missing.py")
+    print(_("\nDone: {file}").format(file=out))
+    print(_("  albums: {n}").format(n=len(albums)))
+    print(_("  liked tracks: {n}").format(n=sum(len(a['liked']) for a in albums)))
+    print(_("\nNext: python src/find_missing.py"))
 
 
 if __name__ == "__main__":

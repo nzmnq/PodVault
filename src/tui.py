@@ -11,6 +11,8 @@ understands them if asked to).
 import os
 import sys
 
+from i18n import _
+
 try:
     import msvcrt
 except ImportError:  # macOS / Linux
@@ -207,7 +209,7 @@ def drop_typeahead():
 
 def confirm(text):
     drop_typeahead()
-    sys.stdout.write(f"\n\n {BOLD}{text}{RESET} {FG['grey']}[y/n]{RESET} ")
+    sys.stdout.write(f"\n\n {BOLD}{text}{RESET} {FG['grey']}{_('[y/n]')}{RESET} ")
     flush()
     while True:
         k = read_key()
@@ -225,12 +227,13 @@ def confirm(text):
             else:
                 continue
         # show that the key was taken — a long tool may start right after
-        sys.stdout.write(f"{BOLD}{'yes' if answer else 'no'}{RESET}\n")
+        sys.stdout.write(f"{BOLD}{_('yes') if answer else _('no')}{RESET}\n")
         flush()
         return answer
 
 
-def pause(text="Press any key"):
+def pause(text=None):
+    text = text or _("Press any key")
     drop_typeahead()
     sys.stdout.write(f"\n {FG['grey']}{text}{RESET}")
     flush()

@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMessageBox, QProgress
 
 from gui import backend
 from gui.theme import C, GLYPHS, UI
+from i18n import _, n_
 
 # ------------------------------------------------------------ formatting
 
@@ -27,15 +28,16 @@ def fmt_time(seconds):
 def fmt_total(seconds):
     s = int(seconds or 0)
     h, m = s // 3600, (s % 3600) // 60
-    return f"{h} h {m} min" if h else f"{m} min"
+    return _("{h} h {m} min").format(h=h, m=m) if h else _("{m} min").format(m=m)
 
 
 def fmt_gb(gb):
-    return f"{gb:.2f} GB" if gb < 10 else f"{gb:.1f} GB"
+    return _("{gb} GB").format(gb=f"{gb:.2f}" if gb < 10 else f"{gb:.1f}")
 
 
-def plural(n, word):
-    return f"{n} {word}" + ("" if n == 1 else "s")
+def plural(n, one, many):
+    """plural(3, "{n} track", "{n} tracks") -> '3 tracks', in the interface language."""
+    return n_(one, many, n).format(n=n)
 
 
 # ------------------------------------------------------------ background work
@@ -86,15 +88,15 @@ def run_async(fn, *args, ok=None, failed=None):
 # ------------------------------------------------------------ dialogs
 
 
-def ask(parent, title, text, yes="OK", danger=False, details=None):
+def ask(parent, title, text, yes=None, danger=False, details=None):
     box = QMessageBox(parent)
     box.setWindowTitle(title)
     box.setIcon(QMessageBox.Icon.Warning if danger else QMessageBox.Icon.Question)
     box.setText(text)
     if details:
         box.setDetailedText(details)
-    ok = box.addButton(yes, QMessageBox.ButtonRole.AcceptRole)
-    box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+    ok = box.addButton(yes or _("OK"), QMessageBox.ButtonRole.AcceptRole)
+    box.addButton(_("Cancel"), QMessageBox.ButtonRole.RejectRole)
     box.setDefaultButton(ok)
     box.exec()
     return box.clickedButton() is ok
@@ -288,14 +290,15 @@ class AlbumModel(QAbstractListModel):
             return f"{a['album']}\n{a['artist']}"
         if role == Qt.ItemDataRole.ToolTipRole:
             state = self.marks.get(a["path"], a["state"])
-            tip = (f"{a['artist']} — {a['album']}\n{plural(a['tracks'], 'track')}, "
-                   f"{a['bytes'] / 1024 / 1024:.0f} MB"
+            tip = (f"{a['artist']} — {a['album']}\n{plural(a['tracks'], '{n} track', '{n} tracks')}, "
+                   + _("{mb} MB").format(mb=f"{a['bytes'] / 1024 / 1024:.0f}")
                    + (f", {a['year']}" if a["year"] else "") + (f", {a['genre']}" if a["genre"] else "")
-                   + f"\n{'Active — goes to the iPod' if state == 'A' else 'Archive — stays on disk'}")
+                   + "\n" + (_("Active — goes to the iPod") if state == 'A' else _("Archive — stays on disk")))
             if a["path"] in self.marks:
-                tip += "  (not saved yet)"
+                tip += _("  (not saved yet)")
             if a["no_art"]:
-                tip += f"\n{plural(a['no_art'], 'track')} without cover art"
+                tip += "\n" + n_("{n} track without cover art", "{n} tracks without cover art",
+                                  a['no_art']).format(n=a['no_art'])
             return tip
         return None
 
@@ -458,7 +461,7 @@ class Lcd(QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 5, 14, 5)
         lay.setSpacing(1)
-        self.title = QLabel("Music Utility")
+        self.title = QLabel(_("Music Utility"))
         self.title.setObjectName("lcdTitle")
         self.sub = QLabel("")
         self.sub.setObjectName("lcdSub")
@@ -471,7 +474,7 @@ class Lcd(QFrame):
         lay.addWidget(self.title)
         lay.addWidget(self.sub)
         lay.addWidget(self.bar, 0, Qt.AlignmentFlag.AlignHCenter)
-        self.show_idle("Music Utility", "")
+        self.show_idle(_("Music Utility"), "")
 
     def show_idle(self, title, sub):
         self.title.setText(title)
@@ -592,8 +595,9 @@ class CapacityBar(QWidget):
         p.setFont(f)
         x = 0
         other = max(self.total - self.audio - self.free, 0)
-        for label, value, color in (("Audio", self.audio, C["cap_audio"]), ("Other", other, C["cap_other"]),
-                                    ("Free", self.free, C["line"])):
+        for label, value, color in ((_("Audio"), self.audio, C["cap_audio"]),
+                                    (_("Other"), other, C["cap_other"]),
+                                    (_("Free"), self.free, C["line"])):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(color))
             p.drawRoundedRect(QRectF(x, 26, 9, 9), 2, 2)

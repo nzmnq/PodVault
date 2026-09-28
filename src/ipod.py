@@ -24,11 +24,12 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import settings
+from i18n import _
 
 PODSYNC = os.path.join(settings.ROOT, "vendor", "podsync")
 if not os.path.isfile(os.path.join(PODSYNC, "podsync", "__init__.py")):
-    sys.exit("podsync is missing (vendor/podsync). Fetch it with:\n"
-             "  git submodule update --init")
+    sys.exit(_("podsync is missing (vendor/podsync). Fetch it with:\n"
+               "  git submodule update --init"))
 sys.path.insert(0, PODSYNC)
 
 import podsync.hardware as hardware              # noqa: E402
@@ -58,7 +59,7 @@ def mounted(cfg):
     if given and given.lower() != "auto":
         return [given] if os.path.isdir(os.path.join(given, "iPod_Control")) else []
     from podsync.hardware.discovery.scan import _find_ipod_volumes
-    return [root for root, _ in _find_ipod_volumes()]
+    return [root for root, _skip in _find_ipod_volumes()]
 
 
 def open_ipod(cfg, given=None):
@@ -71,16 +72,15 @@ def open_ipod(cfg, given=None):
     if given and given.lower() != "auto":
         dev = hardware.identify_mounted_ipod(given)
         if dev is None:
-            sys.exit(f"{given} isn't an iPod (no iPod_Control folder).")
+            sys.exit(_("{path} isn't an iPod (no iPod_Control folder).").format(path=given))
     else:
         found = hardware.find_ipods()
         if not found:
-            sys.exit("No iPod found. Connect it (disk mode), or set its drive / mount point\n"
-                     "in Settings -> iPod.")
+            sys.exit(_("No iPod found. Connect it (disk mode), or set its drive / mount point\n"
+                       "in Settings -> iPod."))
         if len(found) > 1:
-            sys.exit("Several iPods are connected: "
-                     + ", ".join(d.path for d in found)
-                     + "\nChoose one in Settings -> iPod, or pass --ipod.")
+            sys.exit(_("Several iPods are connected: {list}\nChoose one in Settings -> iPod, "
+                       "or pass --ipod.").format(list=", ".join(d.path for d in found)))
         dev = found[0]
     hardware.select_device(dev)
     return dev
@@ -153,7 +153,7 @@ def backup(cfg, root):
         if os.path.isdir(src):
             shutil.copytree(src, os.path.join(dest, sub))
     old = sorted(d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d)))
-    for d in old[:-KEEP_BACKUPS]:
+    for d in old[:-int(cfg.get("ipod_backups") or KEEP_BACKUPS)]:
         shutil.rmtree(os.path.join(folder, d), ignore_errors=True)
     return dest
 
@@ -163,15 +163,15 @@ def restore(cfg, root, confirmed):
     folder = backups_dir(cfg)
     found = sorted(os.listdir(folder)) if os.path.isdir(folder) else []
     if not found:
-        sys.exit(f"No backups in {folder}.")
+        sys.exit(_("No backups in {folder}.").format(folder=folder))
     src = os.path.join(folder, found[-1])
-    print(f"  latest backup: {src}")
-    print("  It replaces the iPod's database with the one from that moment. Tracks")
-    print("  added since then vanish from the list (their files stay until the next")
-    print("  sync); tracks deleted since then come back only if their files are")
-    print("  still on the iPod.")
-    if not confirmed("  Type 'yes' to restore: "):
-        print("Cancelled.")
+    print(_("  latest backup: {folder}").format(folder=src))
+    print(_("  It replaces the iPod's database with the one from that moment. Tracks\n"
+            "  added since then vanish from the list (their files stay until the next\n"
+            "  sync); tracks deleted since then come back only if their files are\n"
+            "  still on the iPod."))
+    if not confirmed(_("  Type 'yes' to restore: ")):
+        print(_("Cancelled."))
         return
     for sub in ("iTunes", "Artwork"):
         b = os.path.join(src, sub)
@@ -183,7 +183,7 @@ def restore(cfg, root, confirmed):
         shutil.copytree(b, tmp)
         shutil.rmtree(target, ignore_errors=True)
         os.replace(tmp, target)
-    print("Restored. Eject the iPod properly before unplugging it.")
+    print(_("Restored. Eject the iPod properly before unplugging it."))
 
 
 # ------------------------------------------------------------------ report
@@ -195,23 +195,26 @@ def report(dev):
     have = covered(dev.path, rows)
     bare = [r for r in rows if r.get("db_track_id") not in have]
     lists = [p for p in db["dataset2_standard_playlists"] if not p.get("master_flag")]
-    print(f"iPod: {describe(dev)}")
+    print(_("iPod: {device}").format(device=describe(dev)))
     if dev.disk_size_gb:
-        print(f"  {dev.free_space_gb:.1f} of {dev.disk_size_gb:.1f} GB free")
-    print(f"  tracks                      : {len(rows)}")
-    print(f"  playlists                   : {len(lists)}")
-    print(f"  tracks with a cover         : {len(rows) - len(bare)}")
-    print(f"  tracks WITHOUT a cover      : {len(bare)}")
+        print(_("  {free} of {total} GB free").format(free=f"{dev.free_space_gb:.1f}",
+                                                     total=f"{dev.disk_size_gb:.1f}"))
+    rows_out = [(_("tracks"), len(rows)), (_("playlists"), len(lists)),
+                (_("tracks with a cover"), len(rows) - len(bare)),
+                (_("tracks WITHOUT a cover"), len(bare))]
+    width = max(len(label) for label, _v in rows_out)
+    for label, value in rows_out:
+        print(f"  {label.ljust(width)} : {value}")
     for r in bare[:40]:
         print(f"    {r.get('artist')} — {r.get('album')} — {r.get('title')}")
     if len(bare) > 40:
-        print(f"    ... {len(bare) - 40} more")
+        print("  " + _("  ... {n} more").format(n=len(bare) - 40))
 
 
 def main():
-    ap = argparse.ArgumentParser(description="what the iPod has (read only)")
-    ap.add_argument("ipod", nargs="?", help="the iPod's drive or mount point")
-    ap.add_argument("--eject", action="store_true", help="flush and eject the iPod")
+    ap = argparse.ArgumentParser(description=_("what the iPod has (read only)"))
+    ap.add_argument("ipod", nargs="?", help=_("the iPod's drive or mount point"))
+    ap.add_argument("--eject", action="store_true", help=_("flush and eject the iPod"))
     args = ap.parse_args()
     dev = open_ipod(settings.load() or {}, args.ipod)
     if args.eject:

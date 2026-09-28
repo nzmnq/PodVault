@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mutagen.id3 import ID3
 
 import settings
+from i18n import _
 from musiclib import norm, strip_edition, strip_feat
 
 # Set from the settings in main()
@@ -54,9 +55,9 @@ def load_library():
     # don't know the album and so can't use the per-album state
     track_state = defaultdict(set)
     if not os.path.isdir(LIBRARY):
-        sys.exit(f"Library not found: {LIBRARY}")
+        sys.exit(_("Library not found: {folder}").format(folder=LIBRARY))
 
-    for root, _, files in os.walk(LIBRARY):
+    for root, _skip, files in os.walk(LIBRARY):
         rel = os.path.relpath(root, LIBRARY).split(os.sep)[0]
         state = "R" if rel == "Archive" else "A"
         for fn in (f for f in files if f.lower().endswith(".mp3")):
@@ -106,14 +107,14 @@ def main():
     LIBRARY = settings.library_paths(cfg)[0]
 
     if not os.path.exists(LIKES):
-        sys.exit(f"No {LIKES}\nFirst run: python src/import_likes.py <file>")
+        sys.exit(_("No {file}\nFirst run: python src/import_likes.py <file>").format(file=LIKES))
 
     with open(LIKES, encoding="utf-8") as f:
         data = json.load(f)
 
-    print("Reading the library...")
+    print(_("Reading the library..."))
     lib, by_artist, track_state = load_library()
-    print(f"  albums: {len(lib)}")
+    print(_("  albums: {n}").format(n=len(lib)))
 
     missing, partial, complete = [], [], []
 
@@ -196,30 +197,30 @@ def main():
 
     print()
     print("=" * 72)
-    print(f"SOURCE: {data.get('source', '?')}   ({data.get('fetched_at', '')})")
-    print(f"ALBUMS IN THE LIST: {len(data['albums'])}")
+    print(_("SOURCE: {source}   ({date})").format(source=data.get('source', '?'),
+                                                  date=data.get('fetched_at', '')))
+    print(_("ALBUMS IN THE LIST: {n}").format(n=len(data['albums'])))
     print("=" * 72)
-    print(f"  complete : {len(complete)}")
-    print(f"  partial  : {len(partial)}")
-    print(f"  missing  : {len(missing)}")
+    rows = [(_("complete"), len(complete)), (_("partial"), len(partial)), (_("missing"), len(missing))]
+    width = max(len(label) for label, _v in rows)
+    for label, value in rows:
+        print(f"  {label.ljust(width)} : {value}")
     if by_mode.get("track") or by_mode.get("presence"):
         print()
         if by_mode.get("album"):
-            print(f"  {by_mode['album']} entries compared BY ALBUM "
-                  f"(full tracklist known)")
+            print(_("  {n} entries compared BY ALBUM (full tracklist known)").format(n=by_mode['album']))
         if by_mode.get("track"):
-            print(f"  {by_mode['track']} entries — BY TRACK: these sources don't give "
-                  f"album tracklists,")
-            print("     so 'complete' here means 'all liked tracks are present'")
+            print(_("  {n} entries — BY TRACK: these sources don't give album tracklists,\n"
+                    "     so 'complete' here means 'all liked tracks are present'").format(n=by_mode['track']))
         if by_mode.get("presence"):
-            print(f"  {by_mode['presence']} entries — BY PRESENCE ONLY: "
-                  f"the list had just an album title,")
-            print("     so it was only checked whether the album is in the library")
+            print(_("  {n} entries — BY PRESENCE ONLY: the list had just an album title,\n"
+                    "     so it was only checked whether the album is in the library").format(
+                n=by_mode['presence']))
 
     in_arc = [r for r in complete if r["in_archive"]]
     if in_arc:
-        print(f"\n--- PRESENT, BUT IN THE ARCHIVE ({len(in_arc)}) ---")
-        print("  No need to download — just mark them [A] in the markup.")
+        print("\n--- " + _("PRESENT, BUT IN THE ARCHIVE ({n})").format(n=len(in_arc)) + " ---")
+        print(_("  No need to download — just mark them [A] in the markup."))
         for r in in_arc[:15]:
             if r["album"]:
                 print(f"  {r['artist']} — {r['album']}")
@@ -228,35 +229,35 @@ def main():
                 liked = ", ".join(a for a in data_liked(data, r)[:3])
                 print(f"  {r['artist']} — {liked}")
         if len(in_arc) > 15:
-            print(f"  ... {len(in_arc) - 15} more")
+            print(_("  ... {n} more").format(n=len(in_arc) - 15))
 
     if missing:
-        print("\n--- MISSING (top 25) ---")
+        print("\n--- " + _("MISSING (top 25)") + " ---")
         for r in missing[:25]:
             if r["liked_here"]:
-                n = f"{r['liked_here']} liked"
+                n = _("{n} liked").format(n=r['liked_here'])
             elif r["tracks_total"]:
-                n = f"{r['tracks_total']} tr."
+                n = _("{n} tr.").format(n=r['tracks_total'])
             else:
-                n = "album"          # the list had only the title
-            print(f"  {n:>9}  {r['artist']} — {r['album'] or '(album unknown)'}"
+                n = _("album")          # the list had only the title
+            print(f"  {n:>9}  {r['artist']} — {r['album'] or _('(album unknown)')}"
                   + (f" [{r['year']}]" if r["year"] else ""))
         if len(missing) > 25:
-            print(f"  ... {len(missing) - 25} more")
+            print(_("  ... {n} more").format(n=len(missing) - 25))
 
     if partial:
-        print("\n--- PARTIAL (top 20) ---")
+        print("\n--- " + _("PARTIAL (top 20)") + " ---")
         for r in partial[:20]:
-            print(f"  missing {r['tracks_missing']:2d} of {r['tracks_total']:2d}"
-                  f"  {r['artist']} — {r['album'] or '(album unknown)'}")
+            print(_("  missing {n:2d} of {total:2d}").format(n=r['tracks_missing'], total=r['tracks_total'])
+                  + f"  {r['artist']} — {r['album'] or _('(album unknown)')}")
             for t in r["missing_titles"][:3]:
                 print(f"       · {t}")
             if len(r["missing_titles"]) > 3:
-                print(f"       · ... {len(r['missing_titles']) - 3} more")
+                print("       · " + _("... {n} more").format(n=len(r['missing_titles']) - 3))
         if len(partial) > 20:
-            print(f"  ... {len(partial) - 20} more")
+            print(_("  ... {n} more").format(n=len(partial) - 20))
 
-    print(f"\nTable with links: {csv_path}")
+    print(_("\nTable with links: {file}").format(file=csv_path))
 
 
 if __name__ == "__main__":

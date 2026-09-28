@@ -33,6 +33,7 @@ from mutagen.id3 import APIC, ID3
 from PIL import Image
 
 import settings
+from i18n import _
 
 # Set from the settings in main()
 LIBRARY = None
@@ -129,7 +130,7 @@ def find_cover(artist, album, is_single, title, first_track=None):
         try:
             candidates = list(make())
         except Exception as e:
-            print(f"      (source unavailable: {e})")
+            print("      " + _("(source unavailable: {error})").format(error=e))
             continue
         for c in candidates:
             if not c.get("url"):
@@ -152,7 +153,7 @@ def find_cover(artist, album, is_single, title, first_track=None):
 def collect_missing():
     """Albums that have tracks without embedded cover art."""
     groups = defaultdict(lambda: {"artist": None, "album": None, "files": []})
-    for root, _, files in os.walk(LIBRARY):
+    for root, _skip, files in os.walk(LIBRARY):
         for fn in sorted(f for f in files if f.lower().endswith(".mp3")):
             fp = os.path.join(root, fn)
             tags = ID3(fp)
@@ -192,8 +193,8 @@ def embed(path, data, folder_jpg):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--apply", action="store_true", help="embed what was found")
+    ap = argparse.ArgumentParser(description=_("find cover art for albums without one"))
+    ap.add_argument("--apply", action="store_true", help=_("embed what was found"))
     args = ap.parse_args()
 
     global LIBRARY, SIZE
@@ -201,11 +202,11 @@ def main():
     LIBRARY = settings.library_paths(cfg)[0]
     SIZE = (int(cfg["cover_size"]), int(cfg["cover_size"]))
     if not os.path.isdir(LIBRARY):
-        sys.exit(f"Library not found: {LIBRARY}")
+        sys.exit(_("Library not found: {folder}").format(folder=LIBRARY))
 
     groups = collect_missing()
     total = sum(len(g["files"]) for g in groups.values())
-    print(f"Tracks without cover art: {total} in {len(groups)} albums\n")
+    print(_("Tracks without cover art: {tracks} in {albums} albums\n").format(tracks=total, albums=len(groups)))
     found, doubtful, missing = [], [], []
 
     for rel, g in sorted(groups.items()):
@@ -226,7 +227,7 @@ def main():
                 first_track=g["files"][0]["title"] if g["files"] else None,
             )
             if not hit:
-                print(f"{label} -> not found")
+                print(f"{label} -> " + _("not found"))
                 missing.append((rel, title or g["album"]))
                 continue
 
@@ -239,22 +240,24 @@ def main():
 
     print()
     print("=" * 70)
-    print(f"  artist matched   : {len(found)}")
-    print(f"  artist different : {len(doubtful)}")
-    print(f"  not found        : {len(missing)}")
+    rows = [(_("artist matched"), len(found)), (_("artist different"), len(doubtful)),
+            (_("not found"), len(missing))]
+    width = max(len(label) for label, _v in rows)
+    for label, value in rows:
+        print(f"  {label.ljust(width)} : {value}")
 
     if doubtful:
-        print("\n  Doubtful (artist in the response didn't match the tag):")
-        for rel, what, hit, _ in doubtful:
+        print(_("\n  Doubtful (artist in the response didn't match the tag):"))
+        for rel, what, hit, _skip in doubtful:
             print(f"    {rel} / {what}")
-            print(f"      suggested: {hit['artist']} — {hit['title']}")
+            print("      " + _("suggested: {artist} — {title}").format(artist=hit['artist'], title=hit['title']))
     if missing:
-        print("\n  Not found anywhere:")
+        print(_("\n  Not found anywhere:"))
         for rel, what in missing:
             print(f"    {rel} / {what}")
 
     if not args.apply:
-        print("\nNothing embedded. Run with --apply to apply only the matches.")
+        print(_("\nNothing embedded. Run with --apply to apply only the matches."))
         return
 
     n = 0
@@ -263,9 +266,9 @@ def main():
         for f in files:
             embed(f["path"], hit["data"], folder_jpg)
             n += 1
-    print(f"\nCovers embedded: {n}")
+    print(_("\nCovers embedded: {n}").format(n=n))
     if doubtful:
-        print(f"Doubtful ({len(doubtful)}) skipped — better check them by eye.")
+        print(_("Doubtful ({n}) skipped — better check them by eye.").format(n=len(doubtful)))
 
 
 if __name__ == "__main__":

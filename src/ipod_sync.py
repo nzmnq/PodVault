@@ -50,6 +50,7 @@ from mutagen.mp3 import MP3
 
 import ipod        # podsync lives in vendor/podsync; importing ipod puts it on the path
 import settings
+from i18n import _
 from musiclib import norm, strip_feat
 
 # Set from the settings by configure() — module-level so that the helper
@@ -76,19 +77,19 @@ def confirmed(question):
     piped into a program, so 'yes' arrives as '\\ufeffyes'.
     """
     if ASSUME_YES:
-        print(f"{question} yes (--yes)")
+        print(question + _("yes (--yes)"))
         return True
     try:
         ans = input(question)
     except EOFError:
         return False
     # 'да' is Russian for 'yes'
-    return ans.replace("﻿", "").strip().lower() in ("yes", "y", "да")
+    return ans.replace("﻿", "").strip().lower() in ("yes", "y", "да", _("yes"), _("y"))
 
 
 def active_files():
     out = []
-    for root, _, files in os.walk(ACTIVE):
+    for root, _skip, files in os.walk(ACTIVE):
         for fn in sorted(f for f in files if f.lower().endswith(".mp3")):
             out.append(os.path.join(root, fn))
     return sorted(out)
@@ -134,7 +135,7 @@ def index_library():
     idx = {}   # key -> {'A', 'R'}
     active_by_key = {}
     for root_dir, state in ((ACTIVE, "A"), (ARCHIVE, "R")):
-        for root, _, files in os.walk(root_dir):
+        for root, _skip, files in os.walk(root_dir):
             for fn in files:
                 if not fn.lower().endswith(".mp3"):
                     continue
@@ -219,11 +220,11 @@ def find_duplicates(pairs, device, idx):
     """
     pool = {}
     for n in pairs:
-        _, keys, dur = device[n]
+        _skip, keys, dur = device[n]
         for k in keys:
             pool.setdefault(k, []).append(dur)
     dupes = []
-    for n, (_, keys, dur) in enumerate(device):
+    for n, (_skip, keys, dur) in enumerate(device):
         if n in pairs or "A" not in states_of(keys, idx):
             continue
         for k in keys:
@@ -334,11 +335,11 @@ def make_plan(dev, db, playlist_file=None, playlist_only=False):
     idx, active_by_key = index_library()
     tracks = db["tracks"]
     device = read_device(tracks)
-    pairs, to_add = match_device(active_by_key, [(k, d) for _, k, d in device])
+    pairs, to_add = match_device(active_by_key, [(k, d) for _skip, k, d in device])
     dupes = set(find_duplicates(pairs, device, idx))
 
     archive, unknown = [], []
-    for n, (_, keys, _) in enumerate(device):
+    for n, (_skip1, keys, _skip2) in enumerate(device):
         states = states_of(keys, idx)
         # Delete ONLY what's recognised as archive and not as active. Found
         # nowhere — leave it: an extra track in shuffle beats a needed one wiped.
@@ -372,40 +373,44 @@ def show_plan(dev, plan):
         x = t[n]
         return f"{x.get('artist')} — {x.get('album')} — {x.get('title')}"
 
+    rows = [(_("tracks now"), len(t), ""),
+            (_("recognised as Active"), len(plan['pairs']), _("(stay)")),
+            (_("extra copies"), len(plan['dupes']), _("<- delete, one copy of each stays")),
+            (_("recognised as Archive"), len(plan['archive']), _("<- delete")),
+            (_("not recognised"), len(plan['unknown']), _("(left alone)")),
+            (_("in Active, not on the iPod"), len(plan['to_add']), _("<- copy")),
+            (_("shown without a cover"), len(plan['covers']), _("(set from the file)"))]
+    if plan["bare"]:
+        rows.append(("  + " + _("no cover in the file"), plan['bare'],
+                     _("(nothing to set; 'covers' in the menu fetches them)")))
+    rows.append((_("genre differs from file"), len(plan['regenre']), _("(updated)")))
+    if plan["playlist"]:
+        rows.append((_("playlist to add"), plan['playlist'][0],
+                     _("({n} tracks)").format(n=len(plan['playlist'][1]))))
+    width = max(len(label) for label, _v, _n in rows)
+
     print()
     print("=" * 70)
-    print(f"THE IPOD: {ipod.describe(dev)}")
+    print(_("THE IPOD: {device}").format(device=ipod.describe(dev)))
     print("=" * 70)
-    print(f"  tracks now                 : {len(t)}")
-    print(f"  recognised as Active       : {len(plan['pairs'])}   (stay)")
-    print(f"  extra copies               : {len(plan['dupes'])}   <- delete, one copy of each stays")
-    print(f"  recognised as Archive      : {len(plan['archive'])}   <- delete")
-    print(f"  not recognised             : {len(plan['unknown'])}   (left alone)")
-    print(f"  in Active, not on the iPod : {len(plan['to_add'])}   <- copy")
-    print(f"  shown without a cover      : {len(plan['covers'])}   (set from the file)")
-    if plan["bare"]:
-        print(f"    + no cover in the file   : {plan['bare']}   (nothing to set; "
-              "'covers' in the menu fetches them)")
-    print(f"  genre differs from file    : {len(plan['regenre'])}   (updated)")
-    if plan["playlist"]:
-        print(f"  playlist to add            : {plan['playlist'][0]} "
-              f"({len(plan['playlist'][1])} tracks)")
-    for title, items in (("WILL BE DELETED (archive)", plan["archive"]),
-                         ("EXTRA COPIES, WILL BE DELETED", plan["dupes"]),
-                         ("NOT RECOGNISED, STAY (--rescue copies them off the iPod)",
+    for label, value, note in rows:
+        print(f"  {label.ljust(width)} : {value}   {note}".rstrip())
+    for title, items in ((_("WILL BE DELETED (archive)"), plan["archive"]),
+                         (_("EXTRA COPIES, WILL BE DELETED"), plan["dupes"]),
+                         (_("NOT RECOGNISED, STAY (--rescue copies them off the iPod)"),
                           plan["unknown"])):
         if items:
             print(f"\n--- {title} ---")
             for n in items[:20]:
                 print(f"  {name(n)}")
             if len(items) > 20:
-                print(f"  ... {len(items) - 20} more")
+                print(_("  ... {n} more").format(n=len(items) - 20))
     if plan["to_add"]:
-        print("\n--- WILL BE COPIED ---")
+        print("\n--- " + _("WILL BE COPIED") + " ---")
         for p in plan["to_add"][:20]:
             print(f"  {os.path.relpath(p, ACTIVE)}")
         if len(plan["to_add"]) > 20:
-            print(f"  ... {len(plan['to_add']) - 20} more")
+            print(_("  ... {n} more").format(n=len(plan['to_add']) - 20))
 
 
 # ------------------------------------------------------------------- apply
@@ -440,7 +445,7 @@ def apply_plan(cfg, dev, db, generation, plan):
 
     with WriteLock(root, volume_key=lock_key_for(profile),
                    expected_database_generation=generation) as guard:
-        print("\n  backing up the iPod's database...")
+        print(_("\n  backing up the iPod's database..."))
         print(f"  -> {ipod.backup(cfg, root)}")
 
         records, cover_from, by_path = [], {}, {}
@@ -472,9 +477,11 @@ def apply_plan(cfg, dev, db, generation, plan):
                 cover_from[rec.db_track_id] = p
                 by_path[os.path.normcase(p)] = rec.db_track_id
                 if i % 10 == 0:
-                    print(f"\r  copied {i}/{len(plan['to_add'])}", end="", flush=True)
+                    print("\r" + _("  copied {n}/{total}").format(n=i, total=len(plan['to_add'])),
+                          end="", flush=True)
             if plan["to_add"]:
-                print(f"\r  copied {len(plan['to_add'])}/{len(plan['to_add'])}      ")
+                print("\r" + _("  copied {n}/{total}").format(n=len(plan['to_add']),
+                                                          total=len(plan['to_add'])) + "      ")
 
             # Existing playlists (regular, folders, smart) are rebuilt for the
             # new track list; deleted tracks simply drop out of them.
@@ -496,10 +503,10 @@ def apply_plan(cfg, dev, db, generation, plan):
                        if os.path.normcase(p) in by_path]
                 playlists.append(PlaylistRecord(name=final, track_ids=ids))
                 missing = len(paths) - len(ids)
-                print(f"  playlist '{final}': {len(ids)} tracks"
-                      + (f" ({missing} not on the iPod)" if missing else ""))
+                print(_("  playlist '{name}': {n} tracks").format(name=final, n=len(ids))
+                      + (" " + _("({n} not on the iPod)").format(n=missing) if missing else ""))
 
-            print("  writing the database (podsync reads it back afterwards)...")
+            print(_("  writing the database (podsync reads it back afterwards)..."))
             written = database.save_device_library(
                 root, records, pc_file_paths=cover_from or None,
                 playlists=playlists, podcast_playlists=podcast_pls,
@@ -509,7 +516,7 @@ def apply_plan(cfg, dev, db, generation, plan):
                 before_database_replace=guard.assert_database_unchanged,
                 before_device_mutation=revalidate)
             if not written:
-                raise RuntimeError("podsync did not write the database (see the messages above)")
+                raise RuntimeError(_("podsync did not write the database (see the messages above)"))
         except BaseException:
             # the old database is still in place: take back the files we added
             for f in copied:
@@ -533,18 +540,18 @@ def apply_plan(cfg, dev, db, generation, plan):
                     f.unlink()
                     gone += 1
                 except OSError as e:
-                    print(f"  ! file not deleted: {f}: {e}")
+                    print(_("  ! file not deleted: {file}: {error}").format(file=f, error=e))
         if remove:
-            print(f"  deleted {len(remove)} tracks ({gone} files)")
+            print(_("  deleted {n} tracks ({files} files)").format(n=len(remove), files=gone))
 
     now = ipod.load(dev)["tracks"]
-    print(f"\n  OK tracks on the iPod: {len(now)} (read back, every file in place)")
+    print(_("\n  OK tracks on the iPod: {n} (read back, every file in place)").format(n=len(now)))
     if cover_from:
         have = ipod.covered(root, now)
         got = sum(1 for d in cover_from if d in have)
-        print(f"  {'OK' if got == len(cover_from) else '!!'} covers written: "
-              f"{got}/{len(cover_from)}")
-    print("\nDone. Eject the iPod before unplugging it (Sync -> Eject in the menu).")
+        print(f"  {'OK' if got == len(cover_from) else '!!'} "
+              + _("covers written: {n}/{total}").format(n=got, total=len(cover_from)))
+    print(_("\nDone. Eject the iPod before unplugging it (Sync -> Eject in the menu)."))
 
 
 def run(cfg, apply_changes, ipod_path=None, playlist=None, playlist_only=False,
@@ -553,8 +560,8 @@ def run(cfg, apply_changes, ipod_path=None, playlist=None, playlist_only=False,
     from podsync.hardware.safety.guard import snapshot_database_state
 
     configure(cfg)
-    itunes = ("iTunes is running. Close it first: on eject it would write its own\n"
-              "copy of the iPod's database over the one written here.")
+    itunes = _("iTunes is running. Close it first: on eject it would write its own\n"
+               "copy of the iPod's database over the one written here.")
     if ipod.itunes_running():
         if apply_changes or do_restore:
             sys.exit(itunes)
@@ -569,17 +576,18 @@ def run(cfg, apply_changes, ipod_path=None, playlist=None, playlist_only=False,
     show_plan(dev, plan)
 
     if not apply_changes:
-        print("\nNothing changed. Add --apply.")
+        print(_("\nNothing changed. Add --apply."))
         return
     if not has_changes(plan):
-        print("\nNothing to do: the iPod already matches Active.")
+        print(_("\nNothing to do: the iPod already matches Active."))
         return
     n_del = len(plan["archive"]) + len(plan["dupes"])
     if n_del:
-        print(f"\n  Deleting {n_del} tracks from the iPod (a backup of the database is made first).")
-        print(f"  The files in {LIBRARY} stay intact.")
-        if not confirmed("  Type 'yes' to confirm: "):
-            print("Cancelled.")
+        print(_("\n  Deleting {n} tracks from the iPod (a backup of the database is made first).")
+              .format(n=n_del))
+        print(_("  The files in {folder} stay intact.").format(folder=LIBRARY))
+        if not confirmed(_("  Type 'yes' to confirm: ")):
+            print(_("Cancelled."))
             return
     apply_plan(cfg, dev, db, generation, plan)
 
@@ -598,9 +606,9 @@ def rescue_from_ipod(cfg, apply_changes, dest, ipod_path=None):
     """
 
     dev = ipod.open_ipod(cfg, ipod_path)
-    print(f"  iPod: {ipod.describe(dev)}")
-    print("  indexing the library...")
-    idx, _ = index_library()
+    print(_("  iPod: {device}").format(device=ipod.describe(dev)))
+    print(_("  indexing the library..."))
+    idx, _skip = index_library()
 
     found = []
     for t in ipod.load(dev)["tracks"]:
@@ -614,31 +622,31 @@ def rescue_from_ipod(cfg, apply_changes, dest, ipod_path=None):
 
     print()
     print("=" * 70)
-    print("ON THE IPOD, NOT IN THE LIBRARY")
+    print(_("ON THE IPOD, NOT IN THE LIBRARY"))
     print("=" * 70)
     if not found:
-        print("  nothing — every track on the iPod is in Active or Archive")
+        print(_("  nothing — every track on the iPod is in Active or Archive"))
         return
     todo = []
     for t, src, dst in found:
         if src is None:
-            state = "file missing on the iPod"
+            state = _("file missing on the iPod")
         elif os.path.isfile(dst) and os.path.getsize(dst) == os.path.getsize(src):
-            state = "already saved"
+            state = _("already saved")
         else:
-            state = "will be saved"
+            state = _("will be saved")
             todo.append((src, dst))
         print(f"  {t.get('artist')} — {t.get('album')} — {t.get('title')}   [{state}]")
-    print(f"\n  into: {dest}")
+    print(_("\n  into: {folder}").format(folder=dest))
 
     if not apply_changes:
-        print("\nNothing copied. Add --apply.")
+        print(_("\nNothing copied. Add --apply."))
         return
     os.makedirs(dest, exist_ok=True)
     for src, dst in todo:
         shutil.copy2(src, dst)
-    print(f"\nSaved {len(todo)} tracks. Now 'Add new tracks' brings them into the library;")
-    print("after that the sync recognises them.")
+    print(_("\nSaved {n} tracks. Now 'Add new tracks' brings them into the library;").format(n=len(todo)))
+    print(_("after that the sync recognises them."))
 
 
 # -------------------------------------------------------------- to disk
@@ -653,14 +661,14 @@ def sync_disk(drive, apply_changes, subdir):
     # the device itself must be there: a mistyped mount point must not
     # become a new folder on the system disk
     if not os.path.isdir(drive):
-        sys.exit(f"Drive not available: {drive}")
+        sys.exit(_("Drive not available: {drive}").format(drive=drive))
 
     files = active_files()
     want = {}
     for p in files:
         want[os.path.relpath(p, ACTIVE)] = p
     # cover art is needed too
-    for r, _, fs in os.walk(ACTIVE):
+    for r, _skip, fs in os.walk(ACTIVE):
         for fn in fs:
             if fn.lower() == "folder.jpg":
                 p = os.path.join(r, fn)
@@ -668,7 +676,7 @@ def sync_disk(drive, apply_changes, subdir):
 
     have = {}
     if os.path.isdir(root):
-        for r, _, fs in os.walk(root):
+        for r, _skip, fs in os.walk(root):
             for fn in fs:
                 p = os.path.join(r, fn)
                 have[os.path.relpath(p, root)] = p
@@ -679,27 +687,30 @@ def sync_disk(drive, apply_changes, subdir):
     size = sum(os.path.getsize(want[r]) for r in to_copy)
 
     print("=" * 70)
-    print(f"MIRROR TO DISK: {root}")
+    print(_("MIRROR TO DISK: {folder}").format(folder=root))
     print("=" * 70)
-    print(f"  should be : {len(want)} files")
-    print(f"  to copy   : {len(to_copy)}  ({size / 1024 ** 3:.2f} GB)")
-    print(f"  to delete : {len(to_delete)}")
+    rows = [(_("should be"), _("{n} files").format(n=len(want))),
+            (_("to copy"), _("{n}  ({gb} GB)").format(n=len(to_copy), gb=f"{size / 1024 ** 3:.2f}")),
+            (_("to delete"), str(len(to_delete)))]
+    width = max(len(label) for label, _v in rows)
+    for label, value in rows:
+        print(f"  {label.ljust(width)} : {value}")
 
     if to_delete:
-        print("\n--- WILL BE DELETED FROM THE DEVICE ---")
+        print("\n--- " + _("WILL BE DELETED FROM THE DEVICE") + " ---")
         for rel in to_delete[:15]:
             print(f"  {rel}")
         if len(to_delete) > 15:
-            print(f"  ... {len(to_delete) - 15} more")
+            print(_("  ... {n} more").format(n=len(to_delete) - 15))
 
     if not apply_changes:
-        print("\nNothing changed. Add --apply.")
+        print(_("\nNothing changed. Add --apply."))
         return
 
     if to_delete:
-        print(f"\nDeleting {len(to_delete)} files from the device — this can't be undone.")
-        if not confirmed("  Type 'yes' to confirm: "):
-            print("Cancelled.")
+        print(_("\nDeleting {n} files from the device — this can't be undone.").format(n=len(to_delete)))
+        if not confirmed(_("  Type 'yes' to confirm: ")):
+            print(_("Cancelled."))
             return
 
     for n, rel in enumerate(to_copy, 1):
@@ -707,15 +718,15 @@ def sync_disk(drive, apply_changes, subdir):
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(want[rel], dst)
         if n % 50 == 0:
-            print(f"\r  copied {n}/{len(to_copy)}", end="", flush=True)
+            print("\r" + _("  copied {n}/{total}").format(n=n, total=len(to_copy)), end="", flush=True)
     if to_copy:
-        print(f"\r  copied {len(to_copy)}/{len(to_copy)}")
+        print("\r" + _("  copied {n}/{total}").format(n=len(to_copy), total=len(to_copy)))
 
     for rel in to_delete:
         try:
             os.remove(have[rel])
         except OSError as e:
-            print(f"  ! not deleted {rel}: {e}")
+            print(_("  ! not deleted {file}: {error}").format(file=rel, error=e))
     # clean up folders that became empty
     for r, dirs, fs in os.walk(root, topdown=False):
         if r != root and not os.listdir(r):
@@ -723,41 +734,43 @@ def sync_disk(drive, apply_changes, subdir):
                 os.rmdir(r)
             except OSError:
                 pass
-    print(f"\nDone: {len(to_copy)} copied, {len(to_delete)} deleted.")
+    print(_("\nDone: {copied} copied, {deleted} deleted.").format(copied=len(to_copy), deleted=len(to_delete)))
 
 
 def main():
     cfg = configure()
 
-    ap = argparse.ArgumentParser(description="sync the iPod with the Active folder")
-    ap.add_argument("--apply", action="store_true", help="actually apply")
+    ap = argparse.ArgumentParser(description=_("sync the iPod with the Active folder"))
+    ap.add_argument("--apply", action="store_true", help=_("actually apply"))
     ap.add_argument("--yes", action="store_true",
-                    help="don't ask to confirm deletion (already confirmed)")
-    ap.add_argument("--ipod", metavar="PATH", help="the iPod's drive or mount point")
-    ap.add_argument("--playlist", metavar="M3U8", help="also put this playlist on the iPod")
+                    help=_("don't ask to confirm deletion (already confirmed)"))
+    ap.add_argument("--ipod", metavar="PATH", help=_("the iPod's drive or mount point"))
+    ap.add_argument("--playlist", metavar="M3U8", help=_("also put this playlist on the iPod"))
     ap.add_argument("--playlist-only", action="store_true",
-                    help="with --playlist: add only the playlist (and copy its tracks "
-                         "missing from the iPod), delete or change nothing")
+                    help=_("with --playlist: add only the playlist (and copy its tracks "
+                           "missing from the iPod), delete or change nothing"))
     ap.add_argument("--restore", action="store_true",
-                    help="put the latest backup of the iPod's database back")
+                    help=_("put the latest backup of the iPod's database back"))
     ap.add_argument("--rescue", action="store_true",
-                    help="copy tracks that are on the iPod but not in the library "
-                         "into <incoming>\\From iPod")
-    ap.add_argument("--disk", metavar="DRIVE", help="mirror to a drive: E: or /Volumes/NAME (Rockbox / disk mode)")
+                    help=_("copy tracks that are on the iPod but not in the library "
+                           "into <incoming>\\From iPod"))
+    ap.add_argument("--disk", metavar="DRIVE",
+                    help=_("mirror to a drive: E: or /Volumes/NAME (Rockbox / disk mode)"))
     ap.add_argument("--subdir", default=cfg["ipod_disk_subdir"],
-                    help=f"folder on the device, with --disk (setting: {cfg['ipod_disk_subdir']})")
+                    help=_("folder on the device, with --disk (setting: {value})").format(
+                        value=cfg['ipod_disk_subdir']))
     args = ap.parse_args()
 
     global ASSUME_YES
     ASSUME_YES = args.yes
 
     if not os.path.isdir(ACTIVE):
-        sys.exit(f"Active folder not found: {ACTIVE}")
+        sys.exit(_("Active folder not found: {folder}").format(folder=ACTIVE))
 
     if args.rescue:
         incoming = settings.path("incoming_dir", cfg)
         if not incoming:
-            sys.exit("The incoming folder isn't set (Settings).")
+            sys.exit(_("The incoming folder isn't set (Settings)."))
         return rescue_from_ipod(cfg, args.apply, os.path.join(incoming, "From iPod"), args.ipod)
     if args.disk:
         return sync_disk(args.disk, args.apply, args.subdir)

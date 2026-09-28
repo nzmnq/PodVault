@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import settings
+from i18n import _
 
 class IPodDownloader:
     def __init__(self, tracklist_file=None, download_dir=None):
@@ -25,7 +26,7 @@ class IPodDownloader:
 
     def process_list(self):
         if not self.ffmpeg_path:
-            print("ffmpeg not found. Set its path on the Settings screen.")
+            print(_("ffmpeg not found. Set its path on the Settings screen."))
             return
         if not os.path.exists(self.tracklist_file):
             tracklist_dir = os.path.dirname(self.tracklist_file)
@@ -50,7 +51,7 @@ class IPodDownloader:
                     f.write(res.content)
                 return True
         except Exception as e:
-            print(f"Cannot download artwork: {e}")
+            print(_("Cannot download artwork: {error}").format(error=e))
         return False
 
     def _handle_track(self, line):
@@ -68,7 +69,7 @@ class IPodDownloader:
             'cover':    parts[8] if len(parts) > 8 else None
         }
 
-        print(f"\nDownloading: {meta['track']}. {meta['title']} - {meta['artist']}")
+        print("\n" + _("Downloading: {track}. {title} - {artist}").format(**meta))
         
         if meta['title'].startswith('http'):
             query = meta['title']
@@ -101,21 +102,21 @@ class IPodDownloader:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 error_code = ydl.download([query])
                 if error_code != 0:
-                    print("Cannot download, skipping.")
+                    print(_("Cannot download, skipping."))
                     return
         except Exception as e:
-            print(f"Critical yt-dlp error: {e}")
+            print(_("Critical yt-dlp error: {error}").format(error=e))
             return
 
         if not os.path.exists(temp_audio):
-            print(f"Temp file {temp_audio} not found.")
+            print(_("Temp file {file} not found.").format(file=temp_audio))
             return
 
         has_cover = False
         if meta['cover']:
             has_cover = self._download_cover(meta['cover'], temp_cover)
 
-        print("Embedding metadata...")
+        print(_("Embedding metadata..."))
         self._build_final_file(temp_audio, temp_cover if has_cover else None, final_audio, meta)
 
         try:
@@ -124,7 +125,7 @@ class IPodDownloader:
             if os.path.exists(temp_cover):
                 os.remove(temp_cover)
         except Exception as e:
-            print(f"Warning: Could not remove temp files: {e}")
+            print(_("Warning: Could not remove temp files: {error}").format(error=e))
 
     def _build_final_file(self, temp_audio, temp_cover, final_output, meta):
         cmd = [self.ffmpeg_path, '-y', '-v', 'error', '-i', temp_audio]
@@ -154,14 +155,14 @@ class IPodDownloader:
 
         try:
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
-            print(f"Done: {os.path.basename(final_output)}")
+            print(_("Done: {file}").format(file=os.path.basename(final_output)))
         except subprocess.CalledProcessError:
-            print("FFmpeg error occurred during metadata embedding.")
+            print(_("FFmpeg error occurred during metadata embedding."))
 
 if __name__ == "__main__":
-    print("iPod Media Builder started!")
+    print(_("Tracklist downloader started."))
     
     downloader = IPodDownloader()
     downloader.process_list()
 
-    print("\nAll tasks done!")
+    print(_("\nAll done."))

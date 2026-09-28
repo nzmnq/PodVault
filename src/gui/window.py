@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabel,
                              QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from gui import backend, theme
+from i18n import N_, _
 from gui.jobs import Jobs
 from gui.pages import (IpodPage, LibraryPage, PlaylistPage, SettingsPage, ToolDialog, VibePage)
 from gui.theme import C, GLYPHS, UI, icon
@@ -50,7 +51,7 @@ class JobSheet(QDialog):
         self.win = win
         self.job = None
         self.shown_upto = 0
-        self.setWindowTitle("Task")
+        self.setWindowTitle(_("Task"))
         self.setModal(True)
         self.resize(*UI["sheet"])
         lay = QVBoxLayout(self)
@@ -71,13 +72,13 @@ class JobSheet(QDialog):
         self.confirm.setObjectName("confirm")
         foot = QHBoxLayout()
         self.follow = QHBoxLayout()
-        self.cancel_btn = button("Stop")
+        self.cancel_btn = button(_("Stop"))
         self.cancel_btn.clicked.connect(self._cancel)
-        self.hide_btn = button("Hide", tip="Keep it running; the LCD shows its progress")
+        self.hide_btn = button(_("Hide"), tip=_("Keep it running; the LCD shows its progress"))
         self.hide_btn.clicked.connect(self.hide)
-        self.apply_btn = button("Apply", primary=True)
+        self.apply_btn = button(_("Apply"), primary=True)
         self.apply_btn.clicked.connect(self._apply)
-        self.close_btn = button("Close")
+        self.close_btn = button(_("Close"))
         self.close_btn.clicked.connect(self.hide)
         foot.addLayout(self.follow)
         foot.addStretch(1)
@@ -137,7 +138,7 @@ class JobSheet(QDialog):
         status, progress = job.status()
         running = job.running
         if running:
-            self.status.setText(cur.strip() or status or "working…")
+            self.status.setText(cur.strip() or status or _("working…"))
             if progress is None:
                 self.bar.setRange(0, 0)
             else:
@@ -151,9 +152,9 @@ class JobSheet(QDialog):
             ok = job.code == 0
             self.bar.setProperty("state", "ok" if ok else "bad")
             took = (job.finished or time.time()) - job.started
-            self.status.setText(("Done" if ok else "Cancelled" if job.cancelled else
-                                 f"Stopped with an error (exit code {job.code})")
-                                + f" · {took:.0f} s")
+            self.status.setText((_("Done") if ok else _("Cancelled") if job.cancelled else
+                                 _("Stopped with an error (exit code {code})").format(code=job.code))
+                                + " · " + _("{s} s").format(s=f"{took:.0f}"))
         self.bar.style().unpolish(self.bar)
         self.bar.style().polish(self.bar)
         self.cancel_btn.setVisible(running and job.cancelable)
@@ -162,11 +163,12 @@ class JobSheet(QDialog):
         self.apply_btn.setVisible(job.can_apply)
         self.confirm.setVisible(job.can_apply)
         if job.can_apply:
-            self.confirm.setText(job.confirm or "Apply these changes?")
+            self.confirm.setText(_(job.confirm) if job.confirm else _("Apply these changes?"))
             self.apply_btn.setDefault(True)
 
     def _cancel(self):
-        if self.job and ask(self, "Stop", f"Stop “{self.job.base_title}”?", yes="Stop", danger=True):
+        if self.job and ask(self, _("Stop"), _("Stop “{tool}”?").format(tool=self.job.base_title),
+                            yes=_("Stop"), danger=True):
             self.job.cancel()
 
     def _apply(self):
@@ -247,15 +249,15 @@ class SideDelegate(QStyledItemDelegate):
 
 # The ☰ menu: tool names from backend.TOOLS; None is a separator; (title, [tools]) a submenu.
 MENU = ["covers", "tags", "likes", "export", None,
-        ("Audio tools", ["flac", "download", "tracklist_covers", "spatial"]), "build", None,
-        "settings"]
-MENU_EXTRA = {"export": "Export the list…", "settings": "Settings…"}
+        (N_("Audio tools"), ["flac", "download", "tracklist_covers", "spatial"]), None,
+        "build", "settings"]
+MENU_EXTRA = {"export": N_("Export the list…"), "settings": N_("Settings…")}
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Music Utility")
+        self.setWindowTitle(_("Music Utility"))
         self.setWindowIcon(app_icon())
         self.resize(*UI["window"])
         self.setMinimumSize(*UI["window_min"])
@@ -344,8 +346,8 @@ class MainWindow(QMainWindow):
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(14, 8, 14, 8)
         lay.setSpacing(8)
-        self.tb_sync = button("Sync", tip="Sync the iPod with Active (Ctrl+S)")
-        self.tb_add = button("Add", tip="Add new tracks — or drop a folder onto the window (Ctrl+N)")
+        self.tb_sync = button(_("Sync"), tip=_("Sync the iPod with Active (Ctrl+S)"))
+        self.tb_add = button(_("Add"), tip=_("Add new tracks — or drop a folder onto the window (Ctrl+N)"))
         for b, name in ((self.tb_sync, "sync"), (self.tb_add, "incoming")):
             b.setObjectName("tb")
             b.setIcon(icon(name))
@@ -360,13 +362,13 @@ class MainWindow(QMainWindow):
         self.lcd.clicked.connect(self._lcd_clicked)
         self.search = QLineEdit()
         self.search.setObjectName("search")
-        self.search.setPlaceholderText("Search")
+        self.search.setPlaceholderText(_("Search"))
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._search)
         self.tb_menu = button("")
         self.tb_menu.setObjectName("tb")
         self.tb_menu.setIcon(icon("menu"))
-        self.tb_menu.setToolTip("Tools and settings")
+        self.tb_menu.setToolTip(_("Tools and settings"))
         self.tb_menu.setMenu(self._menu())
         right = QHBoxLayout()
         right.setSpacing(8)
@@ -380,10 +382,10 @@ class MainWindow(QMainWindow):
 
     def _menu(self):
         def add(menu, name):
-            title = MENU_EXTRA.get(name) or backend.TOOLS[name]["title"] + "…"
+            title = _(MENU_EXTRA[name]) if name in MENU_EXTRA else _(backend.TOOLS[name]["title"]) + "…"
             act = menu.addAction(title, lambda n=name: self.open_tool(n))
             if name in backend.TOOLS:
-                act.setToolTip(backend.TOOLS[name].get("about", ""))
+                act.setToolTip(_(backend.TOOLS[name].get("about", "")))
 
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
@@ -391,7 +393,7 @@ class MainWindow(QMainWindow):
             if entry is None:
                 menu.addSeparator()
             elif isinstance(entry, tuple):
-                sub = menu.addMenu(entry[0])
+                sub = menu.addMenu(_(entry[0]))
                 sub.setToolTipsVisible(True)
                 for name in entry[1]:
                     add(sub, name)
@@ -411,8 +413,8 @@ class MainWindow(QMainWindow):
         self.summary.setObjectName("summary")
         self.pending = QLabel()
         self.pending.setObjectName("pending")
-        self.revert_btn = button("Revert")
-        self.save_marks_btn = button("Move the files…", primary=True)
+        self.revert_btn = button(_("Revert"))
+        self.save_marks_btn = button(_("Move the files…"), primary=True)
         for b in (self.revert_btn, self.save_marks_btn):
             b.setFixedHeight(UI["status_button_h"])
         self.revert_btn.clicked.connect(lambda: self.library_page.revert())
@@ -447,15 +449,15 @@ class MainWindow(QMainWindow):
         head_font.setPointSizeF(8)
         head_font.setBold(True)
         self.side_items = {}
-        sections = [("LIBRARY", [("library", "library", "Music")])]
+        sections = [(N_("LIBRARY"), [("library", "library", _("Music"))])]
         if self.ipods:
             name = (self.ipod_info or {}).get("name") or "iPod"
-            sections.append(("DEVICE", [("ipod", "ipod", name)]))
-        sections.append(("PLAYLISTS", [(f"playlist:{p['file']}", "playlist", p["name"])
+            sections.append((N_("DEVICE"), [("ipod", "ipod", name)]))
+        sections.append((N_("PLAYLISTS"), [(f"playlist:{p['file']}", "playlist", p["name"])
                                        for p in self.playlists]
-                         + [("vibe", "vibe", "New vibe playlist…")]))
+                         + [("vibe", "vibe", _("New vibe playlist…"))]))
         for title, items in sections:
-            head = QTreeWidgetItem([title])
+            head = QTreeWidgetItem([_(title)])
             head.setFlags(Qt.ItemFlag.ItemIsEnabled)
             head.setFont(0, head_font)
             head.setForeground(0, QColor(C["side_head"]))
@@ -466,8 +468,8 @@ class MainWindow(QMainWindow):
                 it.setData(0, KeyRole, key)
                 if key == "ipod" and self.ipod_info:
                     d = self.ipod_info
-                    it.setToolTip(0, f"{d['model']}\n{fmt_gb(d['free_gb'])} free of "
-                                     f"{fmt_gb(d['capacity_gb'])}")
+                    it.setToolTip(0, f"{d['model']}\n" + _("{free} free of {total}").format(
+                        free=fmt_gb(d['free_gb']), total=fmt_gb(d['capacity_gb'])))
                 head.addChild(it)
                 self.side_items[key] = it
             head.setExpanded(True)
@@ -488,16 +490,16 @@ class MainWindow(QMainWindow):
         key = item.data(0, KeyRole) if item else None
         menu = QMenu(self)
         if key == "ipod":
-            menu.addAction("Sync…", lambda: self.run_tool("sync"))
-            menu.addAction("Eject", self.eject)
-            menu.addAction("Read it again", lambda: self.ipod_page.load(force=True))
+            menu.addAction(_("Sync…"), lambda: self.run_tool("sync"))
+            menu.addAction(_("Eject"), self.eject)
+            menu.addAction(_("Read it again"), lambda: self.ipod_page.load(force=True))
         elif key and key.startswith("playlist:"):
             f = key.split(":", 1)[1]
-            act = menu.addAction("Create on the iPod…", lambda: self.run_tool(
+            act = menu.addAction(_("Create on the iPod…"), lambda: self.run_tool(
                 "playlist_to_ipod", {"file": f}))
             act.setEnabled(bool(self.ipods))
         elif key == "library":
-            menu.addAction("Read the library again", lambda: self.reload_library(force=True))
+            menu.addAction(_("Read the library again"), lambda: self.reload_library(force=True))
         else:
             return
         menu.exec(self.sidebar.viewport().mapToGlobal(pos))
@@ -513,7 +515,7 @@ class MainWindow(QMainWindow):
         if key != self.current_key and page is not None and not page.can_leave():
             return False
         if backend.cfg() is None and key != "settings":
-            self.toast("Fill in the basic settings first.", bad=True)
+            self.toast(_("Fill in the basic settings first."), bad=True)
             return False
         if key == "library":
             target = self.library_page
@@ -559,20 +561,20 @@ class MainWindow(QMainWindow):
             ToolDialog(self, name).exec()
         elif backend.TOOLS[name].get("apply"):
             self.run_tool(name)                 # a dry run first: safe to start right away
-        elif ask(self, backend.TOOLS[name]["title"], backend.TOOLS[name].get("about", ""),
+        elif ask(self, _(backend.TOOLS[name]["title"]), _(backend.TOOLS[name].get("about", "")),
                  yes="Run"):
             self.run_tool(name)
 
     def export_list(self):
         if self.albums is None:
-            inform(self, "Export the list", "The library is still being read.")
+            inform(self, _("Export the list"), _("The library is still being read."))
             return
         try:
             path = backend.export_list(self.albums)
         except Exception as e:
-            inform(self, "Export the list", str(e), bad=True)
+            inform(self, _("Export the list"), str(e), bad=True)
             return
-        self.toast(f"Written: {path}\nClick to show it.", good=True,
+        self.toast(_("Written: {path}\nClick to show it.").format(path=path), good=True,
                    action=lambda: backend.open_in_explorer(os.path.dirname(path)))
 
     # --- drag & drop: a folder of new tracks
@@ -601,8 +603,8 @@ class MainWindow(QMainWindow):
         if self.scanning:
             return
         if force and self.library_page.marks:
-            if not ask(self, "Read the library again",
-                       "Read the library again and drop the unsaved marks?", yes="Read again",
+            if not ask(self, _("Read the library again"),
+                       _("Read the library again and drop the unsaved marks?"), yes=_("Read again"),
                        danger=True):
                 return
             self.library_page.revert()
@@ -649,10 +651,12 @@ class MainWindow(QMainWindow):
         if self.albums:
             bare = [a for a in self.albums if a["no_art"]]
             if bare:
-                items.append((f"{plural(len(bare), 'album')} without a cover", "Find covers…",
+                items.append((plural(len(bare), "{n} album without a cover", "{n} albums without a cover"),
+                              _("Find covers…"),
                               lambda: self.open_tool("covers")))
         if self.genres_missing:
-            items.append((f"{plural(self.genres_missing, 'album')} without a genre", "Suggest…",
+            items.append((plural(self.genres_missing, "{n} album without a genre",
+                                 "{n} albums without a genre"), _("Suggest…"),
                           lambda: (self.navigate("library"), self.library_page.set_view("genres"),
                                    self.run_tool("genres_suggest"))))
         info = self.ipod_info if self.ipods else None
@@ -660,10 +664,12 @@ class MainWindow(QMainWindow):
             only = sum(1 for t in info["tracks"] if t["state"] == "")
             archive = sum(1 for t in info["tracks"] if t["state"] == "R")
             if archive:
-                items.append((f"{plural(archive, 'archive track')} still on the iPod", "Sync…",
+                items.append((plural(archive, "{n} archive track still on the iPod",
+                                     "{n} archive tracks still on the iPod"), _("Sync…"),
                               lambda: self.run_tool("sync")))
             if only:
-                items.append((f"{plural(only, 'track')} only on the iPod", "Save them…",
+                items.append((plural(only, "{n} track only on the iPod", "{n} tracks only on the iPod"),
+                              _("Save them…"),
                               lambda: self.run_tool("rescue")))
         self.library_page.attention.set_items(items)
 
@@ -675,33 +681,35 @@ class MainWindow(QMainWindow):
         if n:
             parts = []
             if to_r:
-                parts.append(f"{len(to_r)} → Archive")
+                parts.append(_("{n} → Archive").format(n=len(to_r)))
             if to_a:
-                parts.append(f"{len(to_a)} → Active")
-            self.pending.setText("Not saved: " + ", ".join(parts))
+                parts.append(_("{n} → Active").format(n=len(to_a)))
+            self.pending.setText(_("Not saved: {changes}").format(changes=", ".join(parts)))
         for w in (self.pending, self.revert_btn, self.save_marks_btn):
             w.setVisible(bool(n))
         self.update_status()
 
     def apply_marks(self):
         if self.jobs.busy():
-            inform(self, "Move albums", "Wait for the running task to finish.")
+            inform(self, _("Move albums"), _("Wait for the running task to finish."))
             return
         to_a, to_r = self.library_page.summary()
         if not (to_a or to_r):
             return
-        lines = [f"→ Archive   {a['artist']} — {a['album']}" for a in to_r] + \
-                [f"→ Active    {a['artist']} — {a['album']}" for a in to_a]
+        lines = [_("→ Archive   {album}").format(album=f"{a['artist']} — {a['album']}") for a in to_r] + \
+                [_("→ Active    {album}").format(album=f"{a['artist']} — {a['album']}") for a in to_a]
         shown = UI["list_preview"]
-        text = (f"Move {plural(len(lines), 'album')} between Active and Archive?\n\n"
-                + "\n".join(lines[:shown]) + (f"\n… {len(lines) - shown} more" if len(lines) > shown else ""))
-        if not ask(self, "Move albums", text, yes="Move", details="\n".join(lines)):
+        text = (plural(len(lines), "Move {n} album between Active and Archive?",
+                       "Move {n} albums between Active and Archive?") + "\n\n"
+                + "\n".join(lines[:shown])
+                + ("\n" + _("… {n} more").format(n=len(lines) - shown) if len(lines) > shown else ""))
+        if not ask(self, _("Move albums"), text, yes=_("Move"), details="\n".join(lines)):
             return
         moves = dict(self.library_page.marks)
         self.library_page.setEnabled(False)       # no new marks while files move
         self.save_marks_btn.setEnabled(False)
         self.revert_btn.setEnabled(False)
-        self.lcd_note = ("Moving albums…", "")
+        self.lcd_note = (_("Moving albums…"), "")
         self.lcd_note_until = float("inf")
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         run_async(backend.save_marks, list(self.albums or []), moves,
@@ -719,32 +727,33 @@ class MainWindow(QMainWindow):
         done, errors = result
         self.library_page.marks.clear()
         self._marks_changed()
-        self.note(f"Moved {plural(done, 'album')}", "")
+        self.note(plural(done, "Moved {n} album", "Moved {n} albums"), "")
         if errors:
-            inform(self, "Move albums", "Some albums weren't moved:\n\n"
+            inform(self, _("Move albums"), _("Some albums weren't moved:") + "\n\n"
                    + "\n".join(errors[:UI["list_preview"]]), bad=True)
         self.reload_library()
         self.ipod_page.data = None
-        if done and self.ipods and ask(self, "Move albums",
-                                       f"Moved {plural(done, 'album')}. Sync the iPod now?",
-                                       yes="Sync…"):
+        if done and self.ipods and ask(self, _("Move albums"),
+                                       plural(done, "Moved {n} album. Sync the iPod now?",
+                                              "Moved {n} albums. Sync the iPod now?"),
+                                       yes=_("Sync…")):
             self.run_tool("sync")
 
     def _marks_failed(self, msg):
         self._marks_done()
-        inform(self, "Move albums", msg, bad=True)
+        inform(self, _("Move albums"), msg, bad=True)
         self.reload_library()
 
     # --- tools
 
     def run_tool(self, tool, params=None, applying=False):
-        title = backend.TOOLS[tool]["title"]
+        title = _(backend.TOOLS[tool]["title"])
         if tool in ("sync", "rescue", "restore", "playlist_to_ipod", "eject") and not self.ipods:
-            inform(self, title, "No iPod connected. Connect it with the cable and try again.")
+            inform(self, title, _("No iPod connected. Connect it with the cable and try again."))
             return None
         if tool in ("sync", "playlist_to_ipod", "rescue") and self.library_page.marks:
-            if not ask(self, title, "There are unsaved Active / Archive marks. The sync only sees "
-                       "what's saved on disk.\n\nContinue without them?", yes="Continue"):
+            if not ask(self, title, _("There are unsaved Active / Archive marks. The sync only sees "
+                                      "what's saved on disk.\n\nContinue without them?"), yes=_("Continue")):
                 return None
         if tool == "genres_apply" and self.genres_page.edits and not self.genres_page.save():
             return None
@@ -753,7 +762,7 @@ class MainWindow(QMainWindow):
         except ValueError as e:
             inform(self, title, str(e))
         except RuntimeError as e:
-            inform(self, title, f"{e}\nWait for it to finish.")
+            inform(self, title, f"{e}\n" + _("Wait for it to finish."))
             self.sheet.open_for(self.jobs.current)
         return None
 
@@ -783,9 +792,10 @@ class MainWindow(QMainWindow):
         self._follow_ups(job)
         self._busy_buttons()
         ok = job.code == 0
-        self.note(("Done — " if ok else "Stopped — ") + job.base_title, "")
+        self.note((_("Done — {tool}") if ok else _("Stopped — {tool}")).format(tool=job.base_title), "")
         if not self.sheet.isVisible():
-            self.toast(("Done: " if ok else "Didn't finish: ") + job.title, good=ok, bad=not ok,
+            self.toast((_("Done: {tool}") if ok else _("Didn't finish: {tool}")).format(tool=job.title),
+                       good=ok, bad=not ok,
                        action=lambda: self.sheet.open_for(job))
 
     def _follow_ups(self, job):
@@ -793,26 +803,26 @@ class MainWindow(QMainWindow):
         if job is not sheet.job or job.code != 0:
             return
         if job.tool == "sync" and job.applying:
-            sheet.add_follow("Eject the iPod", self.eject)
-            sheet.add_follow("Show the iPod", lambda: self.navigate("ipod"))
+            sheet.add_follow(_("Eject the iPod"), self.eject)
+            sheet.add_follow(_("Show the iPod"), lambda: self.navigate("ipod"))
         elif job.tool == "incoming" and job.applying:
             if job.params.get("to") != "archive" and self.ipods:
-                sheet.add_follow("Sync the iPod…", lambda: self.run_tool("sync"), primary=True)
-            sheet.add_follow("Show the library", lambda: self.navigate("library"))
+                sheet.add_follow(_("Sync the iPod…"), lambda: self.run_tool("sync"), primary=True)
+            sheet.add_follow(_("Show the library"), lambda: self.navigate("library"))
         elif job.tool in ("genres_apply", "covers") and job.applying and self.ipods:
-            sheet.add_follow("Sync the iPod…", lambda: self.run_tool("sync"), primary=True)
+            sheet.add_follow(_("Sync the iPod…"), lambda: self.run_tool("sync"), primary=True)
         elif job.tool == "rescue" and job.applying:
-            sheet.add_follow("Add them to the library…", lambda: self.open_tool("incoming"),
+            sheet.add_follow(_("Add them to the library…"), lambda: self.open_tool("incoming"),
                              primary=True)
         elif job.tool == "vibe":
             newest = self.playlists[0]["file"] if self.playlists else None
             if newest:
-                sheet.add_follow("Show the playlist", lambda: self.navigate(f"playlist:{newest}"))
+                sheet.add_follow(_("Show the playlist"), lambda: self.navigate(f"playlist:{newest}"))
                 if self.ipods:
-                    sheet.add_follow("Create on the iPod…", lambda: self.run_tool(
+                    sheet.add_follow(_("Create on the iPod…"), lambda: self.run_tool(
                         "playlist_to_ipod", {"file": newest}), primary=True)
         elif job.tool == "genres_suggest":
-            sheet.add_follow("Review the genres", lambda: (
+            sheet.add_follow(_("Review the genres"), lambda: (
                 self.navigate("library"), self.library_page.set_view("genres")), primary=True)
 
     def _busy_buttons(self):
@@ -848,7 +858,7 @@ class MainWindow(QMainWindow):
         self.update_status()
         if self.current_key and self.current_key.startswith("playlist:"):
             self.playlist_page.shown()
-        self.note("iPod connected" if roots else "iPod disconnected", ", ".join(roots))
+        self.note(_("iPod connected") if roots else _("iPod disconnected"), ", ".join(roots))
 
     def ipod_read(self, info):
         """IpodPage read the iPod: remember it for the sidebar, attention and status."""
@@ -878,30 +888,33 @@ class MainWindow(QMainWindow):
             return
         self.lcd_note = None
         if self.scanning:
-            self.lcd.show_progress("Music Utility", "Reading the library…", None)
+            self.lcd.show_progress(_("Music Utility"), _("Reading the library…"), None)
             return
         info = self.ipod_info if self.ipods else None
         if info:
-            self.lcd.show_idle(info["name"], f"{info['model']} · {fmt_gb(info['free_gb'])} free")
+            self.lcd.show_idle(info["name"], f"{info['model']} · "
+                               + _("{free} free").format(free=fmt_gb(info['free_gb'])))
         elif self.ipods:
-            self.lcd.show_idle("Music Utility", "iPod connected — reading it…")
+            self.lcd.show_idle(_("Music Utility"), _("iPod connected — reading it…"))
         else:
-            self.lcd.show_idle("Music Utility", "No iPod connected")
+            self.lcd.show_idle(_("Music Utility"), _("No iPod connected"))
 
     def update_status(self):
         """The one number that matters: how much Active is, and whether it fits the iPod."""
         if self.albums is None:
-            self.summary.setText(self.albums_error or "Reading the library…")
+            self.summary.setText(self.albums_error or _("Reading the library…"))
             return
         active = [a for a in self.albums if self.library_page.model.state(a) == "A"]
         gb = sum(a["bytes"] for a in active) / 1024 ** 3
         tracks = sum(a["tracks"] for a in active)
-        text = f"Active: {plural(len(active), 'album')}, {plural(tracks, 'track')}, {fmt_gb(gb)} → iPod"
+        text = _("Active: {albums}, {tracks}, {size} → iPod").format(
+            albums=plural(len(active), "{n} album", "{n} albums"),
+            tracks=plural(tracks, "{n} track", "{n} tracks"), size=fmt_gb(gb))
         info = self.ipod_info if self.ipods else None
         if info and info.get("capacity_gb"):
             room = info["free_gb"] + info["music_gb"]      # everything but the non-music files
-            text += f"  ·  fits: {fmt_gb(room)} for music" if gb <= room else \
-                f"  ·  doesn't fit: {fmt_gb(gb - room)} too much"
+            text += "  ·  " + (_("fits: {size} for music").format(size=fmt_gb(room)) if gb <= room else
+                               _("doesn't fit: {size} too much").format(size=fmt_gb(gb - room)))
         self.summary.setText(text)
 
     # --- settings
@@ -944,18 +957,19 @@ class MainWindow(QMainWindow):
         if self.jobs.busy():
             job = self.jobs.current
             if not job.cancelable:
-                inform(self, "Music Utility", f"“{job.base_title}” is writing to the iPod. "
-                       "Wait until it's done before closing.")
+                inform(self, _("Music Utility"), _("“{tool}” is writing to the iPod. "
+                                                   "Wait until it's done before closing.").format(tool=job.base_title))
                 e.ignore()
                 return
-            if not ask(self, "Music Utility", f"“{job.base_title}” is still running. Stop it and quit?",
-                       yes="Quit", danger=True):
+            if not ask(self, _("Music Utility"),
+                       _("“{tool}” is still running. Stop it and quit?").format(tool=job.base_title),
+                       yes=_("Quit"), danger=True):
                 e.ignore()
                 return
             job.cancel()
         if self.library_page.marks and not ask(
-                self, "Music Utility", "The Active / Archive marks aren't saved. Quit anyway?",
-                yes="Quit", danger=True):
+                self, _("Music Utility"), _("The Active / Archive marks aren't saved. Quit anyway?"),
+                yes=_("Quit"), danger=True):
             e.ignore()
             return
         first_run = page is self.settings_page and backend.cfg() is None
@@ -973,7 +987,7 @@ def run():
         except Exception:
             pass
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName("Music Utility")
+    app.setApplicationName(_("Music Utility"))
     theme.apply(app)
     win = MainWindow()
     win.show()

@@ -34,6 +34,7 @@ from mutagen.id3 import ID3, ID3NoHeaderError, TALB, TCON, TIT2, TPE1, TPE2, TPO
 from mutagen.mp3 import MP3
 
 import settings
+from i18n import _
 from musiclib import drop_v24_frames, norm, strip_edition, strip_feat
 
 # Incoming files glue co-artists with a comma ('wifiskeleton, Jaydes'), the
@@ -134,7 +135,7 @@ def load_library(library):
     albums = defaultdict(set)   # (artist, base album) -> track titles
     names = Counter()           # normalised name -> count
     spelling = {}
-    for root, _, files in os.walk(library):
+    for root, _skip, files in os.walk(library):
         for fn in sorted(f for f in files if f.lower().endswith(".mp3")):
             try:
                 tags = ID3(os.path.join(root, fn))
@@ -169,16 +170,16 @@ def read_incoming(src, known):
     silently: the library is mp3-only, so they need converting first.
     """
     files, broken = [], []
-    for root, _, fs in os.walk(src):
+    for root, _skip, fs in os.walk(src):
         for fn in sorted(f for f in fs if f.lower().endswith(OTHER_AUDIO)):
-            broken.append((fn, "not an mp3 — convert it first"))
+            broken.append((fn, _("not an mp3 — convert it first")))
         for fn in sorted(f for f in fs if f.lower().endswith(".mp3")):
             fp = os.path.join(root, fn)
             try:
                 audio = MP3(fp)
                 tags = ID3(fp)
             except ID3NoHeaderError:
-                broken.append((fn, "no ID3 tag"))
+                broken.append((fn, _("no ID3 tag")))
                 continue
             except Exception as e:
                 broken.append((fn, str(e)))
@@ -320,17 +321,18 @@ def main():
     cfg = settings.require()
     library, active, archive = settings.library_paths(cfg)
 
-    ap = argparse.ArgumentParser()
-    ap.add_argument("source", nargs="?", default=settings.path("incoming_dir", cfg))
-    ap.add_argument("--apply", action="store_true")
+    ap = argparse.ArgumentParser(description=_("fix the tags of new tracks and add them to the library"))
+    ap.add_argument("source", nargs="?", default=settings.path("incoming_dir", cfg),
+                    help=_("folder with the new tracks (setting: the incoming folder)"))
+    ap.add_argument("--apply", action="store_true", help=_("actually add the tracks"))
     ap.add_argument("--replace", action="store_true",
-                    help="overwrite tracks that are already in the library")
+                    help=_("overwrite tracks that are already in the library"))
     ap.add_argument("--to", choices=("archive", "active"), default=cfg["new_tracks_target"],
-                    help=f"where to put new tracks (setting: {cfg['new_tracks_target']})")
+                    help=_("where to put new tracks (setting: {value})").format(value=cfg['new_tracks_target']))
     args = ap.parse_args()
 
     if not args.source or not os.path.isdir(args.source):
-        sys.exit(f"Folder not found: {args.source}")
+        sys.exit(_("Folder not found: {folder}").format(folder=args.source))
 
     # After the Active/Archive split, writing into the library root would
     # put tracks outside both folders — so the target is always one of them.
@@ -351,58 +353,62 @@ def main():
         by_album[(it["album_artist"], it["album"])].append(it)
 
     print("=" * 74)
-    print(f"INCOMING: {len(plan)} tracks in {len(by_album)} albums   ({args.source})")
+    print(_("INCOMING: {tracks} tracks in {albums} albums   ({folder})").format(
+        tracks=len(plan), albums=len(by_album), folder=args.source))
     print("=" * 74)
-    print(f"  new to the library : {len(fresh)}")
-    print(f"  already there      : {len(dupes)}")
-    print(f"  unreadable         : {len(broken)}")
-    print(f"  will go into       : {args.to.upper()}  ({dest_root})")
-    if args.to == "archive":
-        print("                       won't reach the iPod until you mark it [A]")
-    else:
-        print("                       reaches the iPod on the next sync")
+    target = _("ACTIVE") if args.to == "active" else _("ARCHIVE")
+    rows = [(_("new to the library"), len(fresh)), (_("already there"), len(dupes)),
+            (_("unreadable"), len(broken)), (_("will go into"), f"{target}  ({dest_root})")]
+    width = max(len(label) for label, _v in rows)
+    for label, value in rows:
+        print(f"  {label.ljust(width)} : {value}")
+    print(" " * (width + 5) + (_("won't reach the iPod until you mark it [A]") if args.to == "archive"
+                               else _("reaches the iPod on the next sync")))
 
-    print("\n--- ALBUMS ---")
+    print("\n--- " + _("ALBUMS") + " ---")
     for (aa, al), items in sorted(by_album.items(), key=lambda x: (-len(x[1]), x[0])):
         n_dup = sum(1 for i in items if i in dupes)
-        mark = f"  ({n_dup} already there)" if n_dup else ""
+        mark = "  " + _("({n} already there)").format(n=n_dup) if n_dup else ""
         br = sorted({i["bitrate"] for i in items})
         art = sum(1 for i in items if i["has_art"])
-        print(f"  {len(items):3d} tr.  {aa} — {al}{mark}")
-        print(f"          {br} kbps, cover on {art}/{len(items)}")
+        print(_("  {n:3d} tr.").format(n=len(items)) + f"  {aa} — {al}{mark}")
+        print("          " + _("{bitrates} kbps, cover on {art}/{n}").format(bitrates=br, art=art, n=len(items)))
 
     no_album = [f for f in files if not f["album"]]
     if no_album:
-        print(f"\n--- NO ALBUM IN TAGS ({len(no_album)}) ---")
+        print("\n--- " + _("NO ALBUM IN TAGS ({n})").format(n=len(no_album)) + " ---")
         for f in no_album[:20]:
             print(f"  {f['file']}   artist={f['aa_raw']!r} title={f['title']!r}")
 
     if notes:
-        print("\n--- UNGLUED ARTIST STRINGS ---")
+        print("\n--- " + _("UNGLUED ARTIST STRINGS") + " ---")
         for n in notes:
             print(f"  [{n['kind']}] {n['album']} -> {n['used']}")
-            print(f"        from: {n['candidates']}")
+            print("        " + _("from: {list}").format(list=n['candidates']))
 
     if dupes:
-        print(f"\n--- ALREADY IN THE LIBRARY ({len(dupes)}) ---")
+        print("\n--- " + _("ALREADY IN THE LIBRARY ({n})").format(n=len(dupes)) + " ---")
         for it in dupes[:20]:
             print(f"  {it['album_artist']} — {it['album']} / {it['out_title']}")
         if len(dupes) > 20:
-            print(f"  ... {len(dupes) - 20} more")
+            print(_("  ... {n} more").format(n=len(dupes) - 20))
 
     if broken:
-        print(f"\n--- WON'T BE ADDED: unreadable or not mp3 ({len(broken)}) ---")
+        print("\n--- " + _("WON'T BE ADDED: unreadable or not mp3 ({n})").format(n=len(broken)) + " ---")
         for fn, err in broken:
             print(f"  {fn}: {err}")
 
     if files:
-        print("\n--- SUMMARY ---")
-        print(f"  bitrates       : {dict(Counter(f['bitrate'] for f in files).most_common())}")
-        print(f"  ID3 versions   : {dict(Counter(f['ver'] for f in files).most_common())}")
-        print(f"  with cover art : {sum(1 for f in files if f['has_art'])}/{len(files)}")
+        print("\n--- " + _("SUMMARY") + " ---")
+        rows = [(_("bitrates"), dict(Counter(f['bitrate'] for f in files).most_common())),
+                (_("ID3 versions"), dict(Counter(f['ver'] for f in files).most_common())),
+                (_("with cover art"), f"{sum(1 for f in files if f['has_art'])}/{len(files)}")]
+        width = max(len(label) for label, _v in rows)
+        for label, value in rows:
+            print(f"  {label.ljust(width)} : {value}")
 
     if not args.apply:
-        print("\nNothing written. Run with --apply to add the new tracks.")
+        print(_("\nNothing written. Run with --apply to add the new tracks."))
         return
 
     todo = plan if args.replace else fresh
@@ -411,16 +417,16 @@ def main():
         it["replace"] = args.replace and it in dupes
     todo, renamed, dropped = unique_dests(todo)
     if dropped:
-        print(f"  {dropped} tracks were in the folder twice; one copy of each is added")
+        print(_("  {n} tracks were in the folder twice; one copy of each is added").format(n=dropped))
     if renamed:
-        print(f"  {renamed} tracks got a ' (2)' suffix: their file name was taken")
+        print(_("  {n} tracks got a ' (2)' suffix: their file name was taken").format(n=renamed))
     for n, it in enumerate(todo, 1):
         write_track(it)
         if n % 50 == 0:
             print(f"  ... {n}/{len(todo)}")
-    print(f"\nTracks added: {len(todo)}")
+    print(_("\nTracks added: {n}").format(n=len(todo)))
     if dupes and not args.replace:
-        print(f"Skipped as already present: {len(dupes)} (--replace overwrites)")
+        print(_("Skipped as already present: {n} (--replace overwrites)").format(n=len(dupes)))
 
 
 if __name__ == "__main__":

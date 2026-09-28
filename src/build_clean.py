@@ -1,7 +1,7 @@
 """
 Build the clean library for an old iPod + iTunes.
 
-Source : the "Initial build source" setting    (read only)
+Source : the "Old collection" setting          (read only)
 Output : the library folder, <Album Artist>\\<Album>\\NN - Title.mp3
          (or --dest)
 
@@ -57,15 +57,14 @@ from mutagen.mp3 import MP3
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import settings
+from i18n import _
 from musiclib import norm
 
 # Set from the settings in main()
 SOURCE = COVERS = DEST = REPORT_DIR = None
 
-# Tag VALUE for compilations ("Various Artists" in Russian). This is data
-# already written into files and synced to the iPod — not interface text,
-# so it stays as is.
-VARIOUS = "Разные исполнители"
+# Album artist written for compilations: the various_artists setting, set in main()
+VARIOUS = None
 
 # The artist separator in TPE1 is '/', sometimes followed by a space.
 # Windows Explorer draws it as ';', so by eye it looks different.
@@ -197,8 +196,9 @@ def resolve_conflict(candidates):
         return None, "none"
     if len(candidates) == 1:
         return next(iter(candidates)), "covers"
-    # 'разные' = 'various' — matches the downloader's Russian compilation name
-    if any(norm(c) == norm(VARIOUS) or "разные" in c.lower() for c in candidates):
+    # the downloader names compilations "Various Artists" or, in Russian, "Разные исполнители"
+    if any(norm(c) == norm(VARIOUS) or any(w in c.lower() for w in ("various", "разные"))
+           for c in candidates):
         return VARIOUS, "compilation"
     shortest = min(candidates, key=lambda c: (len(norm(c)), c))
     base = norm(shortest)
@@ -271,7 +271,7 @@ def read_album(folder, covers):
         try:
             audio, tags = MP3(fp), ID3(fp)
         except Exception as e:
-            print(f"  ! skipped {folder}\\{fn}: {e}", file=sys.stderr)
+            print(_("  ! skipped {file}: {error}").format(file=os.path.join(folder, fn), error=e), file=sys.stderr)
             continue
         tn, tt = parse_pair(tag_first(tags, "TRCK"))
         dn, dt = parse_pair(tag_first(tags, "TPOS"))
@@ -456,21 +456,22 @@ def write_track(item):
 
 
 def main():
-    global SOURCE, COVERS, DEST, REPORT_DIR
+    global SOURCE, COVERS, DEST, REPORT_DIR, VARIOUS
     cfg = settings.require()
+    VARIOUS = cfg["various_artists"]
 
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--apply", action="store_true", help="actually write files")
-    ap.add_argument("--limit", type=int, help="process only N tracks (for testing)")
-    ap.add_argument("--dest", help="build into this folder instead of the library folder")
+    ap = argparse.ArgumentParser(description=_("build the library from an old, unsorted collection"))
+    ap.add_argument("--apply", action="store_true", help=_("actually write files"))
+    ap.add_argument("--limit", type=int, help=_("process only N tracks (for testing)"))
+    ap.add_argument("--dest", help=_("build into this folder instead of the library folder"))
     args = ap.parse_args()
 
     SOURCE = settings.path("source_dir", cfg)
     if not SOURCE:
-        sys.exit("The initial build source isn't set. Set it on the Settings "
-                 "screen in Main.py (only needed for the one-time build).")
+        sys.exit(_("The old collection isn't set. Set it on the Settings screen "
+                   "(Initial build; only needed for the one-time build)."))
     if not os.path.isdir(SOURCE):
-        sys.exit(f"Source not found: {SOURCE}")
+        sys.exit(_("Source not found: {folder}").format(folder=SOURCE))
     COVERS = os.path.join(SOURCE, ".covers")
     DEST = os.path.abspath(args.dest) if args.dest else settings.library_paths(cfg)[0]
     REPORT_DIR = settings.path("reports_dir", cfg)
@@ -501,58 +502,62 @@ def main():
     no_art = [i for i in items if not i["art"]]
 
     print("=" * 72)
-    print(f"{'PLAN' if not args.apply else 'WRITING'}: {len(items)} tracks -> {len(artists)} artists")
+    print((_("PLAN: {tracks} tracks -> {artists} artists") if not args.apply else
+           _("WRITING: {tracks} tracks -> {artists} artists")).format(tracks=len(items), artists=len(artists)))
     print("=" * 72)
-    print(f"  Album Artist will be set    : {len(items)} (was 0)")
-    print(f"  tracks with features in TPE1: {len(feats)}")
-    print(f"  titles that will change     : {len(retitled)}")
-    print(f"  genres that will change     : {len(regenred)}")
-    print(f"  merged into 'Singles'       : {sum(len(v) for v in singles.values())} tracks for {len(singles)} artists")
-    print(f"  without cover art           : {len(no_art)}")
+    rows = [(_("Album Artist will be set"), _("{n} (was 0)").format(n=len(items))),
+            (_("tracks with features in TPE1"), len(feats)),
+            (_("titles that will change"), len(retitled)),
+            (_("genres that will change"), len(regenred)),
+            (_("merged into 'Singles'"), _("{tracks} tracks for {artists} artists").format(
+                tracks=sum(len(v) for v in singles.values()), artists=len(singles))),
+            (_("without cover art"), len(no_art))]
+    width = max(len(label) for label, _v in rows)
+    for label, value in rows:
+        print(f"  {label.ljust(width)}: {value}")
 
     if ties:
-        print(f"\n  !! COULDN'T PICK A SPELLING ({len(ties)}):")
+        print(_("\n  !! COULDN'T PICK A SPELLING ({n}):").format(n=len(ties)))
         for t in ties:
             print(f"     {t['counts']}")
 
     if SHORT_PART_WARNINGS:
         uniq = sorted(set(SHORT_PART_WARNINGS))
-        print(f"\n  !! SPLIT INTO SUSPICIOUSLY SHORT PIECES ({len(uniq)}):")
-        print("     (maybe this is one name, not several — like 'AC/DC')")
+        print(_("\n  !! SPLIT INTO SUSPICIOUSLY SHORT PIECES ({n}):").format(n=len(uniq)))
+        print(_("     (maybe this is one name, not several — like 'AC/DC')"))
         for w in uniq:
             print(f"     {w!r}")
 
-    print("\n--- sample changed titles ---")
+    print("\n--- " + _("sample changed titles") + " ---")
     for i in retitled[:12]:
         print(f"  {i['title']!r}")
         print(f"    -> {i['out_title']!r}   [Artist: {i['out_artist']} | AlbumArtist: {i['album_artist']}]")
 
-    print("\n--- decisions on doubtful albums ---")
+    print("\n--- " + _("decisions on doubtful albums") + " ---")
     for n in notes:
         print(f"  [{n['kind']}] {n['folder']} -> {n['used']}")
 
     if not args.apply:
-        print("\nNothing written. Run with --apply to build.")
-        print(f"Full plan: {os.path.join(REPORT_DIR, 'plan.json')}")
+        print(_("\nNothing written. Run with --apply to build."))
+        print(_("Full plan: {file}").format(file=os.path.join(REPORT_DIR, 'plan.json')))
         return
 
     # After the Active/Archive split the library root is outside both folders.
     # Writing there would put all 1408 tracks next to the split ones —
     # a duplicated library, with the archive markup ignored.
     if any(os.path.isdir(os.path.join(DEST, d)) for d in ("Active", "Archive")):
-        sys.exit(
-            f"\nSTOPPED: {DEST} is already split into Active/Archive.\n"
+        sys.exit(_(
+            "\nSTOPPED: {folder} is already split into Active/Archive.\n"
             "A full rebuild would write every track into the library root,\n"
             "outside both folders, duplicating the library and ignoring the\n"
             "archive markup. To add new tracks use add_incoming.py.\n"
-            "To rebuild from scratch, pass --dest with an empty folder."
-        )
+            "To rebuild from scratch, pass --dest with an empty folder.").format(folder=DEST))
 
     for n, item in enumerate(items, 1):
         write_track(item)
         if n % 100 == 0:
             print(f"  ... {n}/{len(items)}")
-    print(f"\nDone: {len(items)} tracks in {DEST}")
+    print(_("\nDone: {n} tracks in {folder}").format(n=len(items), folder=DEST))
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import settings
+from i18n import _
 
 
 class FlacToAlacConverter:
@@ -18,7 +19,7 @@ class FlacToAlacConverter:
         cfg = settings.require()
         ffmpeg = settings.ffmpeg(cfg)
         if not ffmpeg:
-            print("ffmpeg not found. Set its path on the Settings screen.")
+            print(_("ffmpeg not found. Set its path on the Settings screen."))
             return
 
         if input_folder is None:
@@ -40,15 +41,15 @@ class FlacToAlacConverter:
         flac_files = list(input_path.glob("*.flac"))
 
         if not flac_files:
-            print(f"In folder '{input_folder}' FLAC not found.")
+            print(_("No FLAC files in the folder '{folder}'.").format(folder=input_folder))
             return
 
-        print(f"Found files for converting: {len(flac_files)}\n")
+        print(_("Files to convert: {n}\n").format(n=len(flac_files)))
 
         for flac_file in flac_files:
             output_file = output_path / f"{flac_file.stem}.m4a"
 
-            print(f"Converting: {flac_file.name} ...")
+            print(_("Converting: {file} ...").format(file=flac_file.name))
             command = [
                 ffmpeg,
                 "-y",
@@ -61,17 +62,17 @@ class FlacToAlacConverter:
 
             try:
                 subprocess.run(command, check=True)
-                print(f"Ready: {output_file.name}")
+                print(_("Ready: {file}").format(file=output_file.name))
             except subprocess.CalledProcessError:
-                print(f"Error occured by converting {flac_file.name}.")
+                print(_("Could not convert {file}.").format(file=flac_file.name))
 
 
 if __name__ == "__main__":
     if not FlacToAlacConverter.check_ffmpeg():
-        print("Error, FFMPEG not found. Set its path on the Settings screen.")
+        print(_("ffmpeg not found. Set its path on the Settings screen."))
         sys.exit(1)
 
-    print("Started")
+    print(_("Started"))
     FlacToAlacConverter.convert_flac_to_alac()
     print("-" * 30)
-    print("All task done")
+    print(_("All done."))

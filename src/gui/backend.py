@@ -14,6 +14,7 @@ import time
 
 import library
 import settings
+from i18n import N_, _
 
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -35,14 +36,14 @@ def cfg():
 def _text(params, key):
     v = str(params.get(key) or "").strip()
     if not v:
-        raise ValueError("Fill in this field first.")
+        raise ValueError(_("Fill in this field first."))
     return v
 
 
 def _existing(params, key):
     v = _text(params, key)
     if not os.path.exists(v):
-        raise ValueError(f"Not found: {v}")
+        raise ValueError(_("Not found: {path}").format(path=v))
     return v
 
 
@@ -54,7 +55,7 @@ def _count(params):
 def _drive(params):
     v = _text(params, "drive")
     if not re.fullmatch(r"[A-Za-z]:\\?|/.+", v):
-        raise ValueError("A drive like E: or a mount point like /Volumes/NAME is expected.")
+        raise ValueError(_("A drive like E: or a mount point like /Volumes/NAME is expected."))
     return v
 
 
@@ -68,95 +69,95 @@ def playlist_file(path):
     folder = os.path.realpath(playlists_dir(cfg()))
     p = os.path.realpath(str(path or ""))
     if os.path.dirname(p) != folder or not p.lower().endswith(".m3u8") or not os.path.isfile(p):
-        raise ValueError("That isn't one of the saved playlists.")
+        raise ValueError(_("That isn't one of the saved playlists."))
     return p
 
 
 TOOLS = {
-    "sync": dict(title="Sync the iPod", script="ipod_sync.py", args=lambda p: [],
+    "sync": dict(title=N_("Sync the iPod"), script="ipod_sync.py", args=lambda p: [],
                  apply="--apply", apply_extra=["--yes"], cancel_apply=False, refresh={"ipod"},
-                 confirm="Back up the iPod's database, then delete the archive tracks, "
-                         "copy the new ones, set covers and genres?"),
-    "rescue": dict(title="Save tracks from the iPod", script="ipod_sync.py",
+                 confirm=N_("Back up the iPod's database, then delete the archive tracks, "
+                         "copy the new ones, set covers and genres?")),
+    "rescue": dict(title=N_("Save tracks from the iPod"), script="ipod_sync.py",
                    args=lambda p: ["--rescue"], apply="--apply", refresh=set(),
-                   confirm="Copy these tracks off the iPod into the incoming folder?"),
-    "disk": dict(title="Mirror to disk", script="ipod_sync.py",
+                   confirm=N_("Copy these tracks off the iPod into the incoming folder?")),
+    "disk": dict(title=N_("Mirror to disk"), script="ipod_sync.py",
                  args=lambda p: ["--disk", _drive(p)], apply="--apply", apply_extra=["--yes"],
-                 refresh=set(), confirm="Copy the new files and DELETE the extras on the "
-                                        "device? Deleting can't be undone."),
-    "restore": dict(title="Restore the iPod's database", script="ipod_sync.py",
+                 refresh=set(), confirm=N_("Copy the new files and DELETE the extras on the "
+                                        "device? Deleting can't be undone.")),
+    "restore": dict(title=N_("Restore the iPod's database"), script="ipod_sync.py",
                     args=lambda p: ["--restore", "--yes"], cancel=False, refresh={"ipod"}),
-    "eject": dict(title="Eject the iPod", script="ipod.py", args=lambda p: ["--eject"],
+    "eject": dict(title=N_("Eject the iPod"), script="ipod.py", args=lambda p: ["--eject"],
                   cancel=False, refresh={"ipod"}),
-    "playlist_to_ipod": dict(title="Playlist to the iPod", script="ipod_sync.py",
+    "playlist_to_ipod": dict(title=N_("Playlist to the iPod"), script="ipod_sync.py",
                              args=lambda p: ["--playlist", playlist_file(p.get("file")),
                                              "--playlist-only"],
                              apply="--apply", apply_extra=["--yes"], cancel_apply=False,
                              refresh={"ipod"},
-                             confirm="Create this playlist on the iPod? Picked tracks not on "
-                                     "it yet are copied; nothing is deleted."),
-    "incoming": dict(title="Add new tracks",
+                             confirm=N_("Create this playlist on the iPod? Picked tracks not on "
+                                     "it yet are copied; nothing is deleted.")),
+    "incoming": dict(title=N_("Add new tracks"),
                      args=lambda p: [_existing(p, "folder"), "--to",
                                      "archive" if p.get("to") == "archive" else "active"],
                      apply="--apply", refresh={"library", "ipod"},
-                     confirm="Fix the tags and add these tracks to the library?"),
-    "covers": dict(title="Find missing cover art", script="fetch_covers.py", args=lambda p: [],
+                     confirm=N_("Fix the tags and add these tracks to the library?")),
+    "covers": dict(title=N_("Find missing cover art"), script="fetch_covers.py", args=lambda p: [],
                    apply="--apply", refresh={"library", "ipod"},
-                   confirm="Embed the covers that were found?"),
-    "tags": dict(title="Check tags", script="verify_clean.py", args=lambda p: [],
+                   confirm=N_("Embed the covers that were found?")),
+    "tags": dict(title=N_("Check tags"), script="verify_clean.py", args=lambda p: [],
                  apply="--fix", refresh={"library"},
-                 confirm="Remove the v2.4 frames that were found?"),
-    "vibe": dict(title="AI vibe playlist", script="vibe.py",
+                 confirm=N_("Remove the v2.4 frames that were found?")),
+    "vibe": dict(title=N_("AI vibe playlist"), script="vibe.py",
                  args=lambda p: [_text(p, "vibe")] + _count(p), refresh={"playlists"}),
-    "vibe_analyze": dict(title="Analyse the library for playlists", script="vibe.py",
+    "vibe_analyze": dict(title=N_("Analyse the library for playlists"), script="vibe.py",
                          args=lambda p: ["analyze"], refresh=set()),
-    "genres_suggest": dict(title="Genres — the AI suggests",
+    "genres_suggest": dict(title=N_("Genres — the AI suggests"),
                            args=lambda p: ["suggest"], refresh={"genres"}),
-    "genres_apply": dict(title="Genres — write the tags", script="genres.py",
+    "genres_apply": dict(title=N_("Genres — write the tags"), script="genres.py",
                          args=lambda p: ["apply"], apply="--apply",
                          refresh={"library", "ipod", "genres"},
-                         confirm="Write these genres into the tags?"),
-    "likes": dict(title="What's missing from my likes",
+                         confirm=N_("Write these genres into the tags?")),
+    "likes": dict(title=N_("What's missing from my likes"),
                   steps=lambda p: [["import_likes.py", _existing(p, "path")], ["find_missing.py"]],
                   refresh=set()),
-    "flac": dict(title="Convert FLAC to ALAC", script="flac_to_alac.py", args=lambda p: [],
+    "flac": dict(title=N_("Convert FLAC to ALAC"), script="flac_to_alac.py", args=lambda p: [],
                  refresh=set()),
-    "download": dict(title="Download from the tracklist", script="metadata_download.py",
+    "download": dict(title=N_("Download from the tracklist"), script="metadata_download.py",
                      args=lambda p: [], refresh=set()),
-    "tracklist_covers": dict(title="Fetch covers for the tracklist", script="fetch_cover.py",
+    "tracklist_covers": dict(title=N_("Fetch covers for the tracklist"), script="fetch_cover.py",
                              args=lambda p: [], refresh=set()),
-    "spatial": dict(title="Spatial sound processing", script="sur_sound.py", args=lambda p: [],
+    "spatial": dict(title=N_("Spatial sound processing"), script="sur_sound.py", args=lambda p: [],
                     refresh=set()),
-    "build": dict(title="Initial build from an old collection", script="build_clean.py",
+    "build": dict(title=N_("Initial build from an old collection"), script="build_clean.py",
                   args=lambda p: [], apply="--apply", refresh={"library"},
-                  confirm="Build the library from the old collection?"),
+                  confirm=N_("Build the library from the old collection?")),
 }
 
 
 # What each tool does, shown before it runs.
 ABOUT = {
-    "incoming": ('Takes a folder of new mp3s, fixes their tags (Album Artist, features, genre, cover, '
+    "incoming": N_('Takes a folder of new mp3s, fixes their tags (Album Artist, features, genre, cover, '
                  "ID3v2.3) and moves them into the library. What's already in the library is skipped. "
                  'You see everything first and confirm.'),
-    "covers": ('For albums without a cover: Deezer first, then MusicBrainz. A cover is only used '
+    "covers": N_('For albums without a cover: Deezer first, then MusicBrainz. A cover is only used '
                'when the artist matches. The next sync gives the iPod copies their covers.'),
-    "tags": ('Album Artist set, ID3v2.3 in UTF-16 (an old iPod garbles Cyrillic otherwise), no '
+    "tags": N_('Album Artist set, ID3v2.3 in UTF-16 (an old iPod garbles Cyrillic otherwise), no '
              'v2.4 frames. The latter can be repaired right away.'),
-    "likes": ('Compares what you listen to with the library: complete, partial, missing, or present '
+    "likes": N_('Compares what you listen to with the library: complete, partial, missing, or present '
               'but sitting in Archive (then just mark it Active). Any of these: a Spotify data '
               'export (YourLibrary.json), an Apple Music playlist saved from the browser as .html, '
               'or a text list with one “Artist — Album” per line. A folder with several such files '
               'works too.'),
-    "flac": ('FLAC files from the input folder → .m4a (ALAC) in the output folder (both in '
-             'Settings → Tools). Needs ffmpeg.'),
-    "download": 'Downloads the tracks listed in the tracklist file and tags them. Needs ffmpeg.',
-    "tracklist_covers": 'Fills in cover URLs in the tracklist from the iTunes Search API.',
-    "spatial": 'An experimental stereo-to-spatial pass over the spatial input folder. Needs ffmpeg.',
-    "build": ('One-time: builds the library from an old, unsorted collection (Settings → Initial '
-              'build source). Shown as a dry run first.'),
-    "rescue": ('Tracks on the iPod that are in neither Active nor Archive — the iPod may hold the '
+    "flac": N_('FLAC files from the input folder → .m4a (ALAC) in the output folder (both in '
+             'Settings → Audio tools). Needs ffmpeg.'),
+    "download": N_('Downloads the tracks listed in the tracklist file and tags them. Needs ffmpeg.'),
+    "tracklist_covers": N_('Fills in cover URLs in the tracklist from the iTunes Search API.'),
+    "spatial": N_('An experimental stereo-to-spatial pass over the spatial input folder. Needs ffmpeg.'),
+    "build": N_('One-time: builds the library from an old, unsorted collection (Settings → Initial '
+              'build → Old collection). Shown as a dry run first.'),
+    "rescue": N_('Tracks on the iPod that are in neither Active nor Archive — the iPod may hold the '
                'only copy — are copied into the incoming folder.'),
-    "genres_suggest": ("The AI fills in a genre and a style for albums that aren't in the genres file yet. "
+    "genres_suggest": N_("The AI fills in a genre and a style for albums that aren't in the genres file yet. "
                        'Your corrections are never overwritten.'),
 }
 for _name, _about in ABOUT.items():
@@ -166,7 +167,7 @@ def tool_steps(tool, params, applying):
     """[[script, args...], ...] for one run. Raises ValueError on bad params."""
     spec = TOOLS[tool]
     if applying and not spec.get("apply"):
-        raise ValueError("This tool has nothing to apply.")
+        raise ValueError(_("This tool has nothing to apply."))
     if "steps" in spec:
         return spec["steps"](params)
     args = spec["args"](params)
@@ -197,7 +198,7 @@ def library_root():
 def scan_library():
     root = library_root()
     if not root:
-        raise RuntimeError("The library folder isn't set or doesn't exist. Open Settings.")
+        raise RuntimeError(_("The library folder isn't set or doesn't exist. Open Settings."))
     return library.scan(root, with_audio=False)
 
 
@@ -284,7 +285,7 @@ def save_marks(albums, moves, progress=None):
     try:
         library.prune_empty()
     except Exception as e:
-        errors.append(f"cleaning up empty folders: {e}")
+        errors.append(_("cleaning up empty folders: {error}").format(error=e))
     return done, errors
 
 
@@ -310,7 +311,7 @@ def ipod_read():
     """The iPod as the window shows it. Raises RuntimeError with a readable message."""
     c = cfg()
     if not c:
-        raise RuntimeError("Settings aren't set up yet.")
+        raise RuntimeError(_("Settings aren't set up yet."))
     try:
         import ipod
         import ipod_sync
@@ -323,7 +324,7 @@ def ipod_read():
     states = {}
     try:
         ipod_sync.configure(c)
-        idx, _ = ipod_sync.index_library()
+        idx, _skip = ipod_sync.index_library()
         for n, t in enumerate(rows):
             s = ipod_sync.states_of(ipod_sync.device_keys(t.get("artist"), t.get("title")), idx)
             states[n] = "A" if "A" in s else "R" if "R" in s else ""
@@ -482,7 +483,7 @@ def settings_save(raw, create_library=False):
         if create_library:
             os.makedirs(lib, exist_ok=True)
         else:
-            errors["library_dir"] = f"The folder doesn't exist: {lib}"
+            errors["library_dir"] = _("The folder doesn't exist: {path}").format(path=lib)
     if not errors:
         settings.save(values)
     return errors
@@ -490,5 +491,5 @@ def settings_save(raw, create_library=False):
 
 def open_in_explorer(path):
     if not path or not os.path.exists(path):
-        raise ValueError(f"Not there yet: {path}")
+        raise ValueError(_("Not there yet: {path}").format(path=path))
     settings.open_path(path)
