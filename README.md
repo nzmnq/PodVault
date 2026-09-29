@@ -96,8 +96,9 @@ The launchers pick the interpreter in this order, so no activation is needed:
 | 3. system-wide | `py -3` / `python` | `python3` / `python` |
 
 **FFmpeg** is needed by the FLAC → ALAC converter, the downloader and the
-spatial sound tool. Set its path on the Settings screen, or leave it on `auto`
-to use the one in `PATH` or in `bin/`. The library tools don't need it.
+spatial sound tool, and by the AI playlists to analyse `.m4a` tracks. Set its
+path on the Settings screen, or leave it on `auto` to use the one in `PATH` or
+in `bin/`. The rest of the library tools don't need it.
 
 | Windows | macOS | Debian / Ubuntu |
 |---|---|---|
@@ -122,8 +123,8 @@ an LCD in the toolbar, views of one library — with its own look.
   **Playlists** with "New vibe playlist…".
 - **Library** — three views: **Albums** (a grid of covers), **Artists** (the
   same grid, one artist at a time) and **Genres** (a table: type the genre and
-  style, Save, "Write into the tags…"). Filters: All / Active / Archive, plus
-  Ukrainian and No cover. Click an album's A / R badge, or select albums and
+  style, Save, "Write into the tags…"). Filters: All / Active / Archive, a
+  genre, and No cover. Click an album's A / R badge, or select albums and
   press `A` / `R` (`Space` toggles), to mark it; the status bar collects the
   marks and "Move the files…" applies them. Double-click or `Enter` opens an
   album with its tracks.
@@ -149,10 +150,10 @@ the system. Colours, symbols, sizes and timings all live in `src/gui/theme.py`.
 | | |
 |---|---|
 | Active / Archive markup | A list of albums: `A` — goes to the iPod, `R` — stays on disk. `s` saves and moves the folders. |
-| Add new tracks | Takes a folder of new mp3s, fixes their tags, skips what's already in the library. |
+| Add new tracks | Takes a folder of new tracks (mp3 or m4a), fixes their tags, skips what's already in the library. |
 | Sync the iPod | Makes the device hold exactly what's in `Active`. |
 | Find missing cover art | Deezer, then MusicBrainz. Only applied when the artist matches. |
-| Check tags | Album Artist, ID3v2.3 / UTF-16, no v2.4 frames; can repair the latter. |
+| Check tags | Album Artist and cover art; for mp3 also ID3v2.3 / UTF-16, no v2.4 frames (can repair the latter). |
 | AI vibe playlist | Describe a mood in words; Claude picks and orders tracks from `Active`, helped by tempo/energy measured from the audio. Saved as `.m3u8`. |
 | Genres | The AI suggests a genre and a precise style per album, you correct the file, then they're written into the tags. |
 | What's missing from my likes | Compares a Spotify data export, an Apple Music playlist page or a text list with the library. |
@@ -213,15 +214,16 @@ Each script in `src/` also runs on its own, from any directory:
 
 ```
 <library>/Active/<Artist>/<Album>/NN - Title.mp3     goes to the iPod
-<library>/Archive/<Artist>/<Album>/NN - Title.mp3    stays on disk
+<library>/Archive/<Artist>/<Album>/NN - Title.m4a    stays on disk
 ```
+
+Tracks are **mp3** or **m4a** (AAC or Apple Lossless — what the downloader and
+the FLAC → ALAC converter make), mixed freely, even within one album. Both go
+onto the iPod as they are. All the tools read and write tags through one
+module, [`src/tags.py`](src/tags.py), so a new format is one place to change.
 
 An album's state is **which folder it sits in**. Adding tracks wipes nothing,
 and the markup can be changed any number of times.
-
-Ukrainian-language albums are highlighted by the letters `і ї є ґ`, which don't
-exist in Russian. That's about language, not genre: folk can't be told apart
-from rock by tags, so a human decides.
 
 ## Why the tags are rewritten
 
@@ -230,14 +232,14 @@ track**. The iPod groups albums by Album Artist and, when it's missing, falls
 back to Artist — so a track with a feature (`Arash/ Helena`) became a separate
 artist and tore its album apart.
 
-What's written:
+What's written (the ID3 frame names; an m4a gets the same fields in its own atoms):
 
 - **TPE2** — set everywhere
 - **TPE1** — the main artist only; features move into the title as `(feat. X)`
 - **TCON** — the first genre before a separator (`Rap/Hip Hop` → `Hip-Hop`);
   see [Genres](#genres) for fixing them
 - **APIC + folder.jpg** — cover art
-- **ID3v2.3 / UTF-16** — otherwise an old iPod garbles Cyrillic; v2.4 frames
+- **ID3v2.3 / UTF-16** (mp3) — otherwise an old iPod garbles Cyrillic; v2.4 frames
   such as `TDRC` are removed, the year goes into `TYER`
 - one-track folders become a `Singles` album per artist
 

@@ -51,6 +51,97 @@ class Compilations(unittest.TestCase):
             self.assertEqual(build_clean.resolve_conflict(names), ("Various Artists", "compilation"))
 
 
+DATA = os.path.join(ROOT, "tests", "data")
+MP3_SILENCE = (b"\xff\xfb\x90\x64" + b"\x00" * 413) * 20     # half a second of MPEG frames
+
+
+def sample(folder, kind, name="track"):
+    """A fresh audio file to tag: 'mp3', 'aac' or 'alac'."""
+    import shutil
+    if kind == "mp3":
+        path = os.path.join(folder, name + ".mp3")
+        with open(path, "wb") as f:
+            f.write(MP3_SILENCE)
+    else:
+        path = os.path.join(folder, name + ".m4a")
+        shutil.copy(os.path.join(DATA, f"silence_{kind}.m4a"), path)
+    return path
+
+
+class TagsForEveryFormat(unittest.TestCase):
+    """The library holds mp3 and m4a; every tool goes through tags.py for both."""
+
+    FIELDS = {"artist": "Океан Ельзи", "albumartist": "Океан Ельзи", "album": "Земля",
+              "title": "Така, як ти", "genre": "Rock", "grouping": "Post-punk", "year": "2013",
+              "track": "3/12", "disc": "1/2"}
+
+    def test_round_trip(self):
+        import tags
+        for kind, filetype, label in (("mp3", "mp3", "MPEG audio file"), ("aac", "m4a", "AAC audio file"),
+                                      ("alac", "m4a", "Apple Lossless audio file")):
+            with self.subTest(kind=kind):
+                p = sample(tempfile.mkdtemp(), kind)
+                tags.write(p, {**self.FIELDS, "year": "2013-05-01"})
+                got = tags.read(p)
+                self.assertEqual({k: got[k] for k in self.FIELDS}, self.FIELDS)
+                self.assertEqual(got["artists"], ["Океан Ельзи"])
+                info = tags.info(p)
+                self.assertEqual((info["filetype"], info["kind"]), (filetype, label))
+                self.assertFalse(got["art"])
+                tags.set_cover(p, b"\xff\xd8\xff\xe0jpeg")
+                self.assertEqual(tags.cover(p), b"\xff\xd8\xff\xe0jpeg")
+                tags.write(p, {"grouping": "", "genre": None})
+                got = tags.read(p)
+                self.assertEqual((got["genre"], got["grouping"], got["title"]), ("", "", "Така, як ти"))
+                tags.set_cover(p, None)
+                self.assertFalse(tags.read(p)["art"])
+
+    def test_mp3_stays_what_an_old_ipod_reads(self):
+        import tags
+        from mutagen.id3 import ID3
+        p = sample(tempfile.mkdtemp(), "mp3")
+        tags.write(p, self.FIELDS)
+        t = ID3(p, translate=False)
+        self.assertEqual(t.version[:2], (2, 3))
+        self.assertTrue(all(t[k].encoding == 1 for k in ("TPE1", "TIT2", "TALB")))   # UTF-16
+        self.assertNotIn("TDRC", t)
+
+    def test_library_and_incoming_take_m4a(self):
+        import library
+        import tags
+        root = tempfile.mkdtemp()
+        album = os.path.join(root, "Active", "Band", "Record")
+        os.makedirs(album)
+        for n, kind in enumerate(("mp3", "aac", "alac"), 1):
+            tags.write(sample(album, kind, f"{n:02d}"), {**self.FIELDS, "track": str(n)})
+        with open(os.path.join(album, "cover.flac"), "wb"):
+            pass                                                    # not audio the library takes
+        albums = library.scan(root)
+        self.assertEqual([(a["album"], a["tracks"], a["genre"]) for a in albums], [("Земля", 3, "Rock")])
+
+
+class GenresFollowTheFile(unittest.TestCase):
+    def test_tags_that_differ_from_the_genres_file_are_rewritten_once(self):
+        import genres
+        import tags
+        root = tempfile.mkdtemp()
+        album = os.path.join(root, "lib", "Active", "Band", "Record")
+        os.makedirs(album)
+        for n, kind in ((1, "mp3"), (2, "aac")):
+            tags.write(sample(album, kind, str(n)), {"genre": "Pop"})
+        with open(os.path.join(root, "genres.txt"), "w", encoding="utf-8") as f:
+            f.write("Band/Record | Rock | Post-punk\n")
+        cfg = {"library_dir": os.path.join(root, "lib"),
+               "genres_file": os.path.join(root, "genres.txt")}
+        self.assertEqual(genres.keep_tags_in_line(cfg, write=False), 1)   # dry run: counted only
+        self.assertEqual(tags.read(os.path.join(album, "1.mp3"))["genre"], "Pop")
+        self.assertEqual(genres.keep_tags_in_line(cfg), 1)
+        for fn in ("1.mp3", "2.m4a"):                                      # both formats
+            t = tags.read(os.path.join(album, fn))
+            self.assertEqual((t["genre"], t["grouping"]), ("Rock", "Post-punk"))
+        self.assertEqual(genres.keep_tags_in_line(cfg), 0)                # nothing left to do
+
+
 class Translations(unittest.TestCase):
     """Every string goes through _(): a placeholder that doesn't match its .format() is a
     KeyError at run time, in a message nobody may see until it's needed."""

@@ -28,7 +28,7 @@ LIGHT = dict(
     detail_warn="#ffb0a8", detail_btn="rgba(255,255,255,30)", detail_btn_line="rgba(255,255,255,70)",
     detail_alt="rgba(255,255,255,10)", detail_line="rgba(255,255,255,40)",
     # album tiles
-    ua="#2f6fd1", flag_text="#ffffff", art_initials="#e6ffffff", art_shadow="#2d000000",
+    flag_text="#ffffff", art_initials="#e6ffffff", art_shadow="#2d000000",
     art_dim="#6effffff", selection_fill="#28000000",
     # the iPod picture
     ipod_black_top="#48484b", ipod_black_bottom="#0e0e10",
@@ -90,7 +90,7 @@ UI = dict(
     side_capacity_h=4, side_eject=22, side_pad=6, side_gap=10,
     tile=150, tile_range=(100, 240), thumb=256, cover_large=640, detail_cover=220,
     artists_w=190, ipod_picture=(112, 184), capacity_h=40, vibe_text_h=80,
-    close_button_w=30, slider_w=110,
+    close_button_w=30, slider_w=110, combo_extra_w=44, genre_box_max_w=260,
     poll_ms=3000, sheet_refresh_ms=150, lcd_refresh_ms=250, eject_repoll_ms=1500,
     note_s=6, toast_ms=5000, toast_bad_ms=8000, toast_w=420, toast_gap=14, list_preview=12,
     cover_threads=3, cache_max=3000, log_lines=10000,

@@ -28,16 +28,10 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mutagen.id3 import ID3
-from mutagen.mp3 import MP3
-
 import settings
+import tags as audiotags
 from i18n import _
 from musiclib import norm
-
-# Letters that don't exist in Russian. A sign of the Ukrainian LANGUAGE,
-# not of genre: folk can't be told apart from rock by tags, a human decides.
-UA_LETTERS = set("іїєґІЇЄҐ")
 
 # '[R]', '[ R]', '[R ]', '[ ]' — spaces around the letter don't matter.
 # The separator is an em dash: titles only ever contain a short hyphen
@@ -50,11 +44,6 @@ def paths(values=None):
     return settings.library_paths(values)
 
 
-def _one(tags, key):
-    v = tags.get(key)
-    return str(v.text[0]).strip() if v and v.text else None
-
-
 def scan(root=None, with_audio=True):
     """Library contents: one record per album.
 
@@ -64,8 +53,8 @@ def scan(root=None, with_audio=True):
     root = root or paths()[0]
     albums = []
     for path, dirs, files in os.walk(root):
-        mp3 = sorted(f for f in files if f.lower().endswith(".mp3"))
-        if not mp3:
+        audio = audiotags.audio_files(files)
+        if not audio:
             continue
 
         rel = os.path.relpath(path, root)
@@ -74,30 +63,29 @@ def scan(root=None, with_audio=True):
 
         artist = album = None
         size = 0
-        years, genres, bitrates, texts = Counter(), Counter(), Counter(), []
+        years, genres, bitrates = Counter(), Counter(), Counter()
         no_art = 0
 
-        for fn in mp3:
+        for fn in audio:
             fp = os.path.join(path, fn)
             size += os.path.getsize(fp)
             try:
-                tags = ID3(fp)
-            except Exception:
+                t = audiotags.read(fp)
+            except audiotags.Unreadable:
                 continue
             if artist is None:
-                artist = _one(tags, "TPE2") or _one(tags, "TPE1") or "?"
-                album = _one(tags, "TALB") or os.path.basename(path)
-            if _one(tags, "TYER"):
-                years[_one(tags, "TYER")] += 1
-            if _one(tags, "TCON"):
-                genres[_one(tags, "TCON")] += 1
-            if not tags.getall("APIC"):
+                artist = t["albumartist"] or t["artist"] or "?"
+                album = t["album"] or os.path.basename(path)
+            if t["year"]:
+                years[t["year"]] += 1
+            if t["genre"]:
+                genres[t["genre"]] += 1
+            if not t["art"]:
                 no_art += 1
-            texts += [artist, album, _one(tags, "TIT2")]
             if with_audio:
                 try:
-                    bitrates[int(MP3(fp).info.bitrate / 1000)] += 1
-                except Exception:
+                    bitrates[audiotags.info(fp)["bitrate"]] += 1
+                except audiotags.Unreadable:
                     pass
 
         albums.append({
@@ -105,13 +93,12 @@ def scan(root=None, with_audio=True):
             "state": state,
             "artist": artist or "?",
             "album": album or os.path.basename(path),
-            "tracks": len(mp3),
+            "tracks": len(audio),
             "bytes": size,
             "year": years.most_common(1)[0][0] if years else "",
             "genre": genres.most_common(1)[0][0] if genres else "",
             "bitrates": dict(bitrates.most_common()),
             "no_art": no_art,
-            "ua": any(UA_LETTERS & set(t) for t in texts if t),
         })
 
     albums.sort(key=lambda a: (a["artist"].lower(), a["album"].lower()))
@@ -131,7 +118,6 @@ def stats(albums):
         "active": part("A"),
         "archive": part("R"),
         "no_art": sum(a["no_art"] for a in albums),
-        "ua": sum(1 for a in albums if a["ua"]),
     }
 
 
@@ -201,9 +187,6 @@ def export_list(albums, path):
     The current state is filled in right away, so decisions already made
     are not lost.
     """
-    ua = [a for a in albums if a["ua"]]
-    rest = [a for a in albums if not a["ua"]]
-
     def block(rows):
         out = []
         for a in rows:
@@ -221,14 +204,8 @@ def export_list(albums, path):
         "# " + _("Letters are pre-filled from the current state — change only what you need."),
         "# " + _("Lines starting with # are ignored."),
         "",
-        "# " + _("UKRAINIAN-LANGUAGE — {n} albums").format(n=len(ua)),
-        "# " + _("Detected by the letters і/ї/є/ґ. This is about LANGUAGE, not genre:"),
-        "# " + _("folk, rock and rap are all mixed in here."),
-        "",
     ]
-    lines += block(ua)
-    lines += ["", "# " + _("EVERYTHING ELSE — {n} albums").format(n=len(rest)), ""]
-    lines += block(rest)
+    lines += block(albums)
     lines += ["", "# " + _("TOTAL: {albums} albums, {tracks} tracks").format(
         albums=len(albums), tracks=sum(a['tracks'] for a in albums))]
 

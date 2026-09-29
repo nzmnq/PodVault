@@ -15,8 +15,9 @@ Placeholders like {n} stay as they are; their order in the phrase may change.
 Plural strings take a list, one form per case of the "_plural" rule (the
 formula from the gettext Plural-Forms header; missing = English, n != 1).
 
-The language comes from the `language` setting: English ('en') by default;
-a code such as 'uk' picks locale/uk.json, 'auto' follows the system.
+The language comes from the `language` setting: 'auto' (the default) follows
+the system and falls back to English; a code such as 'uk' picks locale/uk.json.
+The setting lists every locale/*.json on its own: a new file is a new choice.
 
 In code:
     from i18n import _, n_, N_
@@ -57,6 +58,21 @@ PLURAL_RULES = {
 }
 
 
+# shown in the language list in each language's own name; unknown codes show as the code
+LANGUAGE_NAMES = {"en": "English", "uk": "Українська", "ru": "Русский", "pl": "Polski",
+                  "de": "Deutsch", "fr": "Français", "es": "Español"}
+
+
+def languages():
+    """'en' plus every locale/<code>.json: what the language setting offers."""
+    try:
+        found = [f[:-5] for f in os.listdir(LOCALE_DIR)
+                 if f.endswith(".json") and f != "template.json"]
+    except OSError:
+        found = []
+    return ["en"] + sorted(set(found) - {"en"})
+
+
 class Catalog:
     def __init__(self, data=None):
         self.data = data or {}
@@ -91,7 +107,7 @@ def catalog():
     global _catalog
     if _catalog is None:
         import settings          # here, not at the top: settings uses _() itself
-        lang = str((settings.load() or {}).get("language") or "en").strip()
+        lang = str((settings.load() or {}).get("language") or "auto").strip()
         wanted = _system_languages() if lang.lower() == "auto" else [lang]
         _catalog = Catalog()
         for code in wanted:
@@ -108,6 +124,12 @@ def catalog():
                     print(f"! {path} not loaded: {e}", file=sys.stderr)
                 return _catalog
     return _catalog
+
+
+def reset():
+    """Forget the loaded translation: the next _() reads the language setting again."""
+    global _catalog
+    _catalog = None
 
 
 def _(text):

@@ -29,10 +29,10 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import certifi
-from mutagen.id3 import APIC, ID3
 from PIL import Image
 
 import settings
+import tags as audiotags
 from i18n import _
 
 # Set from the settings in main()
@@ -154,20 +154,18 @@ def collect_missing():
     """Albums that have tracks without embedded cover art."""
     groups = defaultdict(lambda: {"artist": None, "album": None, "files": []})
     for root, _skip, files in os.walk(LIBRARY):
-        for fn in sorted(f for f in files if f.lower().endswith(".mp3")):
+        for fn in audiotags.audio_files(files):
             fp = os.path.join(root, fn)
-            tags = ID3(fp)
-            if tags.getall("APIC"):
+            try:
+                t = audiotags.read(fp)
+            except audiotags.Unreadable:
                 continue
-
-            def one(k):
-                v = tags.get(k)
-                return str(v.text[0]) if v and v.text else None
-
+            if t["art"]:
+                continue
             g = groups[os.path.relpath(root, LIBRARY)]
-            g["artist"] = g["artist"] or one("TPE2") or one("TPE1")
-            g["album"] = g["album"] or one("TALB")
-            g["files"].append({"path": fp, "title": one("TIT2") or fn})
+            g["artist"] = g["artist"] or t["albumartist"] or t["artist"] or None
+            g["album"] = g["album"] or t["album"] or None
+            g["files"].append({"path": fp, "title": t["title"] or fn})
     return groups
 
 
@@ -179,13 +177,7 @@ def embed(path, data, folder_jpg):
     im.save(buf, "JPEG", quality=90)
     jpg = buf.getvalue()
 
-    tags = ID3(path)
-    tags.delall("APIC")
-    tags.add(APIC(encoding=0, mime="image/jpeg", type=3, desc="", data=jpg))
-    # mutagen turns TYER into TDRC when reading v2.3 and writes both on save.
-    # TDRC is a v2.4 frame; an old iPod won't understand it in a v2.3 tag.
-    tags.delall("TDRC")
-    tags.save(path, v2_version=3, v1=2)
+    audiotags.set_cover(path, jpg)
 
     if not os.path.exists(folder_jpg):
         with open(folder_jpg, "wb") as f:

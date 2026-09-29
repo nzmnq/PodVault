@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 
+import i18n
 from i18n import _
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -41,10 +42,10 @@ class Field:
 
 FIELDS = [
     # ------------------------------------------------------------ interface
-    Field("language", "en", "text", "Interface language",
-          "A code such as en, uk (the file locale/uk.json); 'auto' follows the "
-          "system. What a file doesn't translate stays in English. Takes effect "
-          "after a restart.", "Interface"),
+    Field("language", "auto", "choice", "Interface language",
+          "Auto = the system's language, English if there's no translation for it. "
+          "The list is every translation in locale/. Takes effect after a restart.",
+          "Interface", options=["auto", *i18n.languages()]),
 
     # ------------------------------------------------------------- library
     Field("library_dir", "", "dir", "Library folder",

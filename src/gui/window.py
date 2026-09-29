@@ -5,13 +5,15 @@ import os
 import sys
 import time
 
-from PyQt6.QtCore import QEvent, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QProcess, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PyQt6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
                              QMainWindow, QMenu, QPlainTextEdit, QProgressBar, QSplitter,
                              QStackedWidget, QStyle, QStyledItemDelegate, QTreeWidget,
                              QTreeWidgetItem, QVBoxLayout, QWidget)
 
+import settings
+import tags as audiotags
 from gui import backend, theme
 from i18n import N_, _
 from gui.jobs import Jobs
@@ -248,7 +250,7 @@ class SideDelegate(QStyledItemDelegate):
 
 
 # The ☰ menu: tool names from backend.TOOLS; None is a separator; (title, [tools]) a submenu.
-MENU = ["covers", "tags", "likes", "export", None,
+MENU = ["covers", "tags", "likes", "export", "marks", None,
         (N_("Audio tools"), ["flac", "download", "tracklist_covers", "spatial"]), None,
         "build", "settings"]
 MENU_EXTRA = {"export": N_("Export the list…"), "settings": N_("Settings…")}
@@ -257,6 +259,7 @@ MENU_EXTRA = {"export": N_("Export the list…"), "settings": N_("Settings…")}
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.language = (backend.cfg() or {}).get("language")   # the one the texts were built in
         self.setWindowTitle(_("Music Utility"))
         self.setWindowIcon(app_icon())
         self.resize(*UI["window"])
@@ -557,12 +560,12 @@ class MainWindow(QMainWindow):
             self.navigate("settings")
         elif name == "export":
             self.export_list()
-        elif name in ("incoming", "likes"):
+        elif name in ("incoming", "likes", "marks"):
             ToolDialog(self, name).exec()
         elif backend.TOOLS[name].get("apply"):
             self.run_tool(name)                 # a dry run first: safe to start right away
         elif ask(self, _(backend.TOOLS[name]["title"]), _(backend.TOOLS[name].get("about", "")),
-                 yes="Run"):
+                 yes=_("Run")):
             self.run_tool(name)
 
     def export_list(self):
@@ -585,7 +588,7 @@ class MainWindow(QMainWindow):
         if len(paths) != 1:
             return None
         p = paths[0]
-        return p if os.path.isdir(p) else os.path.dirname(p) if p.lower().endswith(".mp3") else None
+        return p if os.path.isdir(p) else os.path.dirname(p) if audiotags.is_audio(p) else None
 
     def dragEnterEvent(self, e):
         if self._dropped_folder(e):
@@ -920,6 +923,13 @@ class MainWindow(QMainWindow):
     # --- settings
 
     def _settings_saved(self):
+        if (backend.cfg() or {}).get("language") != self.language:
+            # every text in the window was set when it was built: a new language needs a new window
+            if ask(self, _("Settings"), _("The interface language changed. Restart the window now?"),
+                   yes=_("Restart")) and self.close():
+                QProcess.startDetached(sys.executable, [os.path.join(settings.ROOT, "Main.py"), "--gui"],
+                                       settings.ROOT)
+                return
         self.reload_library()
         self.reload_playlists()
         self.ipod_page.data = None

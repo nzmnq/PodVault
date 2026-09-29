@@ -2,7 +2,7 @@
 Build the clean library for an old iPod + iTunes.
 
 Source : the "Old collection" setting          (read only)
-Output : the library folder, <Album Artist>\\<Album>\\NN - Title.mp3
+Output : the library folder, <Album Artist>\\<Album>\\NN - Title.mp3 (or .m4a)
          (or --dest)
 
 The source is an old, unsorted collection: one folder per album, plus
@@ -16,7 +16,7 @@ What it does to the tags:
                         and aren't in the title yet
   TCON (Genre)        — cleaned of slashes and long compound names
   APIC                — cover art from .covers/ipod_jpg is embedded
-  tag version         — ID3v2.3 / UTF-16, otherwise an old iPod garbles Cyrillic
+  tag version         — for mp3 ID3v2.3 / UTF-16, otherwise an old iPod garbles Cyrillic
 
 Folders with a single track are merged into a 'Singles' album per artist.
 
@@ -40,23 +40,10 @@ import shutil
 import sys
 from collections import Counter, defaultdict
 
-from mutagen.id3 import (
-    APIC,
-    ID3,
-    TALB,
-    TCON,
-    TIT2,
-    TPE1,
-    TPE2,
-    TPOS,
-    TRCK,
-    TYER,
-)
-from mutagen.mp3 import MP3
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import settings
+import tags as audiotags
 from i18n import _
 from musiclib import norm
 
@@ -116,22 +103,16 @@ def safe_name(s, maxlen=120):
 SHORT_PART_WARNINGS = []
 
 
-def tag_values(tags, frame):
-    """All of a frame's values, splitting several artists in one string.
+def artist_values(values):
+    """Every artist in the artist field's values, splitting several in one string.
 
     'Lil Peep/ Lil Tracy' -> ['Lil Peep', 'Lil Tracy']
     'AC/DC'               -> ['AC/DC']   (protected name, not split)
     """
-    v = tags.get(frame)
-    if v is None:
-        return []
     out = []
-    for x in v.text:
+    for x in values:
         x = str(x).strip()
         if not x:
-            continue
-        if frame != "TPE1":
-            out.append(x)
             continue
         if x.lower() in ARTIST_PROTECT:
             out.append(ARTIST_PROTECT[x.lower()])
@@ -143,11 +124,6 @@ def tag_values(tags, frame):
             SHORT_PART_WARNINGS.append(x)
         out.extend(parts)
     return out
-
-
-def tag_first(tags, frame):
-    vals = tag_values(tags, frame)
-    return vals[0] if vals else None
 
 
 def parse_pair(raw):
@@ -264,29 +240,29 @@ def merge_feats(title, feats):
 
 def read_album(folder, covers):
     path = os.path.join(SOURCE, folder)
-    mp3s = sorted(f for f in os.listdir(path) if f.lower().endswith(".mp3"))
     tracks = []
-    for fn in mp3s:
+    for fn in audiotags.audio_files(os.listdir(path)):
         fp = os.path.join(path, fn)
         try:
-            audio, tags = MP3(fp), ID3(fp)
-        except Exception as e:
+            tags, info = audiotags.read(fp), audiotags.info(fp)
+        except audiotags.Unreadable as e:
             print(_("  ! skipped {file}: {error}").format(file=os.path.join(folder, fn), error=e), file=sys.stderr)
             continue
-        tn, tt = parse_pair(tag_first(tags, "TRCK"))
-        dn, dt = parse_pair(tag_first(tags, "TPOS"))
+        tn, tt = parse_pair(tags["track"])
+        dn, dt = parse_pair(tags["disc"])
         tracks.append(
             {
                 "src": fp,
-                "title": tag_first(tags, "TIT2") or os.path.splitext(fn)[0],
-                "artists": tag_values(tags, "TPE1"),
-                "genre": tag_first(tags, "TCON"),
-                "year": tag_first(tags, "TDRC") or tag_first(tags, "TYER"),
+                "title": tags["title"] or os.path.splitext(fn)[0],
+                "artists": artist_values(tags["artists"]),
+                "genre": tags["genre"] or None,
+                "year": tags["year"] or None,
+                "album_tag": tags["album"],
                 "track": tn,
                 "track_total": tt,
                 "disc": dn,
                 "disc_total": dt,
-                "bitrate": int(audio.info.bitrate / 1000),
+                "bitrate": info["bitrate"],
             }
         )
     if not tracks:
@@ -294,7 +270,7 @@ def read_album(folder, covers):
     rec = covers.get(norm(folder), {"artists": set(), "art": None})
     return {
         "folder": folder,
-        "album": tag_first(ID3(tracks[0]["src"]), "TALB") or folder,
+        "album": tracks[0]["album_tag"] or folder,
         "tracks": tracks,
         "cover_artists": rec["artists"],
         "art": rec["art"],
@@ -382,7 +358,8 @@ def plan():
                     "album_artist": alb["album_artist"],
                     "album": alb["album"],
                     "art": alb["art"],
-                    "dest": os.path.join(adir, f"{n:02d} - {safe_name(t['out_title'])}.mp3"),
+                    "dest": os.path.join(adir, f"{n:02d} - {safe_name(t['out_title'])}"
+                                               f"{audiotags.extension(t['src'])}"),
                 }
             )
 
@@ -402,7 +379,8 @@ def plan():
                     "disc": None,
                     "disc_total": None,
                     "art": alb["art"],
-                    "dest": os.path.join(adir, f"{i:02d} - {safe_name(t['out_title'])}.mp3"),
+                    "dest": os.path.join(adir, f"{i:02d} - {safe_name(t['out_title'])}"
+                                               f"{audiotags.extension(t['src'])}"),
                 }
             )
 
@@ -416,39 +394,21 @@ def write_track(item):
     os.makedirs(os.path.dirname(item["dest"]), exist_ok=True)
     shutil.copy2(item["src"], item["dest"])
 
-    tags = ID3(item["dest"])
-    # clear what we overwrite, so no old values are left behind
-    for frame in ("TPE1", "TPE2", "TIT2", "TALB", "TCON", "TRCK", "TPOS", "APIC"):
-        tags.delall(frame)
+    def pair(n, total):
+        return (f"{n}/{total}" if total else str(n)) if n else ""
 
-    enc = 1  # UTF-16 with BOM: the only encoding in which an old iPod
-    # shows Cyrillic instead of garbage
-    tags.add(TPE1(encoding=enc, text=[item["out_artist"]]))
-    tags.add(TPE2(encoding=enc, text=[item["album_artist"]]))
-    tags.add(TIT2(encoding=enc, text=[item["out_title"]]))
-    tags.add(TALB(encoding=enc, text=[item["album"]]))
-    if item["out_genre"]:
-        tags.add(TCON(encoding=enc, text=[item["out_genre"]]))
-    if item["track"]:
-        trck = f"{item['track']}/{item['track_total']}" if item["track_total"] else str(item["track"])
-        tags.add(TRCK(encoding=enc, text=[trck]))
-    if item["disc"]:
-        tpos = f"{item['disc']}/{item['disc_total']}" if item["disc_total"] else str(item["disc"])
-        tags.add(TPOS(encoding=enc, text=[tpos]))
-    tags.delall("TDRC")  # a v2.4 frame; an old iPod won't understand it in a v2.3 tag
-    tags.delall("TYER")
-    if item["year"]:
-        m = re.search(r"\d{4}", str(item["year"]))
-        if m:
-            tags.add(TYER(encoding=enc, text=[m.group(0)]))
-
+    # every field we set is cleared first, so no old values are left behind
+    audiotags.write(item["dest"], {
+        "artist": item["out_artist"], "albumartist": item["album_artist"],
+        "title": item["out_title"], "album": item["album"], "genre": item["out_genre"],
+        "track": pair(item["track"], item["track_total"]),
+        "disc": pair(item["disc"], item["disc_total"]), "year": item["year"],
+    })
+    art = None
     if item["art"] and os.path.isfile(item["art"]):
         with open(item["art"], "rb") as f:
-            data = f.read()
-        tags.add(APIC(encoding=0, mime="image/jpeg", type=3, desc="", data=data))
-
-    # v2.3: an old iPod doesn't understand v2.4
-    tags.save(item["dest"], v2_version=3, v1=2)
+            art = f.read()
+    audiotags.set_cover(item["dest"], art)       # the .covers picture, or none at all
 
     folder_jpg = os.path.join(os.path.dirname(item["dest"]), "folder.jpg")
     if item["art"] and os.path.isfile(item["art"]) and not os.path.exists(folder_jpg):

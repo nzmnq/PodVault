@@ -1,8 +1,10 @@
 """The pages shown next to the source list."""
 
 import os
+from collections import Counter
 
 import settings
+import i18n
 from i18n import N_, _
 from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -392,7 +394,7 @@ class LibraryPage(Page):
     def __init__(self, win):
         super().__init__(win, N_("Library"))
         self.albums, self.view, self.state, self.search, self.sort = None, "albums", "all", "", 0
-        self.only_ua = self.only_noart = False
+        self.genre, self.only_noart = None, False
         self.artist = None
         self.model = AlbumModel()
         self.marks = self.model.marks
@@ -407,8 +409,9 @@ class LibraryPage(Page):
         row.setContentsMargins(20, 6, 20, 6)
         row.setSpacing(8)
         self.states = segmented(STATES, self._state)
-        self.ua_chip = chip(_("Ukrainian"), _("Albums with і ї є ґ in their titles — the language, not "
-                                              "the genre"), self._ua)
+        self.genre_box = QComboBox()
+        self.genre_box.setToolTip(_("Only albums of this genre"))
+        self.genre_box.currentIndexChanged.connect(self._genre)
         self.noart_chip = chip(_("No cover"), _("Albums with tracks that have no cover art"), self._noart)
         self.to_a = button(_("Mark Active"), tip=_("Mark the selected albums Active (A)"))
         self.to_r = button(_("Mark Archive"), tip=_("Mark the selected albums Archive (R)"))
@@ -423,7 +426,7 @@ class LibraryPage(Page):
         self.size.setFixedWidth(UI["slider_w"])
         self.size.setToolTip(_("Cover size"))
         self.size.valueChanged.connect(self._resize)
-        for w in (self.states, self.ua_chip, self.noart_chip):
+        for w in (self.states, self.genre_box, self.noart_chip):
             row.addWidget(w)
         row.addStretch(1)
         for w in (self.to_a, self.to_r, self.sort_box, self.size):
@@ -530,6 +533,7 @@ class LibraryPage(Page):
                 del self.marks[p]
             if self.detail.album and self.detail.album["path"] not in known:
                 self.close_album()
+            self._fill_genres(albums)
             self.refresh()
             self.marks_changed.emit()
         self._show_body()
@@ -543,21 +547,31 @@ class LibraryPage(Page):
         self.state = key
         self.refresh()
 
-    def _ua(self, on):
-        self.only_ua = on
+    def _fill_genres(self, albums):
+        """The genres the library has, most albums first; the current pick survives a re-read."""
+        counts = Counter(a["genre"] for a in albums if a["genre"])
+        self.genre_box.blockSignals(True)
+        self.genre_box.clear()
+        self.genre_box.addItem(_("All genres"), None)
+        for g in sorted(counts, key=lambda g: (-counts[g], g.lower())):
+            self.genre_box.addItem(f"{g}  ({counts[g]})", g)
+        # filled after the window is shown, so Qt's own sizing never sees the items:
+        # as wide as the longest entry plus the arrow, within reason
+        fm = self.genre_box.fontMetrics()
+        longest = max(fm.horizontalAdvance(self.genre_box.itemText(i))
+                      for i in range(self.genre_box.count()))
+        self.genre_box.setFixedWidth(min(longest + UI["combo_extra_w"], UI["genre_box_max_w"]))
+        i = self.genre_box.findData(self.genre)
+        self.genre_box.setCurrentIndex(max(i, 0))
+        self.genre = self.genre_box.currentData()
+        self.genre_box.blockSignals(False)
+
+    def _genre(self, i):
+        self.genre = self.genre_box.itemData(i)
         self.refresh()
 
     def _noart(self, on):
         self.only_noart = on
-        self.refresh()
-
-    def show_filter(self, state="all", noart=False):
-        """Used by the attention bar: e.g. jump to the albums without covers."""
-        self.set_view("albums")
-        self.states.buttons[state].setChecked(True)
-        self.state = state
-        self.noart_chip.setChecked(noart)
-        self.ua_chip.setChecked(False)
         self.refresh()
 
     def _filtered(self):
@@ -566,7 +580,7 @@ class LibraryPage(Page):
             s = self.model.state(a)
             if self.state != "all" and s != self.state:
                 continue
-            if self.only_ua and not a["ua"]:
+            if self.genre is not None and a["genre"] != self.genre:
                 continue
             if self.only_noart and not a["no_art"]:
                 continue
@@ -1108,6 +1122,10 @@ class ToolDialog(QDialog):
             lay.addWidget(QLabel(_("File or folder with your likes")))
             self.field = PathField("any", value or "")
             lay.addWidget(self.field)
+        elif tool == "marks":
+            lay.addWidget(QLabel(_("The edited list")))
+            self.field = PathField("file", value or backend.marks_file())
+            lay.addWidget(self.field)
         lay.addSpacing(8)
         row = QHBoxLayout()
         row.addStretch(1)
@@ -1124,7 +1142,7 @@ class ToolDialog(QDialog):
         p = {}
         if self.tool == "incoming":
             p = {"folder": self.field.text(), "to": "archive" if self.to_archive.isChecked() else "active"}
-        elif self.tool == "likes":
+        elif self.tool in ("likes", "marks"):
             p = {"path": self.field.text()}
         return p
 
@@ -1391,7 +1409,7 @@ class SettingsPage(Page):
             if f.kind == "choice":
                 w = QComboBox()
                 for opt in f.options:
-                    w.addItem(_(CHOICE_LABELS.get(opt, opt)), opt)
+                    w.addItem(i18n.LANGUAGE_NAMES.get(opt) or _(CHOICE_LABELS.get(opt, opt)), opt)
                 w.setCurrentIndex(max(0, w.findData(v)))
             elif f.kind == "int":
                 w = QSpinBox()

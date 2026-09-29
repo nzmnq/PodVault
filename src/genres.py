@@ -29,12 +29,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mutagen.id3 import ID3, TCON, TIT1
-
 import ai
 import settings
+import tags as audiotags
 from i18n import _
-from musiclib import drop_v24_frames
 
 GENRES = ["Rock", "Alternative", "Pop", "Hip-Hop", "Electronic", "Metal", "Punk",
           "Soundtrack", "Jazz", "Folk", "R&B", "Classical", "Reggae", "Blues",
@@ -63,30 +61,24 @@ def albums(cfg):
                 continue
             for album in sorted(os.listdir(a_dir)):
                 folder = os.path.join(a_dir, album)
-                files = sorted(os.path.join(folder, f) for f in os.listdir(folder)
-                               if f.lower().endswith(".mp3")) if os.path.isdir(folder) else []
+                files = [os.path.join(folder, f) for f in audiotags.audio_files(os.listdir(folder))] \
+                    if os.path.isdir(folder) else []
                 if files:
                     out[f"{artist}/{album}"] = {"part": part, "folder": folder, "files": files}
     return out
 
 
-def tag(tags, key):
-    v = tags.get(key)
-    return str(v.text[0]).strip() if v and v.text else ""
-
-
 def describe(info):
     """What the AI gets to know about an album."""
-    tags = ID3(info["files"][0])
+    tags = audiotags.read(info["files"][0])
     titles = []
     for p in info["files"][:4]:
         try:
-            titles.append(tag(ID3(p), "TIT2"))
-        except Exception:
+            titles.append(audiotags.read(p)["title"])
+        except audiotags.Unreadable:
             pass
-    return {"artist": tag(tags, "TPE2") or tag(tags, "TPE1"), "album": tag(tags, "TALB"),
-            "year": (tag(tags, "TYER") or tag(tags, "TDRC"))[:4],
-            "genre": tag(tags, "TCON"), "titles": titles}
+    return {"artist": tags["albumartist"] or tags["artist"], "album": tags["album"],
+            "year": tags["year"], "genre": tags["genre"], "titles": titles}
 
 
 # ------------------------------------------------------------ the file
@@ -189,26 +181,64 @@ def suggest(cfg, path, backend):
 # --------------------------------------------------------------- apply
 
 
-def apply(cfg, path, write):
-    lib = albums(cfg)
-    wanted = read_file(path)
-    if not wanted:
-        sys.exit(_("No genres yet in {file}. Run 'suggest' first.").format(file=path))
-    changes = []   # (key, files to change, old genre, new genre, new style)
+def differences(lib, wanted):
+    """[(key, files to change, old genre, new genre, new style)]: tags that don't match the file."""
+    changes = []
     for key, (genre, style) in sorted(wanted.items()):
         if key not in lib:
             continue
         todo, old = [], set()
         for p in lib[key]["files"]:
             try:
-                tags = ID3(p)
-            except Exception:
+                tags = audiotags.read(p)
+            except audiotags.Unreadable:
                 continue
-            if tag(tags, "TCON") != genre or tag(tags, "TIT1") != style:
+            if tags["genre"] != genre or tags["grouping"] != style:
                 todo.append(p)
-                old.add(f"{tag(tags, 'TCON')} / {tag(tags, 'TIT1')}".strip(" /"))
+                old.add(f"{tags['genre']} / {tags['grouping']}".strip(" /"))
         if todo:
             changes.append((key, todo, ", ".join(sorted(old)) or "-", genre, style))
+    return changes
+
+
+def write_tags(changes):
+    """Write the file's genre and style into the tags; returns the number of tracks."""
+    done = 0
+    for key, files, _skip, genre, style in changes:
+        for p in files:
+            audiotags.write(p, {"genre": genre, "grouping": style})
+            done += 1
+    return done
+
+
+def keep_tags_in_line(cfg, write=True):
+    """Bring tags that differ from the genres file back in line — quietly, one line of output.
+
+    Run after new tracks are added and before a sync, so neither a new track
+    nor the iPod ends up with a genre the file already corrected. Without a
+    genres file there's nothing to do. Returns the number of albums concerned.
+    """
+    wanted = read_file(settings.path("genres_file", cfg))
+    if not wanted:
+        return 0
+    changes = differences(albums(cfg), wanted)
+    if not changes:
+        return 0
+    if write:
+        done = write_tags(changes)
+        print(_("  genres from the genres file written: {tracks} tracks in {albums} albums").format(
+            tracks=done, albums=len(changes)))
+    else:
+        print(_("  genres from the genres file to write first: {albums} albums").format(albums=len(changes)))
+    return len(changes)
+
+
+def apply(cfg, path, write):
+    lib = albums(cfg)
+    wanted = read_file(path)
+    if not wanted:
+        sys.exit(_("No genres yet in {file}. Run 'suggest' first.").format(file=path))
+    changes = differences(lib, wanted)
     gone = [k for k in wanted if k not in lib]
     missing = [k for k in lib if k not in wanted]
 
@@ -232,18 +262,7 @@ def apply(cfg, path, write):
     if not write:
         print(_("\nNothing written. Add --apply."))
         return
-    done = 0
-    for key, files, _skip, genre, style in changes:
-        for p in files:
-            tags = ID3(p)
-            tags.delall("TCON")
-            tags.delall("TIT1")
-            tags.add(TCON(encoding=1, text=[genre]))
-            if style:
-                tags.add(TIT1(encoding=1, text=[style]))
-            drop_v24_frames(tags)
-            tags.save(p, v2_version=3, v1=2)
-            done += 1
+    done = write_tags(changes)
     print(_("\nTags written: {tracks} tracks in {albums} albums.").format(tracks=done, albums=len(changes)))
     print(_("The iPod gets the new genres on the next sync."))
 

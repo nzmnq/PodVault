@@ -27,17 +27,11 @@ from collections import Counter, defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mutagen.id3 import ID3
-from mutagen.mp3 import MP3
 
 import settings
+import tags as audiotags
 from i18n import _
-from musiclib import V24_ONLY, drop_v24_frames
-
-
-def strip_v24(path, tags):
-    """Remove v2.4 frames from a v2.3 tag without losing the year."""
-    drop_v24_frames(tags)
-    tags.save(path, v2_version=3, v1=2)
+from musiclib import V24_ONLY
 
 
 def main():
@@ -64,27 +58,20 @@ def main():
     albums = set()
     by_artist = defaultdict(set)
 
+    unreadable = []
     for root, _skip, files in os.walk(dest):
-        for fn in files:
-            if not fn.lower().endswith(".mp3"):
-                continue
+        for fn in audiotags.audio_files(files):
             fp = os.path.join(root, fn)
             rel = os.path.relpath(fp, dest)
             total += 1
+            try:
+                t = audiotags.read(fp)
+                bitrates[audiotags.info(fp)["bitrate"]] += 1
+            except audiotags.Unreadable as e:
+                unreadable.append((rel, str(e)))
+                continue
 
-            # translate=False — otherwise mutagen shows what isn't in the file
-            tags = ID3(fp, translate=False)
-            audio = MP3(fp)
-            bitrates[int(audio.info.bitrate / 1000)] += 1
-
-            if tags.version[:2] != (2, 3):
-                bad_version.append((rel, tags.version))
-
-            def one(k):
-                v = tags.get(k)
-                return str(v.text[0]) if v and v.text else None
-
-            aa, ar, al = one("TPE2"), one("TPE1"), one("TALB")
+            aa, ar, al = t["albumartist"], t["artist"], t["album"]
             if not aa:
                 no_album_artist.append(rel)
             else:
@@ -93,25 +80,30 @@ def main():
             if al:
                 albums.add((aa, al))
 
-            for k in ("TPE1", "TPE2", "TIT2", "TALB"):
-                f = tags.get(k)
-                if f is not None and getattr(f, "encoding", None) != 1:
-                    bad_encoding.append((rel, k, getattr(f, "encoding", None)))
-
-            present = [k for k in V24_ONLY if tags.get(k) is not None]
-            if present:
-                if args.fix:
-                    strip_v24(fp, tags)
-                    fixed += 1
-                else:
-                    v24_frames.append((rel, ", ".join(present)))
-
             # the artist is glued into one string again — the split didn't work
             if ar and re.search(r"\s*[/;]\s*", ar) and ar.lower() != "ac/dc":
                 still_multi.append((rel, ar))
 
-            if not tags.getall("APIC"):
+            if not t["art"]:
                 no_art.append(rel)
+
+            if not fn.lower().endswith(".mp3"):
+                continue      # what follows is about ID3 — what an old iPod needs from an mp3
+            # translate=False — otherwise mutagen shows what isn't in the file
+            tags = ID3(fp, translate=False)
+            if tags.version[:2] != (2, 3):
+                bad_version.append((rel, tags.version))
+            for k in ("TPE1", "TPE2", "TIT2", "TALB"):
+                f = tags.get(k)
+                if f is not None and getattr(f, "encoding", None) != 1:
+                    bad_encoding.append((rel, k, getattr(f, "encoding", None)))
+            present = [k for k in V24_ONLY if tags.get(k) is not None]
+            if present:
+                if args.fix:
+                    audiotags.save_id3(ID3(fp), fp)     # drops them, keeps the year
+                    fixed += 1
+                else:
+                    v24_frames.append((rel, ", ".join(present)))
 
     def block(title, items, limit=10):
         mark = "OK " if not items else "!! "
@@ -131,7 +123,7 @@ def main():
             for root, _skip, files in os.walk(source)
             if ".covers" not in root
             for f in files
-            if f.lower().endswith(".mp3")
+            if audiotags.is_audio(f)
         )
         # The library legitimately grows: add_incoming.py adds what wasn't in
         # the original source. It's only alarming if there are FEWER tracks.
@@ -150,6 +142,7 @@ def main():
     print(_("albums: {n}").format(n=len(albums)))
     print(_("bitrates: {list}").format(list=dict(bitrates.most_common())))
 
+    block(_("unreadable"), unreadable)
     block(_("no Album Artist"), no_album_artist)
     block(_("not ID3v2.3"), bad_version)
     block(_("not UTF-16 (Cyrillic will break)"), bad_encoding)

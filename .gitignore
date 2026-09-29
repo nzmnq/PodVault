@@ -22,6 +22,8 @@ tools/
 # Audio and cover art never go into the repository
 *.flac
 *.m4a
+# ...except half a second of silence the tests need (AAC and Apple Lossless)
+!tests/data/*.m4a
 *.alac
 *.mp3
 *.wav

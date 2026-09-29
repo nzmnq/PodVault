@@ -15,6 +15,7 @@ saved to settings.json and can be changed later on the Settings screen.
 
 import codecs
 import os
+from collections import Counter
 import subprocess
 import sys
 
@@ -24,6 +25,7 @@ sys.path.insert(0, SRC)
 
 import library   # noqa: E402
 import settings  # noqa: E402
+import i18n  # noqa: E402
 from i18n import N_, _  # noqa: E402
 import tui       # noqa: E402
 from tui import BOLD, FG, INV, RESET  # noqa: E402
@@ -32,7 +34,6 @@ FILTERS = [
     (N_("all"), lambda a: True),
     (N_("Active only"), lambda a: a["state"] == "A"),
     (N_("Archive only"), lambda a: a["state"] == "R"),
-    (N_("Ukrainian-language"), lambda a: a["ua"]),
     (N_("missing cover art"), lambda a: a["no_art"] > 0),
 ]
 
@@ -136,39 +137,42 @@ class App:
 
     def screen_main(self):
         L = lambda fn: (lambda: self.need_library() and fn())  # noqa: E731
-        items = [
+        # built on every redraw: a language switched in Settings shows at once
+        menu = lambda: [  # noqa: E731
             (_("LIBRARY"), None),
             (_("Add new tracks"), L(self.screen_incoming)),
             (_("Active / Archive markup"), L(self.screen_albums)),
             (_("Genres (AI suggests, you correct)"), L(self.screen_genres)),
             (_("Find missing cover art"),
-             L(lambda: self.ask_apply("Cover art", "fetch_covers.py"))),
+             L(lambda: self.ask_apply(_("Cover art"), "fetch_covers.py"))),
             (_("Check tags"),
-             L(lambda: self.ask_apply("Check tags", "verify_clean.py", flag="--fix",
-                                      question="Remove v2.4 frames if any were found (--fix)?"))),
+             L(lambda: self.ask_apply(_("Check tags"), "verify_clean.py", flag="--fix",
+                                      question=_("Remove v2.4 frames if any were found (--fix)?")))),
             (_("What's missing from my likes"), L(self.screen_missing)),
             (_("Export the list to a file"), L(self.export_file)),
+            (_("Apply the edited list"), L(self.import_file)),
             (_("IPOD"), None),
             (_("Sync the iPod"), L(self.screen_sync)),
             (_("AI vibe playlist"), L(self.screen_vibe)),
             (_("AUDIO TOOLS"), None),
             (_("Convert FLAC to ALAC"),
-             lambda: self.run_tool("FLAC -> ALAC", "flac_to_alac.py")),
+             lambda: self.run_tool(_("Convert FLAC to ALAC"), "flac_to_alac.py")),
             (_("Download from the tracklist"),
-             lambda: self.run_tool("Tracklist downloader", "metadata_download.py")),
+             lambda: self.run_tool(_("Download from the tracklist"), "metadata_download.py")),
             (_("Fetch covers for the tracklist (iTunes)"),
-             lambda: self.run_tool("Tracklist covers", "fetch_cover.py")),
+             lambda: self.run_tool(_("Fetch covers for the tracklist (iTunes)"), "fetch_cover.py")),
             (_("Spatial sound processing"),
-             lambda: self.run_tool("Spatial sound", "sur_sound.py")),
+             lambda: self.run_tool(_("Spatial sound processing"), "sur_sound.py")),
             ("", None),
             (_("Open the window (iTunes-style)"), self.open_window),
             (_("Initial build from an old collection"),
-             lambda: self.ask_apply("Initial build", "build_clean.py")),
+             lambda: self.ask_apply(_("Initial build from an old collection"), "build_clean.py")),
             (_("Settings"), self.screen_settings),
         ]
-        selectable = [i for i, (_title, fn) in enumerate(items) if fn]
+        selectable = [i for i, (_title, fn) in enumerate(menu()) if fn]
         cur = selectable[0]
         while True:
+            items = menu()
             albums = self.load()
             w, h = tui.size()
 
@@ -229,17 +233,22 @@ class App:
     def screen_albums(self):
         albums = self.load()
         cur = top = 0
-        fi = 0
+        fi = gi = 0
         query = ""
+        # g cycles through the genres the library has, most albums first
+        counts = Counter(a["genre"] for a in albums if a["genre"])
+        genres = [None] + sorted(counts, key=lambda g: (-counts[g], g.lower()))
 
         while True:
             w, h = tui.size()
             name, pred = FILTERS[fi]
-            rows = [a for a in albums if pred(a)]
+            genre = genres[gi]
+            rows = [a for a in albums if pred(a) and (genre is None or a["genre"] == genre)]
             if query:
                 q = query.lower()
                 rows = [a for a in rows
-                        if q in a["artist"].lower() or q in a["album"].lower()]
+                        if q in a["artist"].lower() or q in a["album"].lower()
+                        or q in a["genre"].lower()]
             cur = max(0, min(cur, len(rows) - 1))
 
             n_act = sum(1 for a in albums if self.state_of(a) == "A")
@@ -251,6 +260,7 @@ class App:
                       + f"{RESET}{FG['grey']}" if changed else ""))
             lines = tui.header(_("MARKUP"), sub, w)
             lines.append(f"  {_('filter:')} {BOLD}{_(name)}{RESET}"
+                         + f"   {_('genre:')} {BOLD}{genre or _('all')}{RESET}"
                          + (f"   {_('search:')} {BOLD}{query}{RESET}" if query else "")
                          + f"   {FG['grey']}"
                          + _("({shown} of {total})").format(shown=len(rows), total=len(albums))
@@ -275,8 +285,7 @@ class App:
                 title = f"{a['artist']} — {a['album']}"
                 meta = _("{tracks:3d} tr. {mb:5.0f} MB").format(tracks=a['tracks'],
                                                              mb=a['bytes'] / 1024 / 1024)
-                flags = ("" if not a["ua"] else f" {FG['cyan']}UA{RESET}")
-                flags += ("" if not a["no_art"] else f" {FG['red']}!art{RESET}")
+                flags = "" if not a["no_art"] else f" {FG['red']}!art{RESET}"
 
                 avail = w - 26
                 line = f" {badge} {tui.pad(title, avail)} {FG['grey']}{meta}{RESET}{flags}"
@@ -285,7 +294,8 @@ class App:
             lines.append("")
             lines += tui.footer([
                 ("↑↓", _("select")), ("A/R", _("mark")), (_("Space"), _("toggle")),
-                ("f", _("filter")), ("/", _("search")), ("s", _("save")), ("Esc", _("back")),
+                ("f", _("filter")), ("g", _("genre")), ("/", _("search")), ("s", _("save")),
+                ("Esc", _("back")),
             ], w)
             tui.draw(lines)
 
@@ -304,6 +314,8 @@ class App:
                 cur = len(rows) - 1
             elif k == "f":
                 fi, cur, top = (fi + 1) % len(FILTERS), 0, 0
+            elif k and k.lower() in ("g", "п"):      # 'п' is g on a Ukrainian/Russian layout
+                gi, cur, top = (gi + 1) % len(genres), 0, 0
             elif k == "/":
                 query = tui.prompt(_("Search (empty to clear): "))
                 cur = top = 0
@@ -579,9 +591,19 @@ class App:
         print("\n".join(tui.header(_("EXPORT"))))
         print(_("\n  List written: {path}").format(path=f"{BOLD}{path}{RESET}"))
         print(f"\n  {FG['grey']}" + _("Letters are filled in from the current state."))
-        print(_("  Edit it and come back — to apply:"))
-        print(f"  python src/library.py --import \"{path}\" --apply{RESET}")
+        print(_("  Edit it, then choose «Apply the edited list» in the menu.") + RESET)
         tui.pause()
+
+    def import_file(self):
+        path = os.path.join(settings.path("reports_dir", self.cfg), "split.txt")
+        if not os.path.isfile(path):
+            tui.clear()
+            print("\n".join(tui.header(_("Apply the edited list"))))
+            print(f"\n  {FG['red']}" + _("No list yet — export it first.") + RESET)
+            tui.pause()
+            return
+        self.ask_apply(_("Apply the edited list"), "library.py", ["--import", path],
+                       question=_("Move the albums the way the list says?"))
 
     def open_window(self):
         """Start the PyQt6 window as its own process; this menu stays usable."""
@@ -679,6 +701,7 @@ class App:
                 self.cfg = settings.load()
                 self.albums = None
                 dirty = False
+                i18n.reset()        # the menu is redrawn every time: a new language shows at once
             elif k == tui.ESCAPE:
                 if dirty and not tui.confirm(_("Leave without saving the changes?")):
                     continue

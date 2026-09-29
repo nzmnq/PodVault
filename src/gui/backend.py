@@ -14,6 +14,7 @@ import time
 
 import library
 import settings
+import tags as audiotags
 from i18n import N_, _
 
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -75,7 +76,8 @@ def playlist_file(path):
 
 TOOLS = {
     "sync": dict(title=N_("Sync the iPod"), script="ipod_sync.py", args=lambda p: [],
-                 apply="--apply", apply_extra=["--yes"], cancel_apply=False, refresh={"ipod"},
+                 apply="--apply", apply_extra=["--yes"], cancel_apply=False,
+                 refresh={"ipod", "library"},     # the sync also writes the file's genres into tags
                  confirm=N_("Back up the iPod's database, then delete the archive tracks, "
                          "copy the new ones, set covers and genres?")),
     "rescue": dict(title=N_("Save tracks from the iPod"), script="ipod_sync.py",
@@ -117,6 +119,9 @@ TOOLS = {
                          args=lambda p: ["apply"], apply="--apply",
                          refresh={"library", "ipod", "genres"},
                          confirm=N_("Write these genres into the tags?")),
+    "marks": dict(title=N_("Apply the edited list"), script="library.py",
+                  args=lambda p: ["--import", _existing(p, "path")], apply="--apply",
+                  refresh={"library"}, confirm=N_("Move the albums the way the list says?")),
     "likes": dict(title=N_("What's missing from my likes"),
                   steps=lambda p: [["import_likes.py", _existing(p, "path")], ["find_missing.py"]],
                   refresh=set()),
@@ -136,13 +141,13 @@ TOOLS = {
 
 # What each tool does, shown before it runs.
 ABOUT = {
-    "incoming": N_('Takes a folder of new mp3s, fixes their tags (Album Artist, features, genre, cover, '
-                 "ID3v2.3) and moves them into the library. What's already in the library is skipped. "
+    "incoming": N_('Takes a folder of new tracks (mp3 or m4a), fixes their tags (Album Artist, features, '
+                 "genre, cover; ID3v2.3 for mp3) and moves them into the library. What's already in the library is skipped. "
                  'You see everything first and confirm.'),
     "covers": N_('For albums without a cover: Deezer first, then MusicBrainz. A cover is only used '
                'when the artist matches. The next sync gives the iPod copies their covers.'),
-    "tags": N_('Album Artist set, ID3v2.3 in UTF-16 (an old iPod garbles Cyrillic otherwise), no '
-             'v2.4 frames. The latter can be repaired right away.'),
+    "tags": N_('Album Artist set; for mp3 also ID3v2.3 in UTF-16 (an old iPod garbles Cyrillic '
+             'otherwise) and no v2.4 frames. The latter can be repaired right away.'),
     "likes": N_('Compares what you listen to with the library: complete, partial, missing, or present '
               'but sitting in Archive (then just mark it Active). Any of these: a Spotify data '
               'export (YourLibrary.json), an Apple Music playlist saved from the browser as .html, '
@@ -155,6 +160,8 @@ ABOUT = {
     "spatial": N_('An experimental stereo-to-spatial pass over the spatial input folder. Needs ffmpeg.'),
     "build": N_('One-time: builds the library from an old, unsorted collection (Settings → Initial '
               'build → Old collection). Shown as a dry run first.'),
+    "marks": N_('The list written by "Export the list", with the [A] / [R] letters changed by hand: '
+                'the albums are moved to match. Shown as a dry run first.'),
     "rescue": N_('Tracks on the iPod that are in neither Active nor Archive — the iPod may hold the '
                'only copy — are copied into the incoming folder.'),
     "genres_suggest": N_("The AI fills in a genre and a style for albums that aren't in the genres file yet. "
@@ -202,31 +209,29 @@ def scan_library():
     return library.scan(root, with_audio=False)
 
 
-def _tag(tags, key):
-    v = tags.get(key) if tags else None
-    return str(v.text[0]).strip() if v and v.text else ""
+def _read(p):
+    """A file's tags, or every field empty when it can't be read."""
+    try:
+        return audiotags.read(p)
+    except audiotags.Unreadable:
+        return {**{f: "" for f in audiotags.FIELDS}, "art": False}
 
 
 def album_tracks(path):
-    from mutagen.id3 import ID3
-    from mutagen.mp3 import MP3
     out = []
-    for fn in sorted(f for f in os.listdir(path) if f.lower().endswith(".mp3")):
+    for fn in audiotags.audio_files(os.listdir(path)):
         p = os.path.join(path, fn)
+        t = _read(p)
         try:
-            tags = ID3(p)
-        except Exception:
-            tags = None
-        try:
-            info = MP3(p).info
-            length, bitrate = info.length, int(info.bitrate / 1000)
-        except Exception:
+            i = audiotags.info(p)
+            length, bitrate = i["length"], i["bitrate"]
+        except audiotags.Unreadable:
             length, bitrate = 0, 0
-        out.append({"file": fn, "track": _tag(tags, "TRCK").split("/")[0],
-                    "title": _tag(tags, "TIT2") or os.path.splitext(fn)[0],
-                    "artist": _tag(tags, "TPE1"), "genre": _tag(tags, "TCON"),
-                    "style": _tag(tags, "TIT1"), "length": length, "bitrate": bitrate,
-                    "art": bool(tags and tags.getall("APIC"))})
+        out.append({"file": fn, "track": t["track"].split("/")[0],
+                    "title": t["title"] or os.path.splitext(fn)[0],
+                    "artist": t["artist"], "genre": t["genre"],
+                    "style": t["grouping"], "length": length, "bitrate": bitrate,
+                    "art": t["art"]})
     return out
 
 
@@ -237,18 +242,14 @@ def cover_bytes(path):
         if os.path.isfile(p):
             with open(p, "rb") as f:
                 return f.read()
-    from mutagen.id3 import ID3
     try:
-        names = sorted(f for f in os.listdir(path) if f.lower().endswith(".mp3"))
+        names = audiotags.audio_files(os.listdir(path))
     except OSError:
         return None
     for fn in names:
-        try:
-            pics = ID3(os.path.join(path, fn)).getall("APIC")
-        except Exception:
-            continue
-        if pics:
-            return pics[0].data
+        data = audiotags.cover(os.path.join(path, fn))
+        if data:
+            return data
     return None
 
 
@@ -289,8 +290,13 @@ def save_marks(albums, moves, progress=None):
     return done, errors
 
 
+def marks_file():
+    """Where "Export the list" writes and "Apply the edited list" reads by default."""
+    return os.path.join(settings.path("reports_dir", cfg()), "split.txt")
+
+
 def export_list(albums):
-    path = os.path.join(settings.path("reports_dir", cfg()), "split.txt")
+    path = marks_file()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     library.export_list(albums, path)
     return path
@@ -373,8 +379,6 @@ def playlists():
 
 
 def playlist_tracks(path):
-    from mutagen.id3 import ID3
-    from mutagen.mp3 import MP3
     with open(path, encoding="utf-8-sig") as f:
         paths = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
     out = []
@@ -382,12 +386,12 @@ def playlist_tracks(path):
         row = {"path": p, "exists": os.path.isfile(p), "title": os.path.basename(p),
                "artist": "", "album": "", "style": "", "length": 0}
         if row["exists"]:
+            t = _read(p)
+            row.update(title=t["title"] or row["title"], artist=t["artist"],
+                       album=t["album"], style=t["grouping"])
             try:
-                tags = ID3(p)
-                row.update(title=_tag(tags, "TIT2") or row["title"], artist=_tag(tags, "TPE1"),
-                           album=_tag(tags, "TALB"), style=_tag(tags, "TIT1"))
-                row["length"] = MP3(p).info.length
-            except Exception:
+                row["length"] = audiotags.info(p)["length"]
+            except audiotags.Unreadable:
                 pass
         out.append(row)
     return out

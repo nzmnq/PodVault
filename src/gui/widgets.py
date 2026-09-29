@@ -397,7 +397,7 @@ class AlbumDelegate(QStyledItemDelegate):
         f.setPixelSize(10)
         f.setBold(True)
         p.setFont(f)
-        for text, color, on in (("UA", C["ua"], a["ua"]), ("!art", C["danger"], a["no_art"])):
+        for text, color, on in (("!art", C["danger"], a["no_art"]),):
             if not on:
                 continue
             w = QFontMetrics(f).horizontalAdvance(text) + 10

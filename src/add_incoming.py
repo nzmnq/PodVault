@@ -3,12 +3,13 @@ Add new tracks to the library.
 
 Brings them to the same shape as everything else (see build_clean.py):
 Album Artist set, features moved from the artist into the title, genre
-cleaned, tag in ID3v2.3/UTF-16. Incoming files already have cover art
-embedded, so their own is kept.
+cleaned; an mp3's tag in ID3v2.3/UTF-16. mp3 and m4a (AAC, Apple Lossless)
+are taken, other formats are reported. Incoming files already have cover
+art embedded, so their own is kept.
 
 New files arrive as a flat pile with no folders, so the tags are the only
 source of structure. The dry run (the default) shows what's in them —
-albums, bitrates, ID3 versions, cover art, unreadable files — and which
+albums, bitrates, tag versions, cover art, unreadable files — and which
 tracks are already in the library. It replaces the old scan_incoming.py.
 
 Where new tracks go (Active or Archive) and which folder they're picked up
@@ -30,12 +31,10 @@ from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mutagen.id3 import ID3, ID3NoHeaderError, TALB, TCON, TIT2, TPE1, TPE2, TPOS, TRCK, TYER
-from mutagen.mp3 import MP3
-
 import settings
+import tags as audiotags
 from i18n import _
-from musiclib import drop_v24_frames, norm, strip_edition, strip_feat
+from musiclib import norm, strip_edition, strip_feat
 
 # Incoming files glue co-artists with a comma ('wifiskeleton, Jaydes'), the
 # older part of the library with a slash. Both are split, but the comma only
@@ -70,11 +69,6 @@ def safe_name(s, maxlen=120):
     s = re.sub(r'[<>:"/\\|?*]', "_", s or "")
     s = re.sub(r"\s+", " ", s).strip().rstrip(". ")
     return s[:maxlen].strip() or "_"
-
-
-def one(tags, key):
-    v = tags.get(key)
-    return str(v.text[0]).strip() if v and v.text else None
 
 
 def parse_pair(raw):
@@ -136,19 +130,19 @@ def load_library(library):
     names = Counter()           # normalised name -> count
     spelling = {}
     for root, _skip, files in os.walk(library):
-        for fn in sorted(f for f in files if f.lower().endswith(".mp3")):
+        for fn in audiotags.audio_files(files):
             try:
-                tags = ID3(os.path.join(root, fn))
-            except Exception:
+                t = audiotags.read(os.path.join(root, fn))
+            except audiotags.Unreadable:
                 continue
-            aa = one(tags, "TPE2") or one(tags, "TPE1")
-            al = one(tags, "TALB")
-            ti = one(tags, "TIT2")
+            aa = t["albumartist"] or t["artist"]
+            al = t["album"]
+            ti = t["title"]
             if not aa:
                 continue
             names[norm(aa)] += 1
             spelling.setdefault(norm(aa), aa)
-            ar = one(tags, "TPE1")
+            ar = t["artist"]
             if ar:
                 names[norm(ar)] += 1
                 spelling.setdefault(norm(ar), ar)
@@ -160,46 +154,43 @@ def load_library(library):
 # -------------------------------------------------------------- plan
 
 
-OTHER_AUDIO = (".m4a", ".flac", ".wav", ".ogg", ".opus", ".aac", ".wma", ".alac", ".aiff")
+OTHER_AUDIO = (".flac", ".wav", ".ogg", ".opus", ".aac", ".wma", ".alac", ".aiff")
 
 
 def read_incoming(src, known):
-    """Read every mp3 in the folder. Returns (files, unreadable).
+    """Read every mp3 and m4a in the folder. Returns (files, unreadable).
 
     Other audio formats are reported as unreadable rather than skipped
-    silently: the library is mp3-only, so they need converting first.
+    silently: they need converting first (FLAC -> ALAC is in the menu).
     """
     files, broken = [], []
     for root, _skip, fs in os.walk(src):
         for fn in sorted(f for f in fs if f.lower().endswith(OTHER_AUDIO)):
-            broken.append((fn, _("not an mp3 — convert it first")))
-        for fn in sorted(f for f in fs if f.lower().endswith(".mp3")):
+            broken.append((fn, _("not mp3 or m4a — convert it first")))
+        for fn in audiotags.audio_files(fs):
             fp = os.path.join(root, fn)
             try:
-                audio = MP3(fp)
-                tags = ID3(fp)
-            except ID3NoHeaderError:
-                broken.append((fn, _("no ID3 tag")))
+                t = audiotags.read(fp)
+                info = audiotags.info(fp)
+            except audiotags.Unreadable as e:
+                broken.append((fn, _("no ID3 tag") if str(e) == "no ID3 tag" else str(e)))
                 continue
-            except Exception as e:
-                broken.append((fn, str(e)))
-                continue
-            tn, tt = parse_pair(one(tags, "TRCK"))
-            dn, dt = parse_pair(one(tags, "TPOS"))
+            tn, tt = parse_pair(t["track"])
+            dn, dt = parse_pair(t["disc"])
             files.append(
                 {
                     "src": fp,
                     "file": fn,
-                    "artists": split_artists(one(tags, "TPE1"), known),
-                    "aa_raw": one(tags, "TPE2") or one(tags, "TPE1"),
-                    "album": one(tags, "TALB"),
-                    "title": one(tags, "TIT2") or os.path.splitext(fn)[0],
-                    "genre": one(tags, "TCON"),
-                    "year": one(tags, "TDRC") or one(tags, "TYER"),
+                    "artists": split_artists(t["artist"], known),
+                    "aa_raw": t["albumartist"] or t["artist"] or None,
+                    "album": t["album"] or None,
+                    "title": t["title"] or os.path.splitext(fn)[0],
+                    "genre": t["genre"] or None,
+                    "year": t["year"] or None,
                     "track": tn, "track_total": tt, "disc": dn, "disc_total": dt,
-                    "bitrate": int(audio.info.bitrate / 1000),
-                    "has_art": bool(tags.getall("APIC")),
-                    "ver": ".".join(map(str, tags.version)),
+                    "bitrate": info["bitrate"],
+                    "has_art": t["art"],
+                    "ver": t["version"],
                 }
             )
     return files, broken
@@ -243,7 +234,7 @@ def build_plan(files, known, spelling, dest_root):
                 "out_genre": clean_genre(f["genre"]),
                 "dest": os.path.join(
                     dest_root, safe_name(aa), safe_name(album),
-                    f"{f['track'] or 0:02d} - {safe_name(title)}.mp3"),
+                    f"{f['track'] or 0:02d} - {safe_name(title)}{audiotags.extension(f['src'])}"),
             })
     return plan, notes
 
@@ -283,38 +274,23 @@ def write_track(item):
     os.makedirs(os.path.dirname(item["dest"]), exist_ok=True)
     shutil.copy2(item["src"], item["dest"])
 
-    tags = ID3(item["dest"])
-    for fr in ("TPE1", "TPE2", "TIT2", "TALB", "TCON", "TRCK", "TPOS", "TDRC", "TYER"):
-        tags.delall(fr)
+    def pair(n, total):
+        return (f"{n}/{total}" if total else str(n)) if n else ""
 
-    enc = 1  # UTF-16: otherwise an old iPod garbles Cyrillic
-    tags.add(TPE1(encoding=enc, text=[item["out_artist"]]))
-    tags.add(TPE2(encoding=enc, text=[item["album_artist"]]))
-    tags.add(TIT2(encoding=enc, text=[item["out_title"]]))
-    tags.add(TALB(encoding=enc, text=[item["album"]]))
-    if item["out_genre"]:
-        tags.add(TCON(encoding=enc, text=[item["out_genre"]]))
-    if item["track"]:
-        t = f"{item['track']}/{item['track_total']}" if item["track_total"] else str(item["track"])
-        tags.add(TRCK(encoding=enc, text=[t]))
-    if item["disc"]:
-        d = f"{item['disc']}/{item['disc_total']}" if item["disc_total"] else str(item["disc"])
-        tags.add(TPOS(encoding=enc, text=[d]))
-    if item["year"]:
-        m = re.search(r"\d{4}", str(item["year"]))
-        if m:
-            tags.add(TYER(encoding=enc, text=[m.group(0)]))
-    # Frames the source file brought along (TIPL from its IPLS, sort
-    # frames...) would otherwise be written into the v2.3 tag as v2.4 ones.
-    # Before the tools were merged a separate step stripped them afterwards.
-    drop_v24_frames(tags)
-    tags.save(item["dest"], v2_version=3, v1=2)
+    # Frames the source file brought along (TIPL from its IPLS, sort frames...)
+    # would otherwise go into the v2.3 tag as v2.4 ones: tags.write drops them.
+    audiotags.write(item["dest"], {
+        "artist": item["out_artist"], "albumartist": item["album_artist"],
+        "title": item["out_title"], "album": item["album"], "genre": item["out_genre"],
+        "track": pair(item["track"], item["track_total"]),
+        "disc": pair(item["disc"], item["disc_total"]), "year": item["year"],
+    })
 
     folder_jpg = os.path.join(os.path.dirname(item["dest"]), "folder.jpg")
-    pics = tags.getall("APIC")
-    if pics and not os.path.exists(folder_jpg):
+    pic = audiotags.cover(item["dest"])
+    if pic and not os.path.exists(folder_jpg):
         with open(folder_jpg, "wb") as f:
-            f.write(pics[0].data)
+            f.write(pic)
 
 
 def main():
@@ -394,14 +370,14 @@ def main():
             print(_("  ... {n} more").format(n=len(dupes) - 20))
 
     if broken:
-        print("\n--- " + _("WON'T BE ADDED: unreadable or not mp3 ({n})").format(n=len(broken)) + " ---")
+        print("\n--- " + _("WON'T BE ADDED: unreadable, or not mp3 or m4a ({n})").format(n=len(broken)) + " ---")
         for fn, err in broken:
             print(f"  {fn}: {err}")
 
     if files:
         print("\n--- " + _("SUMMARY") + " ---")
         rows = [(_("bitrates"), dict(Counter(f['bitrate'] for f in files).most_common())),
-                (_("ID3 versions"), dict(Counter(f['ver'] for f in files).most_common())),
+                (_("tag versions"), dict(Counter(f['ver'] for f in files).most_common())),
                 (_("with cover art"), f"{sum(1 for f in files if f['has_art'])}/{len(files)}")]
         width = max(len(label) for label, _v in rows)
         for label, value in rows:
@@ -427,6 +403,9 @@ def main():
     print(_("\nTracks added: {n}").format(n=len(todo)))
     if dupes and not args.replace:
         print(_("Skipped as already present: {n} (--replace overwrites)").format(n=len(dupes)))
+    # a new track of an album the genres file already knows gets that album's genre
+    import genres
+    genres.keep_tags_in_line(cfg)
 
 
 if __name__ == "__main__":

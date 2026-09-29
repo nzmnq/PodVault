@@ -45,11 +45,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mutagen.id3 import ID3
-from mutagen.mp3 import MP3
-
 import ipod        # podsync lives in vendor/podsync; importing ipod puts it on the path
 import settings
+import tags as audiotags
 from i18n import _
 from musiclib import norm, strip_feat
 
@@ -90,7 +88,7 @@ def confirmed(question):
 def active_files():
     out = []
     for root, _skip, files in os.walk(ACTIVE):
-        for fn in sorted(f for f in files if f.lower().endswith(".mp3")):
+        for fn in audiotags.audio_files(files):
             out.append(os.path.join(root, fn))
     return sorted(out)
 
@@ -136,27 +134,20 @@ def index_library():
     active_by_key = {}
     for root_dir, state in ((ACTIVE, "A"), (ARCHIVE, "R")):
         for root, _skip, files in os.walk(root_dir):
-            for fn in files:
-                if not fn.lower().endswith(".mp3"):
-                    continue
+            for fn in audiotags.audio_files(files):
                 p = os.path.join(root, fn)
                 try:
-                    tags = ID3(p)
-                except Exception:
+                    t = audiotags.read(p)
+                except audiotags.Unreadable:
                     continue
-
-                def one(k):
-                    v = tags.get(k)
-                    return str(v.text[0]) if v and v.text else ""
-
-                keys = device_keys(one("TPE1"), one("TIT2")) | \
-                    device_keys(one("TPE2"), one("TIT2"))
+                keys = device_keys(t["artist"], t["title"]) | \
+                    device_keys(t["albumartist"], t["title"])
                 for k in keys:
                     idx.setdefault(k, set()).add(state)
                 if state == "A" and keys:
                     try:
-                        dur = MP3(p).info.length
-                    except Exception:
+                        dur = audiotags.info(p)["length"]
+                    except audiotags.Unreadable:
                         dur = None
                     active_by_key[p] = (keys, dur)
     return idx, active_by_key
@@ -261,15 +252,9 @@ def has_cover(path):
 
 def file_genre(path):
     try:
-        v = ID3(path).get("TCON")
-        return str(v.text[0]).strip() if v and v.text else ""
-    except Exception:
+        return audiotags.read(path)["genre"]
+    except audiotags.Unreadable:
         return ""
-
-
-def _tag(tags, key):
-    v = tags.get(key)
-    return str(v.text[0]).strip() if v and v.text else None
 
 
 def _pair(raw):
@@ -281,27 +266,27 @@ def _pair(raw):
 
 
 def record_from_file(path, location):
-    """A podsync track record for an mp3 about to be copied onto the iPod."""
+    """A podsync track record for a file (mp3 or m4a) about to be copied onto the iPod."""
     from podsync.itdb.writer.track import TrackRecord
-    audio, tags = MP3(path), ID3(path)
-    track, tracks = _pair(_tag(tags, "TRCK"))
-    disc, discs = _pair(_tag(tags, "TPOS"))
-    year = (_tag(tags, "TYER") or _tag(tags, "TDRC") or "")[:4]
+    info, t = audiotags.info(path), audiotags.read(path)
+    track, tracks = _pair(t["track"])
+    disc, discs = _pair(t["disc"])
+    year = t["year"]
     return TrackRecord(
-        title=_tag(tags, "TIT2") or os.path.splitext(os.path.basename(path))[0],
+        title=t["title"] or os.path.splitext(os.path.basename(path))[0],
         location=location, size=os.path.getsize(path),
-        length=int(audio.info.length * 1000), filetype="mp3",
-        bitrate=int(audio.info.bitrate / 1000), sample_rate=audio.info.sample_rate,
-        artist=_tag(tags, "TPE1"), album=_tag(tags, "TALB"),
-        album_artist=_tag(tags, "TPE2"), genre=_tag(tags, "TCON"),
-        grouping=_tag(tags, "TIT1"), composer=_tag(tags, "TCOM"),
+        length=int(info["length"] * 1000), filetype=info["filetype"], filetype_desc=info["kind"],
+        bitrate=info["bitrate"], sample_rate=info["sample_rate"],
+        artist=t["artist"] or None, album=t["album"] or None,
+        album_artist=t["albumartist"] or None, genre=t["genre"] or None,
+        grouping=t["grouping"] or None, composer=t["composer"] or None,
         year=int(year) if year.isdigit() else 0,
         track_number=track, total_tracks=tracks,
         disc_number=disc or 1, total_discs=discs or 1,
         date_added=int(time.time()), source_path=path)
 
 
-def new_file_on_ipod(root):
+def new_file_on_ipod(root, ext=".mp3"):
     """A free iTunes-style file name in one of the iPod's Fxx music folders."""
     music = os.path.join(root, "iPod_Control", "Music")
     folders = sorted(d for d in os.listdir(music) if d.upper().startswith("F")) \
@@ -311,7 +296,7 @@ def new_file_on_ipod(root):
         os.makedirs(os.path.join(music, "F00"), exist_ok=True)
     folder = random.choice(folders)
     while True:
-        name = "".join(random.choices(string.ascii_uppercase, k=4)) + ".mp3"
+        name = "".join(random.choices(string.ascii_uppercase, k=4)) + ext
         dest = os.path.join(music, folder, name)
         if not os.path.exists(dest):
             return dest
@@ -466,7 +451,7 @@ def apply_plan(cfg, dev, db, generation, plan):
         try:
             for i, p in enumerate(plan["to_add"], 1):
                 revalidate()
-                dest = new_file_on_ipod(root)
+                dest = new_file_on_ipod(root, audiotags.extension(p))
                 shutil.copy2(p, dest)
                 copied.append(dest)
                 rec = record_from_file(p, location_for_media_path(root, dest))
@@ -570,6 +555,10 @@ def run(cfg, apply_changes, ipod_path=None, playlist=None, playlist_only=False,
     if do_restore:
         return ipod.restore(cfg, dev.path, confirmed)
 
+    if not playlist_only:
+        # the library's tags first, so the iPod gets the genres the file holds
+        import genres
+        genres.keep_tags_in_line(cfg, write=apply_changes)
     generation = snapshot_database_state(dev.path)
     db = ipod.load(dev)
     plan = make_plan(dev, db, playlist, playlist_only)

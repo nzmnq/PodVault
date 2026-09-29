@@ -36,10 +36,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
-from mutagen.id3 import ID3
 
 import ai
 import settings
+import tags as audiotags
 from i18n import _
 
 EXCERPT_SECONDS = 45
@@ -51,6 +51,8 @@ FEATURES_VERSION = 1   # bump when the analysis changes, to redo the cache
 
 def _excerpt(path):
     """Mono float samples from a stretch after the intro, and the rate."""
+    if path.lower().endswith(".m4a"):
+        return _excerpt_ffmpeg(path)
     import soundfile as sf
     with sf.SoundFile(path) as f:
         rate = f.samplerate
@@ -60,6 +62,20 @@ def _excerpt(path):
         f.seek(start)
         x = f.read(min(want, total), dtype="float32", always_2d=True)
     return x.mean(axis=1), rate
+
+
+def _excerpt_ffmpeg(path, rate=22050):
+    """The same excerpt through ffmpeg: libsndfile can't decode AAC or Apple Lossless."""
+    import subprocess
+    ffmpeg = settings.ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is needed to analyse .m4a")
+    length = audiotags.info(path)["length"]
+    start = max(0.0, min(length * 0.3, length - EXCERPT_SECONDS))
+    raw = subprocess.run([ffmpeg, "-v", "error", "-ss", f"{start:.2f}", "-t", str(EXCERPT_SECONDS),
+                          "-i", path, "-ac", "1", "-ar", str(rate), "-f", "f32le", "-"],
+                         capture_output=True, check=True, stdin=subprocess.DEVNULL).stdout
+    return np.frombuffer(raw, dtype="<f4"), rate
 
 
 def _tempo(onset, frame_rate):
@@ -118,27 +134,20 @@ def analyse(path):
 
 def track_tags(path):
     try:
-        tags = ID3(path)
-    except Exception:
+        t = audiotags.read(path)
+    except audiotags.Unreadable:
         return {}
-
-    def one(k):
-        v = tags.get(k)
-        return str(v.text[0]).strip() if v and v.text else ""
-
-    year = one("TYER") or one("TDRC")
-    return {"artist": one("TPE1"), "title": one("TIT2"), "album": one("TALB"),
-            "genre": one("TCON"), "style": one("TIT1"), "year": year[:4]}
+    return {"artist": t["artist"], "title": t["title"], "album": t["album"],
+            "genre": t["genre"], "style": t["grouping"], "year": t["year"]}
 
 
 def audio_stamp(path):
     """What identifies the audio: tag edits (genres!) must not trigger a
     re-analysis, so the file's size and mtime can't be used."""
-    from mutagen.mp3 import MP3
     try:
-        info = MP3(path).info
-        return f"{info.length:.3f}:{info.bitrate}"
-    except Exception:
+        i = audiotags.info(path)
+        return f"{i['length']:.3f}:{i['bps']}"      # unchanged since mp3-only days: the cache stays valid
+    except audiotags.Unreadable:
         st = os.stat(path)
         return f"{st.st_size}:{int(st.st_mtime)}"
 
@@ -147,7 +156,7 @@ def active_tracks(active):
     out = []
     for root, _skip, files in os.walk(active):
         for fn in files:
-            if fn.lower().endswith(".mp3"):
+            if audiotags.is_audio(fn):
                 out.append(os.path.join(root, fn))
     return sorted(out)
 

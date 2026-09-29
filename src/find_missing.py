@@ -30,9 +30,9 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mutagen.id3 import ID3
 
 import settings
+import tags as audiotags
 from i18n import _
 from musiclib import norm, strip_edition, strip_feat
 
@@ -60,21 +60,16 @@ def load_library():
     for root, _skip, files in os.walk(LIBRARY):
         rel = os.path.relpath(root, LIBRARY).split(os.sep)[0]
         state = "R" if rel == "Archive" else "A"
-        for fn in (f for f in files if f.lower().endswith(".mp3")):
+        for fn in audiotags.audio_files(files):
             try:
-                tags = ID3(os.path.join(root, fn))
-            except Exception:
+                t = audiotags.read(os.path.join(root, fn))
+            except audiotags.Unreadable:
                 continue
-
-            def one(k):
-                v = tags.get(k)
-                return str(v.text[0]).strip() if v and v.text else None
-
-            aa = one("TPE2") or one("TPE1")
-            ti = one("TIT2")
+            aa = t["albumartist"] or t["artist"]
+            ti = t["title"]
             if not (aa and ti):
                 continue
-            al = one("TALB") or ""
+            al = t["album"]
             rec = albums[(norm(aa), norm(strip_edition(al)))]
             rec["artist"] = rec["artist"] or aa
             rec["album"] = rec["album"] or al
