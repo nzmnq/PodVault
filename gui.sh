@@ -1,5 +1,5 @@
 #!/bin/sh
-# Opens the Music Utility window (PyQt6) on macOS / Linux (gui.bat on Windows).
+# Opens the PodVault window (PyQt6) on macOS / Linux (gui.bat on Windows).
 # Works from any directory.
 #
 # Interpreter, first match wins:

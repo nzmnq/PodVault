@@ -1,5 +1,5 @@
 """
-Music Utility — the program. Opens the window (PyQt6).
+PodVault — the program. Opens the window (PyQt6).
 
 Run:  gui.bat / ./gui.sh      (or: python Main.py)
 

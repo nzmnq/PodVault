@@ -166,6 +166,8 @@ def main():
 
     singles = [a for a, albs in by_artist.items() if "Singles" in albs]
     print(_("\nOK artists with a 'Singles' album: {n}").format(n=len(singles)))
+    if not args.fix and not v24_frames:
+        settings.nothing_to_apply()
 
 
 if __name__ == "__main__":

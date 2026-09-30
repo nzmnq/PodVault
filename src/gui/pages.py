@@ -6,13 +6,13 @@ from collections import Counter
 import settings
 import i18n
 from i18n import N_, _
-from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QButtonGroup, QCheckBox, QComboBox, QCompleter,
-                             QDialog, QListWidget, QListWidgetItem, QPushButton,
+                             QDialog, QListWidget, QListWidgetItem, QMenu, QPushButton,
                              QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
                              QInputDialog, QLabel, QLineEdit, QListView, QPlainTextEdit,
-                             QRadioButton, QScrollArea, QSlider, QSpinBox, QSplitter,
+                             QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QSplitter,
                              QStackedWidget, QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem,
                              QTabWidget,
                              QVBoxLayout, QWidget)
@@ -64,6 +64,7 @@ class Page(QWidget):
         """A scrolling column with margins, for form-like pages."""
         area = QScrollArea()
         area.setWidgetResizable(True)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # the column fits the width
         inner = QWidget()
         inner.setObjectName("page")
         col = QVBoxLayout(inner)
@@ -242,10 +243,10 @@ class AlbumDetail(QFrame):
         acts = QHBoxLayout()
         self.move = button("")
         self.move.clicked.connect(self._toggle)
-        folder = button(_("Show in folder"))
-        folder.clicked.connect(lambda: self.album and self._open())
+        self.folder_btn = button(_("Show in folder"))
+        self.folder_btn.clicked.connect(lambda: self.album and self._open())
         acts.addWidget(self.move)
-        acts.addWidget(folder)
+        acts.addWidget(self.folder_btn)
         acts.addStretch(1)
         right.addSpacing(6)
         right.addLayout(acts)
@@ -269,7 +270,8 @@ class AlbumDetail(QFrame):
             facts.append(str(a["year"]))
         if a["genre"]:
             facts.append(a["genre"])
-        self.meta.setText(" · ".join(facts) + f"\n{a['path']}")
+        self.meta.setText(" · ".join(facts))
+        self.folder_btn.setToolTip(a["path"])
         self.set_state(state, a["path"])
         self._cover_ready(a["path"])
         self.tracks.setRowCount(0)
@@ -364,6 +366,12 @@ class Attention(QFrame):
         self.lay = QHBoxLayout(self)
         self.lay.setContentsMargins(20, 6, 20, 6)
         self.lay.setSpacing(10)
+        self.shown_texts, self.dismissed = (), None
+        self.hide()
+
+    def _dismiss(self):
+        """Hidden until what it says changes."""
+        self.dismissed = self.shown_texts
         self.hide()
 
     def set_items(self, items):
@@ -383,7 +391,12 @@ class Attention(QFrame):
             self.lay.addWidget(lab)
             self.lay.addWidget(b)
         self.lay.addStretch(1)
-        self.setVisible(bool(items))
+        close = button(GLYPHS["close"], tip=_("Hide until something changes"))
+        close.setObjectName("attentionClose")
+        close.clicked.connect(self._dismiss)
+        self.lay.addWidget(close)
+        self.shown_texts = tuple(text for text, _a, _f in items)
+        self.setVisible(bool(items) and self.shown_texts != self.dismissed)
 
 
 class LibraryPage(Page):
@@ -413,10 +426,6 @@ class LibraryPage(Page):
         self.genre_box.setToolTip(_("Only albums of this genre"))
         self.genre_box.currentIndexChanged.connect(self._genre)
         self.noart_chip = chip(_("No cover"), _("Albums with tracks that have no cover art"), self._noart)
-        self.to_a = button(_("Mark Active"), tip=_("Mark the selected albums Active (A)"))
-        self.to_r = button(_("Mark Archive"), tip=_("Mark the selected albums Archive (R)"))
-        self.to_a.clicked.connect(lambda: self.mark_selected("A"))
-        self.to_r.clicked.connect(lambda: self.mark_selected("R"))
         self.sort_box = QComboBox()
         self.sort_box.addItems([_(n) for n, _key in SORTS])
         self.sort_box.currentIndexChanged.connect(self._sort)
@@ -426,11 +435,19 @@ class LibraryPage(Page):
         self.size.setFixedWidth(UI["slider_w"])
         self.size.setToolTip(_("Cover size"))
         self.size.valueChanged.connect(self._resize)
+        small, large = QLabel(GLYPHS["small"]), QLabel(GLYPHS["large"])
+        for lab in (small, large):
+            lab.setProperty("muted", True)
+            lab.setToolTip(_("Cover size"))
         for w in (self.states, self.genre_box, self.noart_chip):
             row.addWidget(w)
         row.addStretch(1)
-        for w in (self.to_a, self.to_r, self.sort_box, self.size):
+        row.addWidget(self.sort_box)
+        row.addSpacing(8)
+        for w in (small, self.size, large):
             row.addWidget(w)
+        for w in (self.states, self.noart_chip, self.sort_box):
+            w.setMinimumWidth(w.sizeHint().width())     # never squeezed into "Al | ti | h"
         self.bars.addWidget(bar)
         self.genres = GenresView(win)
         self.bars.addWidget(self.genres.bar)
@@ -439,6 +456,31 @@ class LibraryPage(Page):
 
         self.attention = Attention()
         self.body.addWidget(self.attention)
+
+        # the selection's actions and the marks not moved yet; hidden when there are neither
+        self.marks_bar = QFrame()
+        self.marks_bar.setObjectName("marksBar")
+        self.marks_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        mrow = QHBoxLayout(self.marks_bar)
+        mrow.setContentsMargins(20, 6, 20, 6)
+        mrow.setSpacing(8)
+        self.sel_label = QLabel()
+        self.to_a = button(_("→ Active"), tip=_("Goes to the iPod on the next sync (key A)"))
+        self.to_r = button(_("→ Archive"), tip=_("Stays on disk, leaves the iPod (key R)"))
+        self.to_a.clicked.connect(lambda: self.mark_selected("A"))
+        self.to_r.clicked.connect(lambda: self.mark_selected("R"))
+        self.pending = QLabel()
+        self.revert_btn = button(_("Revert"))
+        self.revert_btn.clicked.connect(self.revert)
+        self.save_marks_btn = button(_("Move the files…"), primary=True)
+        for w in (self.sel_label, self.to_a, self.to_r):
+            mrow.addWidget(w)
+        mrow.addStretch(1)
+        for w in (self.pending, self.revert_btn, self.save_marks_btn):
+            mrow.addWidget(w)
+        for w in (self.to_a, self.to_r, self.revert_btn, self.save_marks_btn):
+            w.setMinimumWidth(w.sizeHint().width())
+        self.body.addWidget(self.marks_bar)
 
         # albums: artist list (Artists view only) | grid over the opened album
         self.artists = QListWidget()
@@ -460,6 +502,8 @@ class LibraryPage(Page):
         self.delegate = AlbumDelegate(self.model, self.grid)
         self.grid.setItemDelegate(self.delegate)
         self.grid.doubleClicked.connect(self.open_album)
+        self.grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.grid.customContextMenuRequested.connect(self._grid_menu)
         self.grid.key_mark.connect(self._key_mark)
         self.grid.key_open.connect(lambda: self.open_album(self.grid.currentIndex()))
         self.grid.key_escape.connect(self._escape)
@@ -481,10 +525,33 @@ class LibraryPage(Page):
         h.addWidget(self.split, 1)
         self.artists.hide()
 
+        # reading / an empty library / nothing matches the filters
+        self.empty = QWidget()
+        self.empty.setObjectName("empty")
+        ev = QVBoxLayout(self.empty)
+        ev.addStretch(1)
+        self.empty_title = QLabel()
+        self.empty_title.setObjectName("emptyTitle")
         self.loading = muted(_("Reading the library…"), wrap=True)
-        self.loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for lab in (self.empty_title, self.loading):
+            lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            ev.addWidget(lab)
+        acts = QHBoxLayout()
+        acts.addStretch(1)
+        self.empty_add = button(_("Add tracks…"), primary=True)
+        self.empty_add.clicked.connect(lambda: win.open_tool("incoming"))
+        self.empty_settings = button(_("Settings…"))
+        self.empty_settings.clicked.connect(lambda: win.navigate("settings"))
+        self.empty_clear = button(_("Clear the filters"))
+        self.empty_clear.clicked.connect(self.clear_filters)
+        for b in (self.empty_add, self.empty_settings, self.empty_clear):
+            acts.addWidget(b)
+        acts.addStretch(1)
+        ev.addSpacing(8)
+        ev.addLayout(acts)
+        ev.addStretch(2)
         self.stack = QStackedWidget()
-        self.stack.addWidget(self.loading)
+        self.stack.addWidget(self.empty)
         self.stack.addWidget(albums_area)
         self.stack.addWidget(self.genres)
         self.body.addWidget(self.stack, 1)
@@ -503,6 +570,7 @@ class LibraryPage(Page):
         self.artists.setVisible(view == "artists")
         self.bars.setCurrentIndex(1 if view == "genres" else 0)
         self._show_body()
+        self._buttons()
         if view == "genres":
             self.genres.shown()
         else:
@@ -511,8 +579,33 @@ class LibraryPage(Page):
     def _show_body(self):
         if self.view == "genres":
             self.stack.setCurrentIndex(2)
-        else:
-            self.stack.setCurrentIndex(0 if self.albums is None else 1)
+            return
+        bare = self.albums == []
+        nothing = bool(self.albums) and not self.model.rowCount() and self.artist is None
+        if bare:
+            lib = settings.library_paths(backend.cfg() or {})
+            self.empty_title.setText(_("No albums yet"))
+            self.loading.setText(_("PodVault looks for albums in {active} (goes to the iPod) and "
+                                   "{archive} (stays on disk). Add tracks, or drop a folder "
+                                   "onto the window.").format(
+                active=lib[1].replace(os.path.expanduser("~"), "~", 1),
+                archive=lib[2].replace(os.path.expanduser("~"), "~", 1)))
+        elif nothing:
+            self.empty_title.setText(_("Nothing matches"))
+            self.loading.setText(_("No album passes the search and the filters."))
+        elif self.albums is not None:
+            self.empty_title.setText("")
+        self.empty_title.setVisible(bare or nothing)
+        self.empty_add.setVisible(bare)
+        self.empty_settings.setVisible(bare)
+        self.empty_clear.setVisible(nothing)
+        self.stack.setCurrentIndex(0 if self.albums is None or bare or nothing else 1)
+
+    def clear_filters(self):
+        self.win.search.clear()
+        self.states.buttons["all"].click()
+        self.genre_box.setCurrentIndex(0)
+        self.noart_chip.setChecked(False)
 
     def shown(self):
         if self.view == "genres":
@@ -536,7 +629,13 @@ class LibraryPage(Page):
             self._fill_genres(albums)
             self.refresh()
             self.marks_changed.emit()
-        self._show_body()
+        if albums is None:
+            self.empty_title.hide()
+            for b in (self.empty_add, self.empty_settings, self.empty_clear):
+                b.hide()
+            self.stack.setCurrentIndex(0)
+        else:
+            self._show_body()
 
     def set_search(self, text):
         self.search = text.strip()
@@ -606,6 +705,7 @@ class LibraryPage(Page):
         self.sub.setText(f"{plural(len(rows), '{n} album', '{n} albums')} · "
                          f"{plural(tracks, '{n} track', '{n} tracks')} · {fmt_gb(size)}")
         self._buttons()
+        self._show_body()
 
     def _fill_artists(self, rows):
         counts = {}
@@ -647,8 +747,19 @@ class LibraryPage(Page):
 
     def _buttons(self):
         n = len(self.grid.selectionModel().selectedIndexes()) if self.grid.selectionModel() else 0
-        self.to_a.setEnabled(n > 0)
-        self.to_r.setEnabled(n > 0)
+        self.sel_label.setText(plural(n, "{n} selected", "{n} selected"))
+        for w in (self.sel_label, self.to_a, self.to_r):
+            w.setVisible(n > 0)
+        self.pending.setText(self.pending_text())
+        for w in (self.pending, self.revert_btn, self.save_marks_btn):
+            w.setVisible(bool(self.marks))
+        self.marks_bar.setVisible(self.view != "genres" and (n > 0 or bool(self.marks)))
+
+    def pending_text(self):
+        to_a, to_r = self.summary()
+        parts = ([_("{n} → Archive").format(n=len(to_r))] if to_r else []) + \
+                ([_("{n} → Active").format(n=len(to_a))] if to_a else [])
+        return _("Not moved yet: {changes}").format(changes=", ".join(parts)) if parts else ""
 
     def set_marks(self, wanted):
         """{path: 'A'|'R'}: pending moves; a mark equal to the album's place is dropped."""
@@ -663,6 +774,7 @@ class LibraryPage(Page):
                 self.marks[path] = state
             self.detail.set_state(state, path)
         self.model.changed(wanted.keys())
+        self._buttons()
         self.marks_changed.emit()
 
     def mark_selected(self, state):
@@ -687,10 +799,41 @@ class LibraryPage(Page):
             if len(sel) == 1 and i.isValid() and i.row() + 1 < self.model.rowCount():
                 self.grid.setCurrentIndex(self.model.index(i.row() + 1))
 
+    def _grid_menu(self, pos):
+        index = self.grid.indexAt(pos)
+        if not index.isValid():
+            return
+        if not self.grid.selectionModel().isSelected(index):     # a click outside the selection: just this one
+            self.grid.setCurrentIndex(index)
+        sel = self.selected()
+        one = sel[0] if len(sel) == 1 else None
+        menu = QMenu(self)
+        if one:
+            menu.addAction(_("Open"), lambda: self.open_album(index))
+            menu.addSeparator()
+        states = {self.model.state(a) for a in sel}
+        if states != {"A"}:
+            menu.addAction(_("→ Active"), lambda: self.mark_selected("A"))
+        if states != {"R"}:
+            menu.addAction(_("→ Archive"), lambda: self.mark_selected("R"))
+        if one:
+            menu.addSeparator()
+            menu.addAction(_("Show in folder"), lambda: self._show_folder(one))
+        if any(a["no_art"] for a in sel):
+            menu.addAction(_("Find covers…"), lambda: self.win.open_tool("covers"))
+        menu.exec(self.grid.viewport().mapToGlobal(pos))
+
+    def _show_folder(self, a):
+        try:
+            backend.open_in_explorer(a["path"])
+        except ValueError as e:
+            inform(self, _("Show in folder"), str(e), bad=True)
+
     def revert(self):
         paths = list(self.marks)
         self.marks.clear()
         self.model.changed(paths)
+        self._buttons()
         if self.detail.album:
             self.detail.set_state(self.detail.album["state"], self.detail.album["path"])
         self.marks_changed.emit()
@@ -800,9 +943,9 @@ class IpodPage(Page):
         self.flt_box.addItems([_(n) for n, _pred in IPOD_FILTERS])
         self.flt_box.currentIndexChanged.connect(self._filter)
         self.count = muted("", wrap=False)
+        self.count.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         row.addWidget(self.flt_box)
-        row.addWidget(self.count)
-        row.addStretch(1)
+        row.addWidget(self.count, 1)
         legend = muted("", wrap=False)
         legend.setText(f'<span style="color:{C["active"]}">{GLYPHS["dot"]}</span> {_("in Active")} &nbsp; '
                        f'<span style="color:{C["archive"]}">{GLYPHS["dot"]}</span> {_("in Archive")} &nbsp; '
@@ -1019,12 +1162,12 @@ class VibePage(Page):
         self.text.setPlaceholderText(_("e.g. {example}").format(example=_(self.EXAMPLES[0])))
         self.text.setFixedHeight(UI["vibe_text_h"])
         card.lay.addWidget(self.text)
-        chips = QHBoxLayout()
-        for ex in map(_, self.EXAMPLES):
+        chips = QGridLayout()          # two by two: fits a narrow window
+        for n, ex in enumerate(map(_, self.EXAMPLES)):
             b = button(ex)
             b.clicked.connect(lambda _, t=ex: self.text.setPlainText(t))
-            chips.addWidget(b)
-        chips.addStretch(1)
+            chips.addWidget(b, n // 2, n % 2)
+        chips.setColumnStretch(2, 1)
         card.lay.addLayout(chips)
         self.count = QSpinBox()
         # the styled frame leaves the native up/down arrows as specks: type, wheel or ↑↓
@@ -1177,24 +1320,32 @@ class GenresView(QWidget):
         self.count = muted("", wrap=False)
         suggest = button(_("Suggest with AI"), tip=_(backend.TOOLS["genres_suggest"]["about"]))
         suggest.clicked.connect(self._suggest)
-        self.save_btn = button(_("Save"), primary=True)
+        self.save_btn = button(_("Save the list"), primary=True,
+                               tip=_("Save the edits into the genres list; the audio files aren't touched"))
         self.save_btn.clicked.connect(self.save)
-        write = button(_("Write into the tags…"), tip=_("Dry run first, then the tags are written"))
+        write = button(_("Write into the audio files…"),
+                       tip=_("Put genre and style from the list into the tags of the audio files. "
+                             "A dry run comes first."))
         write.clicked.connect(self._write)
-        open_file = button(_("Open the file"))
+        open_file = button(_("Open the list file"), tip=_("The genres list is a plain text file"))
         open_file.clicked.connect(self._open)
+        self.count.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         row.addWidget(self.flt_box)
-        row.addWidget(self.count)
-        row.addStretch(1)
-        for w in (suggest, self.save_btn, write, open_file):
+        row.addWidget(self.count, 1)
+        for w in (suggest, self.save_btn, write):
+            w.setMinimumWidth(w.sizeHint().width())
             row.addWidget(w)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         info = muted(_("Genre — broad (Rock, Hip-Hop…): what the iPod's Genres menu shows.   "
-                       "Style — precise (Hyperpop, Cloud Rap…): read by the AI playlists."), wrap=True)
-        info.setContentsMargins(20, 6, 20, 6)
-        lay.addWidget(info)
+                       "Style — precise (Hyperpop, Cloud Rap…): read by the AI playlists.   "
+                       "Double-click a cell to edit it."), wrap=True)
+        info_row = QHBoxLayout()
+        info_row.setContentsMargins(20, 6, 20, 6)
+        info_row.addWidget(info, 1)
+        info_row.addWidget(open_file, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(info_row)
         self.table = table(["", N_("Album (folder)"), N_("Genre"), N_("Style")], stretch=1)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked
                                    | QAbstractItemView.EditTrigger.EditKeyPressed
@@ -1238,6 +1389,7 @@ class GenresView(QWidget):
         missing = sum(1 for r in self.rows if not r["in_file"])
         self.count.setText(_("{shown} shown · {missing} not in the file").format(shown=shown, missing=missing)
                            + (" · " + _("{n} unsaved").format(n=len(self.edits)) if self.edits else ""))
+        self.count.setToolTip(self.count.text())     # cut short in a narrow window
         self.save_btn.setEnabled(bool(self.edits))
 
     def _render(self):
@@ -1247,7 +1399,7 @@ class GenresView(QWidget):
         self._filling = True
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
-        parts = {"Active": ("A", C["active"]), "Archive": ("R", C["archive"])}
+        parts = {"Active": (GLYPHS["on_ipod"], C["active"]), "Archive": (GLYPHS["on_disk"], C["archive"])}
         for n, r in enumerate(rows):
             g, s = self._value(r)
             letter, color = parts.get(r["part"], ("—", C["faint"]))
@@ -1265,6 +1417,9 @@ class GenresView(QWidget):
                     it.setForeground(QColor(C["pending"]))
             elif not r["in_file"]:
                 gi.setToolTip(_("Not in the file yet — Suggest fills it in, or type it"))
+            if not g:                                   # an empty cell still reads as "fill me in"
+                gi.setData(Qt.ItemDataRole.ToolTipRole, _("Not in the file yet — Suggest fills it in, or type it"))
+                gi.setBackground(QColor(C["attention_bg"]))
             for c, it in enumerate((part, key, gi, si)):
                 self.table.setItem(n, c, it)
         widths(self.table, {0: "state", 2: "genre", 3: "style"})
@@ -1282,7 +1437,11 @@ class GenresView(QWidget):
             self.edits.pop(key, None)
         else:
             self.edits[key] = (g, s)
+        self._filling = True
         item.setForeground(QColor(C["pending"] if key in self.edits else C["text"]))
+        if item.column() == 2 and g:
+            item.setData(Qt.ItemDataRole.BackgroundRole, None)     # filled in: no longer highlighted
+        self._filling = False
         self._count(self.table.rowCount())
 
     def save(self):
@@ -1299,7 +1458,7 @@ class GenresView(QWidget):
         self.edits.clear()
         self.loaded = False
         self.reload()
-        self.win.toast(_("Genres saved. “Write into the tags” puts them into the files."))
+        self.win.toast(_("The list is saved. “Write into the audio files” puts it into the tags."))
         self.win.refresh_attention()
         return True
 
@@ -1355,100 +1514,225 @@ class _GenreDelegate(QStyledItemDelegate):
 # ================================================================ settings
 
 
+class _NoWheel(QObject):
+    """A combo or number box inside a scrolling page changes only when it has the focus:
+    scrolling the page past it must not change a setting by accident."""
+
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.Type.Wheel and not obj.hasFocus():
+            e.ignore()
+            return True
+        return False
+
+
 class SettingsPage(Page):
+    """Sections on the left, one section's fields on the right, and a bar at the bottom
+    that shows up only when something is changed."""
+
     saved = pyqtSignal()
 
     def __init__(self, win):
         super().__init__(win, N_("Settings"))
-        self.save_btn = button(_("Save"), primary=True)
-        self.save_btn.clicked.connect(self.save)
-        self.head.addWidget(self.save_btn)
-        self.col = self.scroll_body()
         self.widgets, self.errors = {}, {}
-        self.first = False
-        self.create = QCheckBox(_("Create the library folder if it doesn't exist"))
+        self.first, self._filling = False, False
+        self.no_wheel = _NoWheel(self)
+
+        self.warns_box = QFrame()                 # the same yellow strip as the library's to-dos
+        self.warns_box.setObjectName("attention")
+        self.warns_box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        wl = QHBoxLayout(self.warns_box)
+        wl.setContentsMargins(20, 6, 20, 6)
         self.warns = QLabel()
         self.warns.setWordWrap(True)
-        self.warns.setProperty("warn", True)
+        wl.addWidget(self.warns)
+        self.body.addWidget(self.warns_box)
+
+        mid = QHBoxLayout()
+        mid.setContentsMargins(0, 0, 0, 0)
+        mid.setSpacing(0)
+        nav_box = QWidget()
+        nav_box.setObjectName("settingsNav")
+        nav_box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        nav_box.setFixedWidth(UI["artists_w"])
+        nav_lay = QVBoxLayout(nav_box)
+        nav_lay.setContentsMargins(0, 8, 0, 8)
+        self.nav = QListWidget()
+        self.nav.setObjectName("artists")
+        self.nav.currentRowChanged.connect(lambda r: self.pages.setCurrentIndex(max(r, 0)))
+        self.file_label = button("")              # where the settings live: shown, not spelled out
+        self.file_label.setObjectName("fileLink")
+        self.file_label.clicked.connect(lambda: backend.open_in_explorer(os.path.dirname(settings.FILE)))
+        nav_lay.addWidget(self.nav, 1)
+        nav_lay.addWidget(self.file_label)
+        self.nav_box = nav_box
+        self.pages = QStackedWidget()
+        mid.addWidget(nav_box)
+        mid.addWidget(self.pages, 1)
+        self.body.addLayout(mid, 1)
+
+        self.bar = QFrame()
+        self.bar.setObjectName("marksBar")
+        self.bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        brow = QHBoxLayout(self.bar)
+        brow.setContentsMargins(20, 8, 20, 8)
+        self.bar_label = QLabel()
+        self.create = QCheckBox(_("Create the library folder if it doesn't exist"))
+        self.revert_btn = button(_("Revert"))
+        self.revert_btn.clicked.connect(self.build)
+        self.save_btn = button(_("Save"), primary=True)
+        self.save_btn.clicked.connect(self.save)
+        brow.addWidget(self.bar_label)
+        brow.addWidget(self.create)
+        brow.addStretch(1)
+        brow.addWidget(self.revert_btn)
+        brow.addWidget(self.save_btn)
+        self.body.addWidget(self.bar)
 
     def shown(self):
         self.build()
 
+    def _page(self):
+        """One section: a scrolling column, not wider than a form needs."""
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        inner.setObjectName("page")
+        outer = QHBoxLayout(inner)
+        outer.setContentsMargins(24, 12, 24, 30)
+        colw = QWidget()
+        colw.setMaximumWidth(UI["form_w"])
+        col = QVBoxLayout(colw)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(14)
+        outer.addWidget(colw, 1)
+        outer.addStretch(0)
+        area.setWidget(inner)
+        self.pages.addWidget(area)
+        self.cols.append(col)
+        return col
+
     def build(self):
-        while self.col.count():
-            item = self.col.takeAt(0)
-            w = item.widget()
-            if w is not None and w not in (self.create, self.warns):
-                w.deleteLater()
+        self._filling = True
+        keep = max(self.nav.currentRow(), 0)
+        while self.pages.count():
+            w = self.pages.widget(0)
+            self.pages.removeWidget(w)
+            w.deleteLater()
+        self.nav.blockSignals(True)
+        self.nav.clear()
+        self.cols = []
         values = backend.cfg()
         self.first = values is None
         values = values or settings.defaults()
-        self.title.setText(_("Welcome to Music Utility") if self.first else _("Settings"))
-        self.sub.setText(_("a few basic settings — everything can be changed later") if self.first
-                         else settings.FILE.replace(os.path.expanduser("~"), "~", 1))
+        self.title.setText(_("Welcome to PodVault") if self.first else _("Settings"))
+        self.sub.setText(_("a few basic settings — everything can be changed later") if self.first else "")
+        self.win.set_ready(not self.first)
+        self.nav_box.setVisible(not self.first)
+        self.file_label.setText(_("Show {file}").format(file=os.path.basename(settings.FILE)))
+        self.file_label.setToolTip(settings.FILE)
         self.widgets.clear()
         self.errors.clear()
-        section = None
+        section, col = None, None
         for f in settings.FIELDS:
             if self.first and not f.first_run:
                 continue
             if f.section != section:
                 section = f.section
-                lab = QLabel(_(section).upper())
-                lab.setObjectName("section")
-                self.col.addWidget(lab)
-            box = QWidget()
-            grid = QGridLayout(box)
-            grid.setContentsMargins(0, 4, 0, 4)
-            grid.setHorizontalSpacing(16)
-            grid.setColumnMinimumWidth(0, 200)
-            grid.setColumnStretch(1, 1)
-            label = QLabel(_(f.label))
-            label.setObjectName("bold")
-            v = values.get(f.key)
-            if f.kind == "choice":
-                w = QComboBox()
-                for opt in f.options:
-                    w.addItem(i18n.LANGUAGE_NAMES.get(opt) or _(CHOICE_LABELS.get(opt, opt)), opt)
-                w.setCurrentIndex(max(0, w.findData(v)))
-            elif f.kind == "int":
-                w = QSpinBox()
-                w.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-                w.setRange(1, 2 ** 31 - 1)       # settings.validate: any whole number > 0
-                try:
-                    w.setValue(int(v))
-                except (TypeError, ValueError):
-                    w.setValue(int(f.default))
-            elif f.kind in ("dir", "file") or f.key == "ipod_mount":
-                w = PathField("dir" if f.key == "ipod_mount" else f.kind, "" if v is None else v)
-            else:
-                w = QLineEdit("" if v is None else str(v))
-            grid.addWidget(label, 0, 0, Qt.AlignmentFlag.AlignTop)
-            grid.addWidget(w, 0, 1)
-            help_text = _(f.help) + (_("  (may be left empty)") if f.optional else "")
-            grid.addWidget(muted(help_text), 1, 1)
-            if f.kind in ("dir", "file") and v not in (None, "") and str(v).lower() != "auto":
-                resolved = settings.resolve(v)
-                if resolved != v:
-                    r = muted(f"→ {resolved}")
-                    r.setObjectName("small")
-                    grid.addWidget(r, 2, 1)
-            err = QLabel()
-            err.setProperty("warn", True)
-            err.setWordWrap(True)
-            err.hide()
-            grid.addWidget(err, 3, 1)
-            self.widgets[f.key] = w
-            self.errors[f.key] = err
-            self.col.addWidget(box)
+                if col is None or not self.first:          # the first run is one page
+                    col = self._page()
+                    self.nav.addItem(_(section))
+                if self.first:
+                    lab = QLabel(_(section).upper())
+                    lab.setObjectName("section")
+                    col.addWidget(lab)
+            col.addWidget(self._field(f, values))
+        for c in self.cols:
+            c.addStretch(1)
+        self.nav.setCurrentRow(min(keep, self.nav.count() - 1))
+        self.pages.setCurrentIndex(min(keep, self.pages.count() - 1) if not self.first else 0)
+        self.nav.blockSignals(False)
         self.create.setVisible(self.first)
         self.create.setChecked(self.first)
-        self.col.addWidget(self.create)
         warns = [] if self.first else settings.warnings(values)
-        self.warns.setText("\n".join(f"! {w}" for w in warns))
-        self.warns.setVisible(bool(warns))
-        self.col.addWidget(self.warns)
-        self.col.addStretch(1)
+        self.warns.setText("\n".join(f"{GLYPHS['warn']}  {w}" for w in warns))
+        self.warns_box.setVisible(bool(warns))
+        self._filling = False
+        self._update_bar()
+
+    def _field(self, f, values):
+        box = QWidget()
+        grid = QGridLayout(box)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(3)
+        grid.setColumnMinimumWidth(0, UI["form_label_w"])
+        grid.setColumnStretch(1, 1)
+        label = QLabel(_(f.label))
+        label.setObjectName("bold")
+        label.setWordWrap(True)
+        label.setFixedWidth(UI["form_label_w"])
+        v = values.get(f.key)
+        if f.kind == "choice":
+            w = QComboBox()
+            for opt in f.options:
+                w.addItem(i18n.LANGUAGE_NAMES.get(opt) or _(CHOICE_LABELS.get(opt, opt)), opt)
+            w.setCurrentIndex(max(0, w.findData(v)))
+            w.currentIndexChanged.connect(self._update_bar)
+        elif f.kind == "int":
+            w = QSpinBox()
+            w.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            w.setRange(0 if f.default == 0 else 1, 2 ** 31 - 1)
+            if f.default == 0:
+                w.setSpecialValueText(_("not set"))
+            w.setMaximumWidth(UI["form_number_w"])
+            try:
+                w.setValue(int(v))
+            except (TypeError, ValueError):
+                w.setValue(int(f.default))
+            w.valueChanged.connect(self._update_bar)
+        elif f.kind in ("dir", "file") or f.key == "ipod_mount":
+            w = PathField("dir" if f.key == "ipod_mount" else f.kind, "" if v is None else v)
+            w.edit.textChanged.connect(self._update_bar)
+        else:
+            w = QLineEdit("" if v is None else str(v))
+            w.textChanged.connect(self._update_bar)
+        if isinstance(w, (QComboBox, QSpinBox)):
+            w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            w.installEventFilter(self.no_wheel)
+        grid.addWidget(label, 0, 0, Qt.AlignmentFlag.AlignTop)
+        grid.addWidget(w, 0, 1, Qt.AlignmentFlag.AlignLeft if isinstance(w, QSpinBox) else Qt.AlignmentFlag(0))
+        help_text = _(f.help) + (_("  (may be left empty)") if f.optional else "")
+        grid.addWidget(muted(help_text), 1, 1)
+        if f.kind in ("dir", "file") and v not in (None, "") and str(v).lower() != "auto":
+            resolved = settings.resolve(v)
+            if resolved != v:
+                r = muted(f"→ {resolved}")
+                r.setObjectName("small")
+                grid.addWidget(r, 2, 1)
+        err = QLabel()
+        err.setProperty("warn", True)
+        err.setWordWrap(True)
+        err.hide()
+        grid.addWidget(err, 3, 1)
+        self.widgets[f.key] = w
+        self.errors[f.key] = err
+        return box
+
+    def _update_bar(self, *_args):
+        if self._filling:
+            return
+        if self.first:
+            self.bar_label.setText("")
+            self.save_btn.setText(_("Continue"))
+            self.revert_btn.hide()
+            self.bar.show()
+            return
+        dirty = self.dirty()
+        self.bar_label.setText(_("Unsaved changes"))
+        self.save_btn.setText(_("Save"))
+        self.revert_btn.show()
+        self.bar.setVisible(dirty)
 
     def values(self):
         out = {}
@@ -1469,11 +1753,17 @@ class SettingsPage(Page):
             lab.setText(errors.get(key, ""))
             lab.setVisible(key in errors)
         if errors:
+            for i in range(self.pages.count()):        # show the first section with a red note
+                if any(self.errors[k].isVisible() and self.pages.widget(i).isAncestorOf(self.errors[k])
+                       for k in errors):
+                    self.nav.setCurrentRow(i)
+                    break
             self.win.toast(_("Not saved — see the red notes."), bad=True)
             return False
         self.win.toast(_("Settings saved."), good=True)
         self.saved.emit()
-        self.build()
+        if not self.win.replaced:
+            self.build()
         return True
 
     def dirty(self):
@@ -1489,7 +1779,7 @@ class SettingsPage(Page):
     def can_leave(self):
         if self.first:
             if backend.cfg() is None:
-                self.win.toast(_("Fill in the basic settings and press Save first."), bad=True)
+                self.win.toast(_("Fill in the basic settings and press Continue first."), bad=True)
                 return False
             return True
         if not self.dirty():

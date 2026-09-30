@@ -32,6 +32,8 @@ def fmt_total(seconds):
 
 
 def fmt_gb(gb):
+    if gb < 1:          # "0.02 GB" reads like a mistake
+        return _("{mb} MB").format(mb=f"{gb * 1024:.0f}")
     return _("{gb} GB").format(gb=f"{gb:.2f}" if gb < 10 else f"{gb:.1f}")
 
 
@@ -320,7 +322,7 @@ class AlbumModel(QAbstractListModel):
 
 
 class AlbumDelegate(QStyledItemDelegate):
-    """Paints an album tile: cover, A/R badge, UA / no-art flags, two lines of text."""
+    """Paints an album tile: cover, Active / Archive badge, no-cover flag, two lines of text."""
 
     toggled = pyqtSignal(str)      # the badge was clicked
 
@@ -397,7 +399,7 @@ class AlbumDelegate(QStyledItemDelegate):
         f.setPixelSize(10)
         f.setBold(True)
         p.setFont(f)
-        for text, color, on in (("!art", C["danger"], a["no_art"]),):
+        for text, color, on in ((_("no cover"), C["danger"], a["no_art"]),):
             if not on:
                 continue
             w = QFontMetrics(f).horizontalAdvance(text) + 10
@@ -409,14 +411,14 @@ class AlbumDelegate(QStyledItemDelegate):
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
             x += w + 4
 
-        # A / R badge
+        # Active / Archive badge: ✓ goes to the iPod, – stays on disk
         b = self._badge_rect(art)
         color = C["pending"] if moved else (C["active"] if state == "A" else C["archive"])
         p.setPen(QPen(QColor(C["flag_text"]), 1.5) if moved else Qt.PenStyle.NoPen)
         p.setBrush(QColor(color))
         p.drawRoundedRect(QRectF(b), 9, 9)
         p.setPen(QColor(C["flag_text"]))
-        p.drawText(b, Qt.AlignmentFlag.AlignCenter, state)
+        p.drawText(b, Qt.AlignmentFlag.AlignCenter, GLYPHS["on_ipod" if state == "A" else "on_disk"])
 
         # text
         fm = QFontMetrics(option.font)
@@ -461,7 +463,7 @@ class Lcd(QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 5, 14, 5)
         lay.setSpacing(1)
-        self.title = QLabel(_("Music Utility"))
+        self.title = QLabel(_("PodVault"))
         self.title.setObjectName("lcdTitle")
         self.sub = QLabel("")
         self.sub.setObjectName("lcdSub")
@@ -474,7 +476,7 @@ class Lcd(QFrame):
         lay.addWidget(self.title)
         lay.addWidget(self.sub)
         lay.addWidget(self.bar, 0, Qt.AlignmentFlag.AlignHCenter)
-        self.show_idle(_("Music Utility"), "")
+        self.show_idle(_("PodVault"), "")
 
     def show_idle(self, title, sub):
         self.title.setText(title)

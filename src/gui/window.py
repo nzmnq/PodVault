@@ -8,13 +8,14 @@ import time
 from PyQt6.QtCore import QEvent, QProcess, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PyQt6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-                             QMainWindow, QMenu, QPlainTextEdit, QProgressBar, QSplitter,
+                             QMainWindow, QMenu, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
                              QStackedWidget, QStyle, QStyledItemDelegate, QTreeWidget,
                              QTreeWidgetItem, QVBoxLayout, QWidget)
 
 import settings
 import tags as audiotags
 from gui import backend, theme
+import i18n
 from i18n import N_, _
 from gui.jobs import Jobs
 from gui.pages import (IpodPage, LibraryPage, PlaylistPage, SettingsPage, ToolDialog, VibePage)
@@ -22,6 +23,7 @@ from gui.theme import C, GLYPHS, UI, icon
 from gui.widgets import Lcd, ask, button, covers, fmt_gb, inform, plural, run_async
 
 KeyRole = Qt.ItemDataRole.UserRole + 10
+AddRole = Qt.ItemDataRole.UserRole + 11      # a section heading with a "+" on the right
 
 
 def app_icon():
@@ -154,7 +156,8 @@ class JobSheet(QDialog):
             ok = job.code == 0
             self.bar.setProperty("state", "ok" if ok else "bad")
             took = (job.finished or time.time()) - job.started
-            self.status.setText((_("Done") if ok else _("Cancelled") if job.cancelled else
+            self.status.setText((_("Done — nothing to change") if ok and job.nothing else
+                                 _("Done") if ok else _("Cancelled") if job.cancelled else
                                  _("Stopped with an error (exit code {code})").format(code=job.code))
                                 + " · " + _("{s} s").format(s=f"{took:.0f}"))
         self.bar.style().unpolish(self.bar)
@@ -187,9 +190,11 @@ class JobSheet(QDialog):
 
 
 class SideDelegate(QStyledItemDelegate):
-    """Draws the iPod row: its name, a small capacity bar and an eject button."""
+    """Draws the iPod row (its name, a small capacity bar and an eject button)
+    and the "+" of the Playlists heading."""
 
     eject = pyqtSignal()
+    add = pyqtSignal()
 
     def __init__(self, win):
         super().__init__(win.sidebar)
@@ -211,6 +216,15 @@ class SideDelegate(QStyledItemDelegate):
 
     def paint(self, p, option, index):
         super().paint(p, option, index)
+        if index.data(AddRole):
+            p.save()
+            f = QFont(option.font)
+            f.setPixelSize(UI["side_eject"] - 2)
+            p.setFont(f)
+            p.setPen(QColor(C["side_text"]))
+            p.drawText(self._eject_rect(option.rect), Qt.AlignmentFlag.AlignCenter, "+")
+            p.restore()
+            return
         if index.data(KeyRole) != "ipod":
             return
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
@@ -239,6 +253,10 @@ class SideDelegate(QStyledItemDelegate):
         p.restore()
 
     def editorEvent(self, event, model, option, index):
+        if index.data(AddRole) and event.type() == QEvent.Type.MouseButtonRelease \
+                and self._eject_rect(option.rect).contains(event.position().toPoint()):
+            self.add.emit()
+            return True
         if index.data(KeyRole) == "ipod" and event.type() == QEvent.Type.MouseButtonRelease \
                 and self._eject_rect(option.rect).contains(event.position().toPoint()):
             self.eject.emit()
@@ -249,18 +267,26 @@ class SideDelegate(QStyledItemDelegate):
 # ------------------------------------------------------------------ the window
 
 
-# The ☰ menu: tool names from backend.TOOLS; None is a separator; (title, [tools]) a submenu.
-MENU = ["covers", "tags", "likes", "export", "marks", "undo", "duplicates", "fit", "soundcheck", "smart", None,
-        "flac", None,
-        "build", "settings"]
-MENU_EXTRA = {"export": N_("Export the list…"), "settings": N_("Settings…")}
+# the ☰ menu: a string is a tool, None a separator, a 1-tuple a section heading
+MENU = [(N_("Library"),), "covers", "tags", "duplicates", "likes",
+        (N_("iPod"),), "fit", "soundcheck", "smart",
+        (N_("Active / Archive as a text list"),), "export", "marks", "undo",
+        (N_("Audio"),), "flac", None,
+        "build", "shortcuts", "settings"]
+MENU_EXTRA = {"export": N_("Export the list…"), "settings": N_("Settings…"),
+              "shortcuts": N_("Keyboard shortcuts")}
+SHORTCUTS = [("Ctrl+F", N_("Search")), ("Ctrl+1 / 2 / 3", N_("Albums / Artists / Genres")),
+             ("A / R", N_("Selected albums → Active / → Archive")), ("Space", N_("Switch Active ⇄ Archive")),
+             ("Enter / Esc", N_("Open / close an album")), ("Ctrl+N", N_("Add new tracks")),
+             ("Ctrl+S", N_("Sync the iPod")), ("Ctrl+E", N_("Eject the iPod")),
+             ("Ctrl+R", N_("Read the library again")), ("Ctrl+,", N_("Settings"))]
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, key=None):
         super().__init__()
         self.language = (backend.cfg() or {}).get("language")   # the one the texts were built in
-        self.setWindowTitle(_("Music Utility"))
+        self.setWindowTitle(_("PodVault"))
         self.setWindowIcon(app_icon())
         self.resize(*UI["window"])
         self.setMinimumSize(*UI["window_min"])
@@ -273,6 +299,7 @@ class MainWindow(QMainWindow):
         self.playlists, self.genres_missing = [], 0
         self.current_key = None
         self.lcd_note, self.lcd_note_until = None, 0
+        self.relabel_after_job, self.replaced = False, False
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -293,18 +320,42 @@ class MainWindow(QMainWindow):
         self.sidebar.currentItemChanged.connect(self._side_changed)
         self.side_delegate = SideDelegate(self)
         self.side_delegate.eject.connect(self.eject)
+        self.side_delegate.add.connect(lambda: self.navigate("vibe"))
         self.sidebar.setItemDelegate(self.side_delegate)
         self.stack = QStackedWidget()
-        split.addWidget(self.sidebar)
+        # the source list, and Settings pinned under it
+        side = QWidget()
+        side.setObjectName("sideBox")
+        side.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        side_lay = QVBoxLayout(side)
+        side_lay.setContentsMargins(0, 0, 0, 0)
+        side_lay.setSpacing(0)
+        side_lay.addWidget(self.sidebar, 1)
+        self.settings_btn = QPushButton(_("Settings"))
+        self.settings_btn.setObjectName("sideSettings")
+        self.settings_btn.setCheckable(True)
+        self.settings_btn.setToolTip(_("Settings (Ctrl+,)"))
+        self.settings_btn.clicked.connect(lambda: (self.navigate("settings"), self.settings_btn.setChecked(
+            self.current_key == "settings")))
+        side_lay.addWidget(self.settings_btn)
+        split.addWidget(side)
         split.addWidget(self.stack)
         split.setStretchFactor(1, 1)
         split.setSizes([UI["side_w"], UI["window"][0] - UI["side_w"]])
         root.addWidget(split, 1)
         root.addWidget(self._statusbar())
         self.setCentralWidget(central)
+        self.drop_hint = QLabel(_("Drop to add these tracks to the library"), self)
+        self.drop_hint.setObjectName("dropHint")
+        self.drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drop_hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.drop_hint.hide()
 
         self.library_page = LibraryPage(self)
         self.library_page.marks_changed.connect(self._marks_changed)
+        self.revert_btn = self.library_page.revert_btn
+        self.save_marks_btn = self.library_page.save_marks_btn
+        self.save_marks_btn.clicked.connect(self.apply_marks)
         self.ipod_page = IpodPage(self)
         self.playlist_page = PlaylistPage(self)
         self.settings_page = SettingsPage(self)
@@ -332,7 +383,7 @@ class MainWindow(QMainWindow):
         else:
             self.reload_library()
             self.reload_playlists()
-            self.navigate("library")
+            self.navigate(key if key in ("settings", "ipod", "vibe") else "library")
         self._poll_ipod()
 
     @property
@@ -395,6 +446,11 @@ class MainWindow(QMainWindow):
         for entry in MENU:
             if entry is None:
                 menu.addSeparator()
+            elif isinstance(entry, tuple) and len(entry) == 1:
+                if menu.actions():
+                    menu.addSeparator()
+                head = menu.addAction(_(entry[0]))
+                head.setEnabled(False)          # a heading, not a command
             elif isinstance(entry, tuple):
                 sub = menu.addMenu(_(entry[0]))
                 sub.setToolTipsVisible(True)
@@ -414,21 +470,8 @@ class MainWindow(QMainWindow):
         lay.setSpacing(10)
         self.summary = QLabel()
         self.summary.setObjectName("summary")
-        self.pending = QLabel()
-        self.pending.setObjectName("pending")
-        self.revert_btn = button(_("Revert"))
-        self.save_marks_btn = button(_("Move the files…"), primary=True)
-        for b in (self.revert_btn, self.save_marks_btn):
-            b.setFixedHeight(UI["status_button_h"])
-        self.revert_btn.clicked.connect(lambda: self.library_page.revert())
-        self.save_marks_btn.clicked.connect(self.apply_marks)
         lay.addWidget(self.summary)
         lay.addStretch(1)
-        lay.addWidget(self.pending)
-        lay.addWidget(self.revert_btn)
-        lay.addWidget(self.save_marks_btn)
-        for w in (self.pending, self.revert_btn, self.save_marks_btn):
-            w.hide()
         return bar
 
     def _shortcuts(self):
@@ -456,12 +499,16 @@ class MainWindow(QMainWindow):
         if self.ipods:
             name = (self.ipod_info or {}).get("name") or "iPod"
             sections.append((N_("DEVICE"), [("ipod", "ipod", name)]))
+        # "+" on the heading makes a new one; the row only while there are none yet
         sections.append((N_("PLAYLISTS"), [(f"playlist:{p['file']}", "playlist", p["name"])
-                                       for p in self.playlists]
-                         + [("vibe", "vibe", _("New vibe playlist…"))]))
+                                           for p in self.playlists]
+                         or [("vibe", "vibe", _("New vibe playlist…"))]))
         for title, items in sections:
             head = QTreeWidgetItem([_(title)])
             head.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            if title == "PLAYLISTS":
+                head.setData(0, AddRole, True)
+                head.setToolTip(0, _("New vibe playlist…"))
             head.setFont(0, head_font)
             head.setForeground(0, QColor(C["side_head"]))
             self.sidebar.addTopLevelItem(head)
@@ -534,6 +581,7 @@ class MainWindow(QMainWindow):
         else:
             return False
         self.current_key = key
+        self.settings_btn.setChecked(key == "settings")
         self.stack.setCurrentWidget(target)
         target.set_search(self.search.text())
         target.shown()
@@ -558,6 +606,9 @@ class MainWindow(QMainWindow):
     def open_tool(self, name):
         if name == "settings":
             self.navigate("settings")
+        elif name == "shortcuts":
+            inform(self, _("Keyboard shortcuts"), "\n".join(
+                f"{keys}    {_(what)}" for keys, what in SHORTCUTS))
         elif name == "export":
             self.export_list()
         elif name in ("incoming", "likes", "marks"):
@@ -591,10 +642,17 @@ class MainWindow(QMainWindow):
         return p if os.path.isdir(p) else os.path.dirname(p) if audiotags.is_audio(p) else None
 
     def dragEnterEvent(self, e):
-        if self._dropped_folder(e):
+        if self._dropped_folder(e) and backend.cfg() is not None:
             e.acceptProposedAction()
+            self.drop_hint.setGeometry(self.centralWidget().geometry().adjusted(12, 12, -12, -12))
+            self.drop_hint.show()
+            self.drop_hint.raise_()
+
+    def dragLeaveEvent(self, e):
+        self.drop_hint.hide()
 
     def dropEvent(self, e):
+        self.drop_hint.hide()
         folder = self._dropped_folder(e)
         if folder:
             e.acceptProposedAction()
@@ -679,17 +737,6 @@ class MainWindow(QMainWindow):
     # --- marks
 
     def _marks_changed(self):
-        to_a, to_r = self.library_page.summary()
-        n = len(to_a) + len(to_r)
-        if n:
-            parts = []
-            if to_r:
-                parts.append(_("{n} → Archive").format(n=len(to_r)))
-            if to_a:
-                parts.append(_("{n} → Active").format(n=len(to_a)))
-            self.pending.setText(_("Not saved: {changes}").format(changes=", ".join(parts)))
-        for w in (self.pending, self.revert_btn, self.save_marks_btn):
-            w.setVisible(bool(n))
         self.update_status()
 
     def apply_marks(self):
@@ -774,6 +821,8 @@ class MainWindow(QMainWindow):
         self._busy_buttons()
 
     def _job_finished(self, job):
+        if self.relabel_after_job and not self.jobs.busy():
+            QTimer.singleShot(0, self.relabel)
         refresh = backend.TOOLS[job.tool].get("refresh", set())
         real = job.applying or not backend.TOOLS[job.tool].get("apply")
         if job.tool == "eject":
@@ -829,7 +878,14 @@ class MainWindow(QMainWindow):
                 self.navigate("library"), self.library_page.set_view("genres")), primary=True)
 
     def _busy_buttons(self):
-        self.tb_sync.setEnabled(not self.jobs.busy() and bool(self.ipods))
+        ready = backend.cfg() is not None
+        self.tb_sync.setEnabled(ready and not self.jobs.busy() and bool(self.ipods))
+
+    def set_ready(self, ready):
+        """Before the first settings are saved there's no library: nothing to add, search or open."""
+        for w in (self.tb_add, self.search, self.tb_menu, self.sidebar, self.settings_btn):
+            w.setEnabled(ready)
+        self._busy_buttons()
 
     def eject(self):
         if self.ipods:
@@ -891,16 +947,16 @@ class MainWindow(QMainWindow):
             return
         self.lcd_note = None
         if self.scanning:
-            self.lcd.show_progress(_("Music Utility"), _("Reading the library…"), None)
+            self.lcd.show_progress(_("PodVault"), _("Reading the library…"), None)
             return
         info = self.ipod_info if self.ipods else None
         if info:
             self.lcd.show_idle(info["name"], f"{info['model']} · "
                                + _("{free} free").format(free=fmt_gb(info['free_gb'])))
         elif self.ipods:
-            self.lcd.show_idle(_("Music Utility"), _("iPod connected — reading it…"))
+            self.lcd.show_idle(_("PodVault"), _("iPod connected — reading it…"))
         else:
-            self.lcd.show_idle(_("Music Utility"), _("No iPod connected"))
+            self.lcd.show_idle(_("PodVault"), _("No iPod — connect one to sync"))
 
     def update_status(self):
         """The one number that matters: how much Active is, and whether it fits the iPod."""
@@ -914,8 +970,15 @@ class MainWindow(QMainWindow):
             albums=plural(len(active), "{n} album", "{n} albums"),
             tracks=plural(tracks, "{n} track", "{n} tracks"), size=fmt_gb(gb))
         info = self.ipod_info if self.ipods else None
+        room = None
         if info and info.get("capacity_gb"):
             room = info["free_gb"] + info["music_gb"]      # everything but the non-music files
+        else:
+            try:                                           # no iPod: the space set in Settings
+                room = int((backend.cfg() or {}).get("ipod_capacity_gb") or 0) or None
+            except (TypeError, ValueError):
+                pass
+        if room:
             text += "  ·  " + (_("fits: {size} for music").format(size=fmt_gb(room)) if gb <= room else
                                _("doesn't fit: {size} too much").format(size=fmt_gb(gb - room)))
         self.summary.setText(text)
@@ -924,11 +987,12 @@ class MainWindow(QMainWindow):
 
     def _settings_saved(self):
         if (backend.cfg() or {}).get("language") != self.language:
-            # every text in the window was set when it was built: a new language needs a new window
-            if ask(self, _("Settings"), _("The interface language changed. Restart the window now?"),
-                   yes=_("Restart")) and self.close():
-                QProcess.startDetached(sys.executable, [os.path.join(settings.ROOT, "Main.py"), "--gui"],
-                                       settings.ROOT)
+            # every text in the window was set when it was built: a new language gets a new window
+            if self.jobs.busy():
+                self.relabel_after_job = True
+                self.toast(_("The new language is applied when the running task finishes."))
+            else:
+                self.relabel()
                 return
         self.reload_library()
         self.reload_playlists()
@@ -937,6 +1001,28 @@ class MainWindow(QMainWindow):
         self._poll_ipod()
         if self.current_key == "settings" and self.settings_page.first:
             self.navigate("library")
+
+    def relabel(self):
+        """A new language, in place: the same window rebuilt with the new texts, state carried over."""
+        i18n.reset()
+        QApplication.instance().setApplicationName(_("PodVault"))
+        new = MainWindow(key=self.current_key if backend.cfg() is not None else None)
+        new.setGeometry(self.geometry())
+        if self.isMaximized():
+            new.showMaximized()
+        else:
+            new.show()
+        lp, nlp = self.library_page, new.library_page
+        nlp.marks.update(lp.marks)
+        nlp.set_view(lp.view)
+        new.search.setText(self.search.text())
+        new._marks_changed()
+        new.toast(_("Language changed."), good=True)
+        self.replaced = True
+        # hidden, not deleted: background reads started by this window may still call back into it
+        self.poll.stop()
+        self.lcd_timer.stop()
+        self.close()
 
     # --- toasts
 
@@ -963,22 +1049,25 @@ class MainWindow(QMainWindow):
     # --- closing
 
     def closeEvent(self, e):
+        if self.replaced:           # a new language: the new window has taken over
+            e.accept()
+            return
         page = self.current_page()
         if self.jobs.busy():
             job = self.jobs.current
             if not job.cancelable:
-                inform(self, _("Music Utility"), _("“{tool}” is writing to the iPod. "
+                inform(self, _("PodVault"), _("“{tool}” is writing to the iPod. "
                                                    "Wait until it's done before closing.").format(tool=job.base_title))
                 e.ignore()
                 return
-            if not ask(self, _("Music Utility"),
+            if not ask(self, _("PodVault"),
                        _("“{tool}” is still running. Stop it and quit?").format(tool=job.base_title),
                        yes=_("Quit"), danger=True):
                 e.ignore()
                 return
             job.cancel()
         if self.library_page.marks and not ask(
-                self, _("Music Utility"), _("The Active / Archive marks aren't saved. Quit anyway?"),
+                self, _("PodVault"), _("The Active / Archive marks aren't saved. Quit anyway?"),
                 yes=_("Quit"), danger=True):
             e.ignore()
             return
@@ -993,11 +1082,11 @@ def run():
     if sys.platform == "win32":
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MusicUtility.Window")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PodVault.Window")
         except Exception:
             pass
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName(_("Music Utility"))
+    app.setApplicationName(_("PodVault"))
     theme.apply(app)
     win = MainWindow()
     win.show()

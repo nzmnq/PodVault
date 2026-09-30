@@ -384,7 +384,10 @@ def main():
             print(f"  {label.ljust(width)} : {value}")
 
     if not args.apply:
-        print(_("\nNothing written. Run with --apply to add the new tracks."))
+        if fresh or (args.replace and plan):
+            print(_("\nNothing written. Run with --apply to add the new tracks."))
+        else:
+            settings.nothing_to_apply()
         return
 
     todo = plan if args.replace else fresh

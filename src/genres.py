@@ -260,7 +260,10 @@ def apply(cfg, path, write):
         print(_("  ... {n} more").format(n=len(changes) - 40))
 
     if not write:
-        print(_("\nNothing written. Add --apply."))
+        if changes:
+            print(_("\nNothing written. Add --apply."))
+        else:
+            settings.nothing_to_apply()
         return
     done = write_tags(changes)
     print(_("\nTags written: {tracks} tracks in {albums} albums.").format(tracks=done, albums=len(changes)))

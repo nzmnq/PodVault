@@ -19,7 +19,7 @@ import shutil
 import sys
 
 import i18n
-from i18n import _
+from i18n import N_, _
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # MUSIC_UTILITY_SETTINGS points at another settings file (a test setup, a second library)
@@ -44,7 +44,7 @@ FIELDS = [
     # ------------------------------------------------------------ interface
     Field("language", "auto", "choice", "Interface language",
           "Auto = the system's language, English if there's no translation for it. "
-          "The list is every translation in locale/. Takes effect after a restart.",
+          "The list is every translation in locale/. Applied right away.",
           "Interface", options=["auto", *i18n.languages()]),
 
     # ------------------------------------------------------------- library
@@ -123,6 +123,15 @@ FIELDS = [
 ]
 
 BY_KEY = {f.key: f for f in FIELDS}
+
+
+NOTHING_TO_APPLY = N_("Nothing to apply.")
+
+
+def nothing_to_apply():
+    """A dry run that found nothing to change says so on its last line: the window then
+    doesn't offer to apply it."""
+    print("\n" + _(NOTHING_TO_APPLY))
 
 
 def defaults():
@@ -253,7 +262,7 @@ def validate(key, raw):
             n = int(raw)
         except ValueError:
             return None, _("a whole number is expected")
-        if n <= 0:
+        if n < 0 or (n == 0 and f.default != 0):      # a 0 default means "0 = not set"
             return None, _("must be greater than zero")
         return n, None
     if f.kind == "choice":

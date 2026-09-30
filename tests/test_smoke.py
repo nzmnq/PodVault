@@ -33,6 +33,13 @@ class ToolArgs(unittest.TestCase):
             backend.tool_steps("disk", {"drive": "nonsense"}, False)
 
 
+class SettingsValues(unittest.TestCase):
+    def test_zero_means_not_set_only_where_the_default_is_zero(self):
+        import settings
+        self.assertEqual(settings.validate("ipod_capacity_gb", "0"), (0, None))
+        self.assertIsNotNone(settings.validate("ipod_backups", "0")[1])
+
+
 class DiskMirror(unittest.TestCase):
     def test_missing_device_is_refused(self):
         import ipod_sync

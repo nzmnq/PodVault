@@ -133,7 +133,7 @@ def _ask_gemini(cfg, system, user, schema):
                    "Get a free one at aistudio.google.com -> Get API key, then set it once:\n"
                    "  Windows:        setx GEMINI_API_KEY \"...\"\n"
                    "  macOS / Linux:  export GEMINI_API_KEY=\"...\"  (in ~/.zshrc or ~/.bashrc)\n"
-                   "and open a new terminal (or restart Music Utility)."))
+                   "and open a new terminal (or restart PodVault)."))
     model = str(cfg.get("gemini_model") or "gemini-3.8-flash")
     body = {
         "model": model,
@@ -211,7 +211,7 @@ def _ask_api(cfg, system, user, schema):
                    "Create one at console.anthropic.com -> API keys, then set it once:\n"
                    "  Windows:        setx ANTHROPIC_API_KEY \"sk-ant-...\"\n"
                    "  macOS / Linux:  export ANTHROPIC_API_KEY=\"sk-ant-...\"  (in ~/.zshrc or ~/.bashrc)\n"
-                   "and open a new terminal (or restart Music Utility)."))
+                   "and open a new terminal (or restart PodVault)."))
 
     if response.stop_reason == "refusal":
         sys.exit(_("Claude declined this request. Try wording it differently."))

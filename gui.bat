@@ -1,5 +1,5 @@
 @echo off
-rem Opens the Music Utility window (PyQt6), without a console.
+rem Opens the PodVault window (PyQt6), without a console.
 rem The same interpreter order as run.bat; pythonw keeps the console away.
 cd /d "%~dp0"
 

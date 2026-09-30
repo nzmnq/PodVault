@@ -56,7 +56,14 @@ class Job(QObject):
     @property
     def can_apply(self):
         return (bool(backend.TOOLS[self.tool].get("apply")) and not self.applying
-                and self.code == 0 and not self.cancelled)
+                and self.code == 0 and not self.cancelled and not self.nothing)
+
+    @property
+    def nothing(self):
+        """The dry run found nothing to change (settings.nothing_to_apply)."""
+        with self.lock:
+            last = next((ln.strip() for ln in reversed(self.lines) if ln.strip()), "")
+        return last == _(settings.NOTHING_TO_APPLY)
 
     def snapshot(self):
         """(dropped, lines, current line) — lines[i] is line dropped + i of the output."""

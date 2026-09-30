@@ -249,7 +249,10 @@ def main():
             print(f"    {rel} / {what}")
 
     if not args.apply:
-        print(_("\nNothing embedded. Run with --apply to apply only the matches."))
+        if found:
+            print(_("\nNothing embedded. Run with --apply to apply only the matches."))
+        else:
+            settings.nothing_to_apply()
         return
 
     n = 0

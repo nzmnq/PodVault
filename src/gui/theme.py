@@ -6,9 +6,13 @@ default; dark when the system is dark. Nothing visual is hard-coded elsewhere.
 """
 
 import functools
+import os
+import tempfile
 
-from PyQt6.QtCore import QRect, Qt
-from PyQt6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPalette, QPixmap
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, Qt
+from PyQt6.QtGui import (QColor, QFont, QFontDatabase, QGuiApplication, QIcon, QPainter, QPalette, QPen,
+                         QPixmap)
+from PyQt6.QtWidgets import QComboBox, QStyledItemDelegate
 
 # Colours are "#RRGGBB" or "#AARRGGBB"; the ones only the stylesheet uses may be rgba().
 LIGHT = dict(
@@ -43,6 +47,7 @@ LIGHT = dict(
     # notifications
     toast="rgba(38,38,46,235)", toast_good="rgba(40,135,80,240)", toast_bad="rgba(190,55,48,240)",
     toast_text="#ffffff",
+    drop_bg="rgba(255,255,255,225)",
 )
 
 DARK = dict(
@@ -56,6 +61,7 @@ DARK = dict(
     side="#1f1f24", side_text="#dcdce3", side_head="#7c7c88", side_hover="#2a2a31",
     accent="#7b7bf0", accent_soft="#33335a", sheet="#25252b", art_dim="#6e000000",
     attention_bg="#2c2618", attention_line="#4a3d1e", attention_text="#f0d49a",
+    drop_bg="rgba(27,27,31,225)",
 )
 
 FONTS = dict(
@@ -80,17 +86,21 @@ GLYPHS = dict(
     dot="●",               # black circle
     ring="○",              # white circle
     warn="▲",              # black up-pointing triangle
+    on_ipod="✓",           # tile badge: Active, goes to the iPod
+    on_disk="–",           # tile badge: Archive, stays on disk (en dash)
+    small="▫",             # white small square: the cover-size slider
+    large="◻",             # white medium square
 )
 
 UI = dict(
-    window=(1320, 840), window_min=(940, 580), sheet=(900, 600), dialog_w=560,
+    window=(1320, 840), window_min=(1040, 640), sheet=(900, 600), dialog_w=560,
     toolbar_h=64, status_h=28, status_button_h=20,
-    lcd_h=50, lcd_w=(300, 600), lcd_bar_w=340,
+    lcd_h=50, lcd_w=(260, 440), lcd_bar_w=340,
     side_w=220, side_min=180, side_row=26, side_device_row=44, side_head=28, icon=16,
     side_capacity_h=4, side_eject=22, side_pad=6, side_gap=10,
     tile=150, tile_range=(100, 240), thumb=256, cover_large=640, detail_cover=220,
     artists_w=190, ipod_picture=(112, 184), capacity_h=40, vibe_text_h=80,
-    close_button_w=30, slider_w=110, combo_extra_w=44, genre_box_max_w=260,
+    close_button_w=30, form_w=760, form_label_w=190, form_number_w=120, slider_w=110, combo_extra_w=44, genre_box_max_w=260,
     poll_ms=3000, sheet_refresh_ms=150, lcd_refresh_ms=250, eject_repoll_ms=1500,
     note_s=6, toast_ms=5000, toast_bad_ms=8000, toast_w=420, toast_gap=14, list_preview=12,
     cover_threads=3, cache_max=3000, log_lines=10000,
@@ -153,12 +163,25 @@ QLineEdit#search:focus {{ border-color: {accent}; }}
 #sidebar::item:hover {{ background: {side_hover}; }}
 #sidebar::item:selected {{ color: {on_accent}; background: {accent}; }}
 #sidebar::branch {{ background: {side}; image: none; border: 0; }}
+#sideBox {{ background: {side}; }}
+#sideBox #sidebar {{ border-right: 0; }}
+QPushButton#sideSettings {{ text-align: left; margin: 6px 8px 10px 8px; padding: 4px 10px; border: 0;
+  border-radius: 6px; background: transparent; color: {side_text}; }}
+QPushButton#sideSettings:hover {{ background: {side_hover}; }}
+QPushButton#sideSettings:checked {{ background: {accent}; color: {on_accent}; }}
 
 #viewHead {{ background: {bg}; border-bottom: 1px solid {line}; }}
 #viewTitle {{ font-size: 16pt; font-weight: 600; }}
 #attention {{ background: {attention_bg}; border-bottom: 1px solid {attention_line}; }}
 #attention QLabel {{ color: {attention_text}; }}
 #attention QPushButton {{ min-height: 20px; padding: 0 10px; }}
+#attention QPushButton#attentionClose {{ border: 0; background: transparent; color: {attention_text}; padding: 0 4px; }}
+QLabel#dropHint {{ background: {drop_bg}; border: 2px dashed {accent}; border-radius: 12px;
+  color: {accent}; font-size: 15pt; font-weight: 600; }}
+#marksBar {{ background: {accent_soft}; border-bottom: 1px solid {accent}; }}
+#marksBar QLabel {{ color: {text}; font-weight: 600; }}
+#marksBar QPushButton {{ min-height: 20px; padding: 0 10px; }}
+#empty QLabel#emptyTitle {{ font-size: 13pt; font-weight: 600; }}
 QLabel[muted="true"] {{ color: {muted}; }}
 QLabel[warn="true"] {{ color: {danger}; }}
 QLabel#h2 {{ font-size: 12pt; font-weight: 600; }}
@@ -187,13 +210,36 @@ QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox {{
 }}
 QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus {{ border-color: {accent}; }}
 
+/* drop-down lists: our chevron, and a popup that looks like the ☰ menu */
+QComboBox {{ padding: 3px 26px 3px 8px; combobox-popup: 0; }}
+QComboBox:hover {{ border-color: {btn_line}; }}
+QComboBox:disabled {{ color: {faint}; }}
+QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right; width: 24px; border: 0; }}
+QComboBox::down-arrow {{ image: url("{chevron}"); width: 10px; height: 6px; }}
+QComboBox::down-arrow:disabled {{ image: url("{chevron_faint}"); }}
+QComboBox QAbstractItemView {{
+  background: {sheet}; border: 1px solid {line}; border-radius: 6px; padding: 4px; outline: 0;
+  selection-background-color: {accent}; selection-color: {on_accent};
+}}
+QComboBox QAbstractItemView::item {{ min-height: 24px; padding: 0 10px; border-radius: 5px; }}
+QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
+  background: {accent}; color: {on_accent};
+}}
+
 QTableView, QTreeView, QListView {{
   background: {bg}; alternate-background-color: {alt}; border: 0;
   selection-background-color: {accent}; selection-color: {on_accent}; gridline-color: {line};
 }}
 QListWidget#artists {{ background: {alt}; border-right: 1px solid {line}; outline: 0; }}
-QListWidget#artists::item {{ padding: 4px 10px; border: 0; }}
+QListWidget#artists {{ padding-top: 6px; }}
+QListWidget#artists::item {{ padding: 4px 8px; margin: 1px 8px; border: 0; border-radius: 6px; }}
+QListWidget#artists::item:hover {{ background: {side_hover}; }}
 QListWidget#artists::item:selected {{ background: {accent}; color: {on_accent}; }}
+#settingsNav {{ background: {alt}; border-right: 1px solid {line}; }}
+#settingsNav QListWidget#artists {{ border: 0; }}
+QPushButton#fileLink {{ border: 0; background: transparent; color: {muted}; text-align: left;
+  padding: 2px 12px; font-size: 8.5pt; }}
+QPushButton#fileLink:hover {{ color: {accent}; }}
 QHeaderView::section {{
   background: {bg}; color: {muted}; border: 0; border-bottom: 1px solid {line};
   padding: 4px 6px; font-weight: 600; font-size: 8.5pt;
@@ -270,9 +316,38 @@ def icon(name, color="text", size=None):
     return out
 
 
+def _chevron(color):
+    """A down chevron as a PNG file: a stylesheet can only take an image for the combo arrow."""
+    path = os.path.join(tempfile.gettempdir(), f"podvault-chevron-{QColor(color).name()[1:]}.png")
+    if not os.path.isfile(path):
+        pm = QPixmap(20, 12)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(color), 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                      Qt.PenJoinStyle.RoundJoin))
+        p.drawPolyline([QPointF(3, 3), QPointF(10, 9), QPointF(17, 3)])
+        p.end()
+        pm.save(path)
+    return path.replace(os.sep, "/")
+
+
+class _ComboItems(QObject):
+    """Qt's own popup delegate ignores the stylesheet's ::item rules; a styled one follows them."""
+
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.Type.Polish and isinstance(obj, QComboBox) \
+                and not isinstance(obj.itemDelegate(), QStyledItemDelegate):
+            obj.setItemDelegate(QStyledItemDelegate(obj))
+        return False
+
+
 def apply(app):
     C.clear()
     C.update(DARK if is_dark() else LIGHT)
+    if not hasattr(app, "_combo_items"):
+        app._combo_items = _ComboItems(app)
+        app.installEventFilter(app._combo_items)
     app.setStyle("Fusion")
     pal = QPalette()
     for role, key in ((QPalette.ColorRole.Window, "bg"), (QPalette.ColorRole.WindowText, "text"),
@@ -285,4 +360,4 @@ def apply(app):
                       (QPalette.ColorRole.Link, "accent")):
         pal.setColor(role, QColor(C[key]))
     app.setPalette(pal)
-    app.setStyleSheet(QSS.format(**C, mono=", ".join(f'"{f}"' for f in _installed("mono")) + ", monospace"))
+    app.setStyleSheet(QSS.format(**C, chevron=_chevron(C["muted"]), chevron_faint=_chevron(C["faint"]), mono=", ".join(f'"{f}"' for f in _installed("mono")) + ", monospace"))

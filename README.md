@@ -1,4 +1,4 @@
-# PodVault — Music Utility
+# PodVault
 
 [![CI](https://github.com/nzmnq/PodVault/actions/workflows/ci.yml/badge.svg)](https://github.com/nzmnq/PodVault/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
