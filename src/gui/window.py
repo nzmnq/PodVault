@@ -250,8 +250,8 @@ class SideDelegate(QStyledItemDelegate):
 
 
 # The ☰ menu: tool names from backend.TOOLS; None is a separator; (title, [tools]) a submenu.
-MENU = ["covers", "tags", "likes", "export", "marks", None,
-        (N_("Audio tools"), ["flac", "download", "tracklist_covers", "spatial"]), None,
+MENU = ["covers", "tags", "likes", "export", "marks", "undo", "duplicates", "fit", "soundcheck", "smart", None,
+        "flac", None,
         "build", "settings"]
 MENU_EXTRA = {"export": N_("Export the list…"), "settings": N_("Settings…")}
 

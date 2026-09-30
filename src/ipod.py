@@ -15,6 +15,7 @@ uses: finding the iPod, reading it, the covers check, backups and eject.
 import argparse
 import datetime
 import logging
+import json
 import os
 import shutil
 import subprocess
@@ -82,8 +83,23 @@ def open_ipod(cfg, given=None):
             sys.exit(_("Several iPods are connected: {list}\nChoose one in Settings -> iPod, "
                        "or pass --ipod.").format(list=", ".join(d.path for d in found)))
         dev = found[0]
-    hardware.select_device(dev)
+    try:
+        hardware.select_device(dev)
+    except hardware.UnidentifiedDeviceError:
+        sys.exit(unidentified_help(dev.path))
     return dev
+
+
+def unidentified_help(path):
+    """What to do when podsync can't tell the model (an empty SysInfo, e.g. after a restore)."""
+    import shlex
+    cmd = ["sudo", "env", "PYTHONPATH=" + PODSYNC, sys.executable, "-m", "podsync.hardware.probes.libusb",
+           "--write-sysinfo", "--path", path]
+    return _("The iPod at {path} isn't identified: its SysInfo file doesn't name the model, and\n"
+             "without administrator rights the model can't be read from the device itself.\n"
+             "Run once in a terminal (reads the serial number from the iPod and writes SysInfo;\n"
+             "the iPod disconnects for a few seconds):\n\n  {cmd}").format(
+        path=path, cmd=" ".join(shlex.quote(c) for c in cmd))
 
 
 def describe(dev):
@@ -97,6 +113,39 @@ def load(dev):
     Plays made on the iPod since the last write are already merged in.
     """
     return database.load_device_library(Path(dev.path), raise_on_error=True)
+
+
+def stats_file(cfg):
+    return os.path.join(settings.path("reports_dir", cfg), "ipod_stats.json")
+
+
+def save_stats(cfg, rows):
+    """Keep plays, skips, rating and last-played per track on the PC (reports/ipod_stats.json).
+
+    The iPod's own copy is lost when it's restored or wiped. Keyed by artist | title | album;
+    counts only grow, so a track re-added with a zero count keeps its history.
+    """
+    path = stats_file(cfg)
+    try:
+        with open(path, encoding="utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        saved = {}
+    for t in rows:
+        new = {"play_count": t.get("play_count") or 0, "skip_count": t.get("skip_count") or 0,
+               "rating": t.get("rating") or 0, "last_played": t.get("last_played") or 0}
+        if not (new["play_count"] or new["skip_count"] or new["rating"]):
+            continue
+        key = " | ".join((t.get("artist") or "", t.get("title") or "", t.get("album") or ""))
+        old = saved.get(key, {})
+        saved[key] = {"play_count": max(new["play_count"], old.get("play_count", 0)),
+                      "skip_count": max(new["skip_count"], old.get("skip_count", 0)),
+                      "rating": new["rating"] or old.get("rating", 0),
+                      "last_played": max(new["last_played"], old.get("last_played", 0))}
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(saved, f, ensure_ascii=False, indent=1, sort_keys=True)
+    return len(saved)
 
 
 def track_file(root, row):

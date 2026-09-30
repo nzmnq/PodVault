@@ -3,7 +3,7 @@ User settings.
 
 Everything that used to be hard-coded — library location, incoming folder,
 iPod options, tool folders, the ffmpeg path — lives in settings.json in the
-project root. The file is created by the first-run wizard in Main.py and can
+project root. The file is created by the window's first-run screen and can
 be edited later on the Settings screen (or by hand).
 
 settings.json is git-ignored: it holds personal paths and must not end up
@@ -35,7 +35,7 @@ class Field:
         self.label = label
         self.help = help_text
         self.section = section
-        self.first_run = first_run  # asked by the first-run wizard
+        self.first_run = first_run  # asked on the first-run screen
         self.options = options or []
         self.optional = optional    # may be left empty
 
@@ -77,6 +77,9 @@ FIELDS = [
     Field("duration_tolerance", 3, "int", "Duration tolerance, s",
           "Two versions of a song count as the same file only if their "
           "lengths differ by at most this much.", "iPod"),
+    Field("ipod_capacity_gb", 0, "int", "Music space on the iPod, GB",
+          "Used by \"Fit Active to the iPod\": how much of the iPod the Active albums may take. "
+          "0 = not set.", "iPod"),
     Field("ipod_backups", 3, "int", "Database backups to keep",
           "A backup of the iPod's database is made before every write; "
           "older ones are deleted.", "iPod"),
@@ -103,25 +106,12 @@ FIELDS = [
 
     # ---------------------------------------------------------- audio tools
     Field("ffmpeg_path", "auto", "file", "ffmpeg",
-          "'auto' looks in PATH, then in bin/. Needed by the tools below; "
+          "'auto' looks in PATH, then in bin/. Needed by the FLAC to ALAC converter; "
           "the library and the iPod don't need it.", "Audio tools"),
-    Field("tracklist_file", os.path.join("data", "tracklist.txt"), "file",
-          "Tracklist file", "Used by the downloader and the iTunes cover fetcher.",
-          "Audio tools"),
-    Field("download_dir", os.path.join("data", "iPod_Music"), "dir",
-          "Download folder", "Output of the downloader.", "Audio tools"),
-    Field("cookies_file", "cookies.txt", "file", "Cookies file",
-          "Optional cookies for the downloader.", "Audio tools", optional=True),
     Field("flac_input_dir", os.path.join("data", "input_folder"), "dir",
           "FLAC input folder", "FLAC files to convert to ALAC.", "Audio tools"),
     Field("alac_output_dir", os.path.join("data", "ALAC_Output"), "dir",
           "ALAC output folder", "Converted ALAC files.", "Audio tools"),
-    Field("spatial_input_dir", os.path.join("data", "iPod_Music"), "dir",
-          "Spatial input folder",
-          "Files for spatial-sound processing (the download folder by default).",
-          "Audio tools"),
-    Field("spatial_output_dir", os.path.join("data", "Spatial_processed"), "dir",
-          "Spatial output folder", "Output of spatial-sound processing.", "Audio tools"),
 
     # -------------------------------------------------------- initial build
     Field("source_dir", "", "dir", "Old collection",
@@ -161,12 +151,12 @@ def save(values):
 
 
 def require():
-    """Settings for command-line tools. Exits if the wizard was never run."""
+    """Settings for command-line tools. Exits if the settings were never saved."""
     values = load()
     if values is None:
         sys.exit(_(
             "No settings yet.\n"
-            "Run Main.py (run.bat / run.sh) once — it asks for the basic settings\n"
+            "Open the window (gui.bat / gui.sh) once — it asks for the basic settings\n"
             "and saves them to {file}.").format(file=FILE))
     return values
 
@@ -188,7 +178,7 @@ def library_paths(values=None):
     """(library, Active, Archive) as absolute paths."""
     lib = path("library_dir", values)
     if not lib:
-        sys.exit(_("The library folder isn't set. Open Settings in Main.py."))
+        sys.exit(_("The library folder isn't set. Open Settings in the window."))
     return lib, os.path.join(lib, "Active"), os.path.join(lib, "Archive")
 
 
@@ -290,6 +280,6 @@ def warnings(values):
                 out.append(_("{setting}: folder doesn't exist yet — {path}").format(
                     setting=_(f.label), path=p))
         if f.key == "ffmpeg_path" and ffmpeg(values) is None:
-            out.append(_("ffmpeg: not found — the conversion, download and "
-                         "spatial-sound tools won't work until it's set"))
+            out.append(_("ffmpeg: not found — the FLAC to ALAC converter "
+                         "won't work until it's set"))
     return out

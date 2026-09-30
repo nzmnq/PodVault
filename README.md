@@ -7,8 +7,7 @@
 ![mutagen](https://img.shields.io/badge/tags-mutagen-8A2BE2)
 ![Pillow](https://img.shields.io/badge/covers-Pillow-yellow)
 ![FFmpeg](https://img.shields.io/badge/audio-FFmpeg-007808?logo=ffmpeg&logoColor=white)
-![yt-dlp](https://img.shields.io/badge/downloads-yt--dlp-red)
-![NumPy](https://img.shields.io/badge/NumPy%20%2F%20SciPy-013243?logo=numpy&logoColor=white)
+![NumPy](https://img.shields.io/badge/NumPy-013243?logo=numpy&logoColor=white)
 ![Claude](https://img.shields.io/badge/AI-Claude%20%7C%20Gemini-D97757?logo=anthropic&logoColor=white)
 ![iPod](https://img.shields.io/badge/iPod-podsync-999999?logo=apple&logoColor=white)
 ![License](https://img.shields.io/badge/license-GPL--3.0--only-blue)
@@ -16,14 +15,9 @@
 Tools for keeping a music library in shape for an old iPod: fixing tags so
 albums don't fall apart, splitting the library into what goes on the iPod and
 what stays on disk, syncing the device without iTunes, plus a few audio
-utilities (FLAC → ALAC, a tracklist downloader, iTunes cover art, spatial
-sound). Runs on **Windows, macOS and Linux**.
+utilities (FLAC → ALAC, cover art). Runs on **Windows, macOS and Linux**.
 
 ![The window: albums](docs/screenshots/gui-albums.png)
-
-| The text menu | Active / Archive markup |
-|---|---|
-| ![Main menu](docs/screenshots/tui-main.png) | ![Markup](docs/screenshots/tui-markup.png) |
 
 ![The window: genres](docs/screenshots/gui-genres.png)
 
@@ -33,15 +27,14 @@ sound). Runs on **Windows, macOS and Linux**.
 
 | | Windows | macOS / Linux |
 |---|---|---|
-| Text menu | `run.bat` | `./run.sh` |
 | The window | `gui.bat` | `./gui.sh` |
 
-Or `python Main.py` / `python Main.py --gui` on any system. The launchers work
+Or `python Main.py` on any system. The launchers work
 from any directory — they find the project by their own location, and every
 path inside the project is resolved against the project root, not the current
 directory.
 
-On the first run a short wizard asks for the basic settings — where the library
+On the first run a short first-run screen asks for the basic settings — where the library
 lives, where new tracks come from, how to sync the iPod. Everything can be
 changed later on the **Settings** screen.
 
@@ -66,7 +59,7 @@ rescans the code, refreshes the template and starts (or tops up)
 
 ## Installation
 
-Python 3.12+ (the pinned NumPy and SciPy need it).
+Python 3.12+ (the pinned NumPy needs it).
 
 ```bash
 git clone --recurse-submodules https://github.com/nzmnq/PodVault.git
@@ -89,14 +82,13 @@ python3 -m venv .venv
 
 The launchers pick the interpreter in this order, so no activation is needed:
 
-| | Windows (`run.bat`) | macOS / Linux (`run.sh`) |
+| | Windows (`gui.bat`) | macOS / Linux (`gui.sh`) |
 |---|---|---|
 | 1. portable Python next to the project | `.python\python.exe` | `.python/bin/python3` |
 | 2. virtual environment | `.venv\Scripts\python.exe` | `.venv/bin/python` |
 | 3. system-wide | `py -3` / `python` | `python3` / `python` |
 
-**FFmpeg** is needed by the FLAC → ALAC converter, the downloader and the
-spatial sound tool, and by the AI playlists to analyse `.m4a` tracks. Set its
+**FFmpeg** is needed by the FLAC → ALAC converter and by the AI playlists to analyse `.m4a` tracks. Set its
 path on the Settings screen, or leave it on `auto` to use the one in `PATH` or
 in `bin/`. The rest of the library tools don't need it.
 
@@ -114,8 +106,7 @@ with `git submodule update --init`. No iTunes is needed on any system.
 
 ## The window
 
-`gui.bat` / `./gui.sh`, `python Main.py --gui`, or "Open the window" in the
-menu. The same tools in a window (PyQt6) laid out like iTunes — a source list,
+`gui.bat` / `./gui.sh` or `python Main.py`. The tools in a window (PyQt6) laid out like iTunes — a source list,
 an LCD in the toolbar, views of one library — with its own look.
 
 - **Source list** — places only: the **Library**, the **iPod** when it's
@@ -163,10 +154,7 @@ the system. Colours, symbols, sizes and timings all live in `src/gui/theme.py`.
 
 | | |
 |---|---|
-| Convert FLAC to ALAC | FLAC files from the input folder → `.m4a` (ALAC) in the output folder. |
-| Download from the tracklist | Downloads the tracks listed in the tracklist and tags them. |
-| Fetch covers for the tracklist | Fills cover URLs in the tracklist from the iTunes API. |
-| Spatial sound processing | An experimental stereo-to-spatial pass. |
+| Convert FLAC to ALAC | FLAC files from the input folder → `.m4a` (ALAC, always 16-bit, 44.1 / 48 kHz) in the output folder. |
 | Initial build from an old collection | One-time: builds the library from an unsorted collection. |
 
 Everything that changes files runs as a dry run first and asks before applying.
@@ -174,9 +162,8 @@ Everything that changes files runs as a dry run first and asks before applying.
 ## Project structure
 
 ```
-Main.py                 the program (menu, first-run wizard, settings screen)
-run.bat, run.sh         launcher (text menu): Windows / macOS, Linux
-gui.bat, gui.sh         launcher (the window)
+Main.py                 the program: opens the window
+gui.bat, gui.sh         launchers: Windows / macOS, Linux
 src/
   settings.py           settings: defaults, load/save, validation
   library.py            library contents, Active/Archive moves
@@ -186,19 +173,18 @@ src/
   gui/                  the window (PyQt6): backend.py runs the same tools
   fetch_covers.py       missing cover art for the library
   verify_clean.py       tag checks (--fix)
+  duplicates.py         the same track stored twice (report)
+  fit_ipod.py           which albums to move out of Active to fit the iPod
+  soundcheck.py         loudness -> iTunNORM tag (Sound Check)
+  smart_presets.py      ready-made smart playlists for the iPod
   import_likes.py       "what I listen to" lists -> one format
   find_missing.py       comparison with the library
   vibe.py               AI vibe playlists
   genres.py             genre and style per album
   ai.py                 one question to an AI model (Claude Code, Gemini, API)
   build_clean.py        one-time initial build
-  musiclib.py, tui.py   shared helpers
+  musiclib.py           shared helpers
   flac_to_alac.py       FLAC -> ALAC
-  metadata_download.py  tracklist downloader
-  fetch_cover.py        iTunes covers for the tracklist
-  sur_sound.py          spatial sound
-data/
-  tracklist.example.txt a sample tracklist (your own data/tracklist.txt is git-ignored)
 docs/screenshots/       README pictures
 tests/                  smoke tests: python -m unittest discover tests
 .github/workflows/      CI: lint and tests on Windows, macOS, Linux
@@ -217,8 +203,8 @@ Each script in `src/` also runs on its own, from any directory:
 <library>/Archive/<Artist>/<Album>/NN - Title.m4a    stays on disk
 ```
 
-Tracks are **mp3** or **m4a** (AAC or Apple Lossless — what the downloader and
-the FLAC → ALAC converter make), mixed freely, even within one album. Both go
+Tracks are **mp3** or **m4a** (AAC or Apple Lossless, which is
+what the FLAC → ALAC converter makes), mixed freely, even within one album. Both go
 onto the iPod as they are. All the tools read and write tags through one
 module, [`src/tags.py`](src/tags.py), so a new format is one place to change.
 
@@ -255,7 +241,7 @@ Compilations get the Album Artist from the **Compilation artist** setting
 
 ## iPod sync
 
-Sync → 1 (or `python src/ipod_sync.py`) makes the device hold exactly what's
+Sync (`python src/ipod_sync.py`) makes the device hold exactly what's
 in `Active`: archive tracks leave the iPod, new tracks arrive, and every synced
 track gets its cover and its genre from the file. The iPod's own databases —
 tracks, playlists, covers — are written by podsync; iTunes isn't involved and
@@ -274,7 +260,7 @@ macOS, `/media` on Linux) and identified by podsync, or set in Settings → iPod
 A bad write to the database can wipe the iPod's music list, so:
 
 - before every write `iPod_Control/iTunes` and `/Artwork` (~250 MB) are copied
-  to `<reports>\ipod-backups` (the last 3 are kept); Sync → 5 (or `--restore`)
+  to `<reports>\ipod-backups` (the last 3 are kept); `--restore`
   puts the latest one back;
 - podsync checks and locks the volume, refuses to write if the database
   changed since it was read, and reads the new database back — every track
@@ -289,7 +275,7 @@ python src/ipod.py                       # what the iPod has (read only)
 python src/ipod.py --eject
 ```
 
-Sync → 4 (`--disk E:` or `--disk /Volumes/PLAYER`) is a plain mirror for Rockbox or disk mode instead;
+`ipod_sync.py --disk E:` (or `--disk /Volumes/PLAYER`) is a plain mirror for Rockbox or disk mode instead;
 only the managed subfolder is touched.
 
 ### Covers on the iPod
@@ -300,35 +286,32 @@ linked to the track in the device's own database. Tracks put on the iPod by
 other programs often have an artwork record and no such copy. So the sync
 asks podsync which tracks really have a thumbnail, and gives the rest their
 cover from the file (the embedded picture first, `folder.jpg` otherwise).
-Sync → 2 (`python src/ipod.py`) lists what the screen shows without a cover.
+`python src/ipod.py` lists what the screen shows without a cover.
 
 ### Tracks only on the iPod
 
 The sync never deletes tracks it can't find in `Active` or `Archive` — the
-iPod may hold the only copy. `ipod_sync.py --rescue` (Sync → 3 in the menu)
+iPod may hold the only copy. `ipod_sync.py --rescue` (the iPod sheet in the window)
 copies them into `<incoming>/From iPod`, reading the iPod's own database and
 files; "Add new tracks" then brings them into the
 library like any other new track. Already saved tracks aren't copied again.
 
-## Tracklist format
+### Sound Check and smart playlists
 
-Used by the downloader and the iTunes cover fetcher. One track per line in
-`data/tracklist.txt` (the path is a setting; the file is git-ignored). Start
-from the sample: copy `data/tracklist.example.txt` to `data/tracklist.txt`.
+`soundcheck.py` (menu: "Sound Check") measures each Active track's loudness with
+ffmpeg and writes an `iTunNORM` tag; the sync copies it into the iPod's database, and
+you switch Sound Check on in the iPod's Settings. The numbers follow libgpod's formula
+and were not checked against a real iPod. "Add smart playlists" (`ipod_sync.py --smart`)
+puts "Never played", "Most played", "Top rated" and "Recently added" on the iPod; they
+follow the play counts the iPod keeps.
 
-```text
-Artist | Title | Album | Composer | Year | Genre | Track Number | Disc Number | Cover Art URL
-```
+### Safety and tidying
 
-Example:
-
-```text
-Daft Punk | Get Lucky | Random Access Memories | Thomas Bangalter, Guy-Manuel de Homem-Christo | 2013 | Disco | 8 | 1 | https://example.com/cover.jpg
-```
-
-If the `Title` field starts with `http`, the downloader treats it as a direct
-URL instead of a search query. An optional cookies file (a setting) can help
-with restricted downloads.
+Every Active/Archive move is journaled in `reports/moves.jsonl`; "Undo the last moves"
+(`library.py --undo`) puts the last batch back (albums merged into an existing folder
+can't be undone). "Find duplicates" lists tracks stored twice. "Fit Active to the iPod"
+compares Active with the "Music space on the iPod" setting and suggests the least-played
+albums for Archive, written to `reports/fit.txt`.
 
 ## "What I listen to" lists
 
@@ -401,7 +384,7 @@ model for each mode. Where the pick comes from (`--backend` overrides it):
   as a cached prompt, so a second vibe within the hour costs a fraction of the
   first.
 
-`--apply` / `--push-last` (or "yes" in the menu after a pick) create the
+`--apply` / `--push-last`  create the
 playlist right on the iPod, written into its database by podsync, with a
 backup first. Picked tracks that aren't on the iPod yet are copied along with
 their covers; nothing is deleted or changed. If a playlist with that name

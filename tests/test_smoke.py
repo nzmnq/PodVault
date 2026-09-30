@@ -51,6 +51,45 @@ class Compilations(unittest.TestCase):
             self.assertEqual(build_clean.resolve_conflict(names), ("Various Artists", "compilation"))
 
 
+class MoveUndo(unittest.TestCase):
+    def test_last_batch_is_put_back(self):
+        import library
+        import settings
+        lib = tempfile.mkdtemp()
+        album = os.path.join(lib, "Active", "A", "B")
+        os.makedirs(album)
+        open(os.path.join(album, "1.mp3"), "wb").close()
+        real_paths = library.paths
+        library.paths = lambda values=None: (lib, os.path.join(lib, "Active"), os.path.join(lib, "Archive"))
+        library.settings = type("S", (), {"path": staticmethod(lambda k, v=None: lib)})
+        try:
+            a = {"path": album, "state": "A", "artist": "A", "album": "B"}
+            library.begin_batch()
+            library.move(a, "R")
+            self.assertFalse(os.path.exists(album))
+            undone, skipped = library.undo(apply=True)
+            self.assertEqual((len(undone), len(skipped)), (1, 0))
+            self.assertTrue(os.path.exists(os.path.join(album, "1.mp3")))
+            self.assertEqual(library.undo(apply=True), ([], []))
+        finally:
+            library.settings, library.paths = settings, real_paths
+
+
+class SmartPresets(unittest.TestCase):
+    def test_presets_select_by_plays(self):
+        import ipod  # noqa: F401  (puts podsync on the path)
+        import smart_presets
+        from podsync.itdb.writer.track import TrackRecord
+        recs = [TrackRecord(title=str(i), location=":iPod_Control:Music:F00:A.mp3", db_track_id=i,
+                            play_count=n, rating=r, date_added=i)
+                for i, (n, r) in enumerate([(0, 0), (5, 100), (2, 40)], 1)]
+        got = {p.name: p.track_ids for p in smart_presets.build(recs, {"Recently added"})}
+        self.assertEqual(got["Never played"], [1])
+        self.assertEqual(got["Most played"], [2, 3])
+        self.assertEqual(got["Top rated"], [2])
+        self.assertNotIn("Recently added", got)
+
+
 DATA = os.path.join(ROOT, "tests", "data")
 MP3_SILENCE = (b"\xff\xfb\x90\x64" + b"\x00" * 413) * 20     # half a second of MPEG frames
 
@@ -95,6 +134,54 @@ class TagsForEveryFormat(unittest.TestCase):
                 self.assertEqual((got["genre"], got["grouping"], got["title"]), ("", "", "Така, як ти"))
                 tags.set_cover(p, None)
                 self.assertFalse(tags.read(p)["art"])
+
+    def test_lyrics_survive_tag_rewrites(self):
+        import tags
+        from mutagen.id3 import ID3, USLT
+        from mutagen.mp4 import MP4
+        p = sample(tempfile.mkdtemp(), "mp3")
+        t = ID3()
+        t.add(USLT(encoding=1, lang="eng", desc="", text="la la la"))
+        tags.save_id3(t, p)
+        tags.write(p, self.FIELDS, replace=True)
+        self.assertEqual(ID3(p).getall("USLT")[0].text, "la la la")
+        p = sample(tempfile.mkdtemp(), "aac")
+        f = MP4(p)
+        f.tags["\xa9lyr"] = ["la la la"]
+        f.save()
+        tags.write(p, self.FIELDS, replace=True)
+        self.assertEqual(MP4(p).tags["\xa9lyr"], ["la la la"])
+
+    def test_info_reports_bit_depth(self):
+        import tags
+        self.assertEqual(tags.info(sample(tempfile.mkdtemp(), "alac"))["bits"], 16)
+
+    def test_ipod_stats_only_grow(self):
+        import ipod
+        cfg = {"reports_dir": tempfile.mkdtemp()}
+        row = {"artist": "A", "title": "T", "album": "X", "play_count": 5, "rating": 80, "last_played": 100}
+        ipod.save_stats(cfg, [row, {"artist": "B", "title": "U", "album": "Y"}])   # no activity: not kept
+        self.assertEqual(ipod.save_stats(cfg, [{**row, "play_count": 0, "rating": 0, "last_played": 0,
+                                                "skip_count": 1}]), 1)
+        with open(ipod.stats_file(cfg), encoding="utf-8") as f:
+            import json
+            self.assertEqual(json.load(f)["A | T | X"],
+                             {"play_count": 5, "skip_count": 1, "rating": 80, "last_played": 100})
+
+    def test_sound_check_round_trip(self):
+        import soundcheck
+        import tags as audiotags
+        self.assertEqual(soundcheck.soundcheck_from_lufs(-16.5), 1000)
+        self.assertGreater(soundcheck.soundcheck_from_lufs(-10), 1000)       # louder: turn it down
+        text = soundcheck.norm_string(1234)
+        self.assertEqual(soundcheck.soundcheck_from_norm(text), 1234)
+        for kind in ("mp3", "aac", "alac"):
+            with tempfile.TemporaryDirectory() as d:
+                path = sample(d, kind)
+                self.assertEqual(audiotags.norm_tag(path), "")
+                audiotags.set_norm_tag(path, text)
+                audiotags.set_norm_tag(path, text)
+                self.assertEqual(audiotags.norm_tag(path), text.strip())
 
     def test_mp3_stays_what_an_old_ipod_reads(self):
         import tags

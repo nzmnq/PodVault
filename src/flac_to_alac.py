@@ -5,6 +5,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from mutagen import MutagenError
+from mutagen.flac import FLAC
+
 import settings
 from i18n import _
 
@@ -50,11 +53,18 @@ class FlacToAlacConverter:
             output_file = output_path / f"{flac_file.stem}.m4a"
 
             print(_("Converting: {file} ...").format(file=flac_file.name))
+            try:
+                rate = 48000 if FLAC(flac_file).info.sample_rate % 48000 == 0 else 44100
+            except (MutagenError, OSError):
+                rate = 44100
             command = [
                 ffmpeg,
                 "-y",
                 "-loglevel", "error",
                 "-i", str(flac_file),
+                "-af", "aresample=dither_method=triangular_hp",
+                "-ar", str(rate),
+                "-sample_fmt", "s16p",      # an old iPod can't play 24-bit / 96 kHz ALAC
                 "-c:a", "alac",
                 "-vn",
                 str(output_file)

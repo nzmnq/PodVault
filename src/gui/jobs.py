@@ -1,7 +1,7 @@
 """
 Running the tools: one script (or a short chain) at a time, output streamed.
 
-A job runs in a plain thread with subprocess — the same way the text menu
+A job runs in a plain thread with subprocess — the same way the command line
 runs the tools — and talks to the window through Qt signals, which Qt
 delivers on the window's own thread.
 """

@@ -59,6 +59,8 @@ def main():
     by_artist = defaultdict(set)
 
     unreadable = []
+    hires = []
+    broken = []
     for root, _skip, files in os.walk(dest):
         for fn in audiotags.audio_files(files):
             fp = os.path.join(root, fn)
@@ -66,10 +68,17 @@ def main():
             total += 1
             try:
                 t = audiotags.read(fp)
-                bitrates[audiotags.info(fp)["bitrate"]] += 1
+                inf = audiotags.info(fp)
+                bitrates[inf["bitrate"]] += 1
             except audiotags.Unreadable as e:
                 unreadable.append((rel, str(e)))
                 continue
+
+            if inf["length"] < 1 or os.path.getsize(fp) < 1024:
+                broken.append(rel)
+            # 24-bit / 96 kHz ALAC stutters or crashes a classic iPod: only Active goes there
+            if rel.split(os.sep)[0] == "Active" and (inf["bits"] > 16 or inf["sample_rate"] > 48000):
+                hires.append((rel, f"{inf['bits']}-bit / {inf['sample_rate']} Hz"))
 
             aa, ar, al = t["albumartist"], t["artist"], t["album"]
             if not aa:
@@ -143,6 +152,8 @@ def main():
     print(_("bitrates: {list}").format(list=dict(bitrates.most_common())))
 
     block(_("unreadable"), unreadable)
+    block(_("empty or truncated (under 1 s)"), broken)
+    block(_("Hi-Res in Active (the iPod can't play it; re-encode to 16-bit / 44.1 kHz)"), hires)
     block(_("no Album Artist"), no_album_artist)
     block(_("not ID3v2.3"), bad_version)
     block(_("not UTF-16 (Cyrillic will break)"), bad_encoding)

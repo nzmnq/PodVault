@@ -10,7 +10,7 @@ settings.json
 # Tool output
 reports/
 
-# Personal library data: genres per album, the tracklist
+# Personal library data: genres per album
 data/genres.txt
 data/tracklist.txt
 
@@ -29,7 +29,6 @@ tools/
 *.wav
 *.jpg
 
-cookies.txt
 .env
 __pycache__/
 *.pyc

@@ -9,21 +9,25 @@ decisions already made are visible on disk.
     <library>\\Archive\\<Artist>\\<Album>\\   -> stays on disk
 
 The library folder comes from the settings. Paths are looked up at call
-time, not at import, so Main.py can import this module before the
-first-run wizard has created the settings.
+time, not at import, so this module can be imported before the
+first-run screen has created the settings.
 
-Used both by the TUI and from the command line:
+Used both by the window and from the command line:
 
     python src/library.py                 # show contents
     python src/library.py --export f.txt  # export for marking up
     python src/library.py --import f.txt  # apply the markup
+    python src/library.py --undo          # show what the last batch of moves did
+    python src/library.py --undo --apply  # put those albums back
 """
 
 import argparse
+import json
 import os
 import re
 import shutil
 import sys
+import time
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -121,6 +125,62 @@ def stats(albums):
     }
 
 
+_batch = None
+
+
+def begin_batch():
+    """Moves made from now on are undone together."""
+    global _batch
+    _batch = time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def journal_file():
+    return os.path.join(settings.path("reports_dir"), "moves.jsonl")
+
+
+def _journal(entry):
+    global _batch
+    if _batch is None:
+        begin_batch()
+    f = journal_file()
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    with open(f, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"batch": _batch, **entry}, ensure_ascii=False) + "\n")
+
+
+def _read_journal():
+    try:
+        with open(journal_file(), encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def undo(apply=False):
+    """Reverse the last batch of moves. Returns (undone, skipped): lists of journal entries."""
+    rows = _read_journal()
+    if not rows:
+        return [], []
+    last = rows[-1]["batch"]
+    batch = [r for r in rows if r["batch"] == last]
+    undone, skipped = [], []
+    for r in reversed(batch):
+        # a merged move mixed the files with ones already there: not reversible
+        if r["merged"] or not os.path.isdir(r["dest"]) or os.path.exists(r["src"]):
+            skipped.append(r)
+            continue
+        if apply:
+            os.makedirs(os.path.dirname(r["src"]), exist_ok=True)
+            shutil.move(r["dest"], r["src"])
+        undone.append(r)
+    if apply:
+        rest = [r for r in rows if r["batch"] != last] + [r for r in batch if r in skipped]
+        with open(journal_file(), "w", encoding="utf-8") as fh:
+            fh.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rest)
+        prune_empty()
+    return undone, skipped
+
+
 def move(album, target):
     """Move an album to Active or Archive. Returns the new path.
 
@@ -137,13 +197,15 @@ def move(album, target):
     dest = os.path.join(dest_root, rel)
 
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    if os.path.exists(dest):
+    merged = os.path.exists(dest)
+    if merged:
         # destination folder exists — move the files in and drop the empty one
         for fn in os.listdir(src):
             shutil.move(os.path.join(src, fn), os.path.join(dest, fn))
         os.rmdir(src)
     else:
         shutil.move(src, dest)
+    _journal({"src": src, "dest": dest, "merged": merged, "album": f"{album['artist']} — {album['album']}"})
 
     album["path"], album["state"] = dest, target
     return dest
@@ -169,6 +231,7 @@ def prune_empty(root=None):
 def apply_marks(albums, marks):
     """Apply a markup {(norm(artist), norm(album)): 'A'|'R'}."""
     moved = []
+    begin_batch()
     for a in albums:
         target = marks.get((norm(a["artist"]), norm(a["album"])))
         if target and target != a["state"]:
@@ -236,12 +299,28 @@ def main():
     ap = argparse.ArgumentParser(description=_("library contents and the Active/Archive split"))
     ap.add_argument("--export", metavar="FILE", help=_("export the list for marking up"))
     ap.add_argument("--import", dest="imp", metavar="FILE", help=_("apply the markup from a file"))
-    ap.add_argument("--apply", action="store_true", help=_("with --import: actually move albums"))
+    ap.add_argument("--undo", action="store_true", help=_("take back the last batch of moves"))
+    ap.add_argument("--apply", action="store_true", help=_("with --import / --undo: actually move albums"))
     args = ap.parse_args()
 
     root = paths()[0]
     if not os.path.isdir(root):
         sys.exit(_("Library not found: {folder}").format(folder=root))
+
+    if args.undo:
+        undone, skipped = undo(args.apply)
+        if not undone and not skipped:
+            print(_("Nothing to undo."))
+        for r in undone:
+            print("  " + _("back: {album}").format(album=r["album"]))
+        for r in skipped:
+            print("  " + _("! cannot undo (merged into an existing folder or already changed): {album}")
+                  .format(album=r["album"]))
+        if undone and not args.apply:
+            print(_("\nNothing moved. Add --apply."))
+        elif undone:
+            print(_("\nPut back: {n}").format(n=len(undone)))
+        return
 
     albums = scan()
     s = stats(albums)

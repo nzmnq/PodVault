@@ -3,7 +3,7 @@ What the window does, without any Qt: the tools it runs, and the data it shows.
 
 Nothing is reimplemented here. The library markup uses library.py, the iPod
 is read through ipod.py (podsync), and every tool runs as the same script
-the text menu runs — so the window and the menu can't drift apart.
+the command line runs.
 """
 
 import io
@@ -122,17 +122,25 @@ TOOLS = {
     "marks": dict(title=N_("Apply the edited list"), script="library.py",
                   args=lambda p: ["--import", _existing(p, "path")], apply="--apply",
                   refresh={"library"}, confirm=N_("Move the albums the way the list says?")),
+    "undo": dict(title=N_("Undo the last moves"), script="library.py", args=lambda p: ["--undo"],
+                 apply="--apply", refresh={"library"},
+                 confirm=N_("Put the albums from the last batch of moves back?")),
+    "duplicates": dict(title=N_("Find duplicates"), script="duplicates.py", args=lambda p: [],
+                       refresh=set()),
+    "fit": dict(title=N_("Fit Active to the iPod"), script="fit_ipod.py",
+                args=lambda p: ["--out", os.path.join(settings.path("reports_dir", cfg()), "fit.txt")],
+                refresh=set()),
+    "soundcheck": dict(title=N_("Sound Check (even out the volume)"), script="soundcheck.py",
+                       args=lambda p: [], apply="--apply", refresh={"library"},
+                       confirm=N_("Measure the loudness of every Active track and write the tags? It takes a while.")),
+    "smart": dict(title=N_("Add smart playlists"), script="ipod_sync.py", args=lambda p: ["--smart"],
+                  apply="--apply", apply_extra=["--yes"], cancel_apply=False, refresh={"ipod"},
+                  confirm=N_("Add the ready-made smart playlists to the iPod? Nothing else is changed.")),
     "likes": dict(title=N_("What's missing from my likes"),
                   steps=lambda p: [["import_likes.py", _existing(p, "path")], ["find_missing.py"]],
                   refresh=set()),
     "flac": dict(title=N_("Convert FLAC to ALAC"), script="flac_to_alac.py", args=lambda p: [],
                  refresh=set()),
-    "download": dict(title=N_("Download from the tracklist"), script="metadata_download.py",
-                     args=lambda p: [], refresh=set()),
-    "tracklist_covers": dict(title=N_("Fetch covers for the tracklist"), script="fetch_cover.py",
-                             args=lambda p: [], refresh=set()),
-    "spatial": dict(title=N_("Spatial sound processing"), script="sur_sound.py", args=lambda p: [],
-                    refresh=set()),
     "build": dict(title=N_("Initial build from an old collection"), script="build_clean.py",
                   args=lambda p: [], apply="--apply", refresh={"library"},
                   confirm=N_("Build the library from the old collection?")),
@@ -154,14 +162,22 @@ ABOUT = {
               'or a text list with one “Artist — Album” per line. A folder with several such files '
               'works too.'),
     "flac": N_('FLAC files from the input folder → .m4a (ALAC) in the output folder (both in '
-             'Settings → Audio tools). Needs ffmpeg.'),
-    "download": N_('Downloads the tracks listed in the tracklist file and tags them. Needs ffmpeg.'),
-    "tracklist_covers": N_('Fills in cover URLs in the tracklist from the iTunes Search API.'),
-    "spatial": N_('An experimental stereo-to-spatial pass over the spatial input folder. Needs ffmpeg.'),
+             'Settings → Audio tools). Always 16-bit, 44.1 / 48 kHz: an old iPod cannot play Hi-Res. Needs ffmpeg.'),
     "build": N_('One-time: builds the library from an old, unsorted collection (Settings → Initial '
               'build → Old collection). Shown as a dry run first.'),
     "marks": N_('The list written by "Export the list", with the [A] / [R] letters changed by hand: '
                 'the albums are moved to match. Shown as a dry run first.'),
+    "undo": N_('Puts back the albums moved by the last "Apply" or by dragging in the window. '
+               'Albums merged into an existing folder cannot be undone. Shown as a dry run first.'),
+    "duplicates": N_("Lists tracks stored more than once (Active and Archive, mp3 and m4a). "
+                     "Only a report: nothing is deleted."),
+    "fit": N_('Compares Active with the "Music space on the iPod" setting and suggests the least-played '
+              'albums to move to Archive. Writes reports/fit.txt, which "Apply the edited list" can use. '
+              'Nothing is moved.'),
+    "soundcheck": N_("Measures each Active track's loudness with ffmpeg and writes an iTunNORM tag. The iPod sync "
+                     "copies it to the iPod; then switch Sound Check on in the iPod's Settings. Needs ffmpeg."),
+    "smart": N_('Adds "Never played", "Most played", "Top rated" and "Recently added" to the iPod. They follow the '
+                'play counts the iPod keeps and are refreshed on each sync. Existing playlists are left alone.'),
     "rescue": N_('Tracks on the iPod that are in neither Active nor Archive — the iPod may hold the '
                'only copy — are copied into the incoming folder.'),
     "genres_suggest": N_("The AI fills in a genre and a style for albums that aren't in the genres file yet. "
@@ -275,6 +291,7 @@ def save_marks(albums, moves, progress=None):
     todo = [(by_path[p], t) for p, t in moves.items()
             if p in by_path and t in ("A", "R") and by_path[p]["state"] != t]
     done, errors = 0, []
+    library.begin_batch()
     for n, (a, target) in enumerate(todo, 1):
         try:
             library.move(a, target)

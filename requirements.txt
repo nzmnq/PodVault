@@ -5,19 +5,16 @@ certifi==2026.7.22
 
 # iPod sync: podsync (vendor/podsync, a git submodule) — database signing of
 # iPod classic / nano 3G+; covers use pillow and mutagen from above.
-# Optional, see vendor/podsync/requirements.txt: pyusb (USB identity on macOS
-# and Linux), wasmtime (only for writing to an iPod nano 6G/7G).
+# pyusb (+ libusb) reads the model from an iPod whose SysInfo is empty.
+# Optional: wasmtime (only for writing to an iPod nano 6G/7G).
 pycryptodome==3.23.0
+pyusb==1.3.1
 
-# The window (gui.bat / Main.py --gui)
+# The window (gui.bat / Main.py)
 PyQt6==6.11.0
 
 # AI vibe playlists: audio decoding (no ffmpeg needed) and the Claude API
 soundfile==0.14.0
 anthropic==1.8.0
-
-# Audio tools: downloader, iTunes covers, spatial sound
 requests==2.34.2
-yt-dlp==2026.7.4
 numpy==2.5.1
-scipy==1.18.0

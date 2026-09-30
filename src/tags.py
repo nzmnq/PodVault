@@ -2,7 +2,7 @@
 Tags of the library's audio files, one interface for every format.
 
 The library holds .mp3 (ID3 tags) and .m4a (MP4 atoms: AAC or Apple
-Lossless, what the downloader and the FLAC -> ALAC converter produce). Every
+Lossless, what the FLAC -> ALAC converter produces). Every
 tool reads and writes through here and never touches ID3 frames or MP4
 atoms itself, so a new format is one more branch in this file.
 
@@ -20,9 +20,9 @@ import os
 import re
 
 from mutagen import MutagenError
-from mutagen.id3 import APIC, ID3, ID3NoHeaderError, TALB, TCOM, TCON, TIT1, TIT2, TPE1, TPE2, TPOS, TRCK, TYER
+from mutagen.id3 import APIC, COMM, ID3, ID3NoHeaderError, TALB, TCOM, TCON, TIT1, TIT2, TPE1, TPE2, TPOS, TRCK, TYER
 from mutagen.mp3 import MP3
-from mutagen.mp4 import MP4, MP4Cover
+from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 
 from musiclib import drop_v24_frames
 
@@ -108,7 +108,7 @@ def read(path):
 
 
 def info(path):
-    """{'length' s, 'bitrate' kbps, 'bps' (exact), 'sample_rate', 'filetype' ('mp3'/'m4a'), 'kind'}."""
+    """{'length' s, 'bitrate' kbps, 'bps' (exact), 'sample_rate', 'bits', 'filetype' ('mp3'/'m4a'), 'kind'}."""
     try:
         if _mp4(path):
             i = MP4(path).info
@@ -122,6 +122,7 @@ def info(path):
         raise Unreadable(str(e)) from None
     return {"length": i.length or 0, "bitrate": int((i.bitrate or 0) / 1000), "bps": i.bitrate or 0,
             "sample_rate": getattr(i, "sample_rate", 44100) or 44100,
+            "bits": getattr(i, "bits_per_sample", 16) or 16,
             "filetype": filetype, "kind": kind}
 
 
@@ -209,3 +210,40 @@ def set_cover(path, jpeg):
 def extension(path):
     """'.mp3' or '.m4a' — what a copy of this file must be called."""
     return os.path.splitext(path)[1].lower()
+
+
+_NORM_MP4 = "----:com.apple.iTunes:iTunNORM"
+
+
+def norm_tag(path):
+    """The iTunNORM (Sound Check) string, or ''."""
+    try:
+        if _mp4(path):
+            v = (MP4(path).tags or {}).get(_NORM_MP4)
+            return bytes(v[0]).decode("ascii", "ignore").strip() if v else ""
+        for f in ID3(path).getall("COMM"):
+            if f.desc == "iTunNORM":
+                return str(f.text[0]).strip()
+    except (MutagenError, OSError, ValueError):
+        pass
+    return ""
+
+
+def set_norm_tag(path, value):
+    """Write the iTunNORM string."""
+    if _mp4(path):
+        f = MP4(path)
+        if f.tags is None:
+            f.add_tags()
+        f.tags[_NORM_MP4] = [MP4FreeForm(value.encode("ascii"))]
+        f.save()
+        return
+    try:
+        tags = ID3(path)
+    except ID3NoHeaderError:
+        tags = ID3()
+    for f in tags.getall("COMM"):
+        if f.desc == "iTunNORM":
+            tags.delall(f.HashKey)
+    tags.add(COMM(encoding=0, lang="eng", desc="iTunNORM", text=[value]))
+    save_id3(tags, path)

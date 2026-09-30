@@ -47,6 +47,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import ipod        # podsync lives in vendor/podsync; importing ipod puts it on the path
 import settings
+import smart_presets
+import soundcheck
 import tags as audiotags
 from i18n import _
 from musiclib import norm, strip_feat
@@ -283,7 +285,8 @@ def record_from_file(path, location):
         year=int(year) if year.isdigit() else 0,
         track_number=track, total_tracks=tracks,
         disc_number=disc or 1, total_discs=discs or 1,
-        date_added=int(time.time()), source_path=path)
+        date_added=int(time.time()), source_path=path,
+        sound_check=soundcheck.soundcheck_from_norm(audiotags.norm_tag(path)))
 
 
 def new_file_on_ipod(root, ext=".mp3"):
@@ -311,7 +314,7 @@ def read_playlist(m3u):
     return os.path.splitext(os.path.basename(m3u))[0], paths
 
 
-def make_plan(dev, db, playlist_file=None, playlist_only=False):
+def make_plan(dev, db, playlist_file=None, playlist_only=False, smart=False):
     """Everything the sync would do, without touching anything.
 
     playlist_only: just add the playlist; of the tracks only its own ones
@@ -338,17 +341,20 @@ def make_plan(dev, db, playlist_file=None, playlist_only=False):
                if (g := file_genre(p)) and (tracks[n].get("genre") or "") != g]
     playlist = read_playlist(playlist_file) if playlist_file else None
 
-    if playlist_only:
-        wanted = {os.path.normcase(p) for p in playlist[1]}
+    if playlist_only or smart:
+        wanted = {os.path.normcase(p) for p in playlist[1]} if playlist else set()
         to_add = [p for p in to_add if os.path.normcase(p) in wanted]
         dupes, archive, covers, no_cover, regenre = set(), [], [], [], []
+    have = {r.get("title") for r in db.get("dataset2_standard_playlists") or []}
+    new_smart = [n for n, _p, _r in smart_presets.presets() if n not in have] if smart else []
     return {"tracks": tracks, "pairs": pairs, "to_add": to_add, "dupes": sorted(dupes),
             "archive": archive, "unknown": unknown, "covers": covers,
-            "bare": len(no_cover) - len(covers), "regenre": regenre, "playlist": playlist}
+            "bare": len(no_cover) - len(covers), "regenre": regenre, "playlist": playlist,
+            "smart": new_smart}
 
 
 def has_changes(plan):
-    return any(plan[k] for k in ("archive", "dupes", "to_add", "covers", "regenre", "playlist"))
+    return any(plan[k] for k in ("archive", "dupes", "to_add", "covers", "regenre", "playlist", "smart"))
 
 
 def show_plan(dev, plan):
@@ -372,6 +378,8 @@ def show_plan(dev, plan):
     if plan["playlist"]:
         rows.append((_("playlist to add"), plan['playlist'][0],
                      _("({n} tracks)").format(n=len(plan['playlist'][1]))))
+    if plan["smart"]:
+        rows.append((_("smart playlists to add"), len(plan["smart"]), "(" + ", ".join(plan["smart"]) + ")"))
     width = max(len(label) for label, _v, _n in rows)
 
     print()
@@ -442,6 +450,8 @@ def apply_plan(cfg, dev, db, generation, plan):
             if n in genre:
                 rec.genre = genre[n]
             if n in plan["pairs"]:
+                if not rec.sound_check:
+                    rec.sound_check = soundcheck.soundcheck_from_norm(audiotags.norm_tag(plan["pairs"][n]))
                 by_path[os.path.normcase(plan["pairs"][n])] = rec.db_track_id
                 if n in plan["covers"]:
                     cover_from[rec.db_track_id] = plan["pairs"][n]
@@ -490,6 +500,12 @@ def apply_plan(cfg, dev, db, generation, plan):
                 missing = len(paths) - len(ids)
                 print(_("  playlist '{name}': {n} tracks").format(name=final, n=len(ids))
                       + (" " + _("({n} not on the iPod)").format(n=missing) if missing else ""))
+
+            if plan["smart"]:
+                existing = {p.name for p in playlists}
+                fresh = smart_presets.build(records, existing)
+                playlists.extend(fresh)
+                print(_("  smart playlists added: {n}").format(n=len(fresh)))
 
             print(_("  writing the database (podsync reads it back afterwards)..."))
             written = database.save_device_library(
@@ -540,7 +556,7 @@ def apply_plan(cfg, dev, db, generation, plan):
 
 
 def run(cfg, apply_changes, ipod_path=None, playlist=None, playlist_only=False,
-        do_restore=False):
+        do_restore=False, smart=False):
     """The whole sync; also called by vibe.py to add a playlist."""
     from podsync.hardware.safety.guard import snapshot_database_state
 
@@ -555,18 +571,20 @@ def run(cfg, apply_changes, ipod_path=None, playlist=None, playlist_only=False,
     if do_restore:
         return ipod.restore(cfg, dev.path, confirmed)
 
-    if not playlist_only:
+    if not (playlist_only or smart):
         # the library's tags first, so the iPod gets the genres the file holds
         import genres
         genres.keep_tags_in_line(cfg, write=apply_changes)
     generation = snapshot_database_state(dev.path)
     db = ipod.load(dev)
-    plan = make_plan(dev, db, playlist, playlist_only)
+    plan = make_plan(dev, db, playlist, playlist_only, smart)
     show_plan(dev, plan)
 
     if not apply_changes:
         print(_("\nNothing changed. Add --apply."))
         return
+    n = ipod.save_stats(cfg, db["tracks"])
+    print(_("  play stats of {n} tracks saved to {file}").format(n=n, file=ipod.stats_file(cfg)))
     if not has_changes(plan):
         print(_("\nNothing to do: the iPod already matches Active."))
         return
@@ -738,6 +756,9 @@ def main():
     ap.add_argument("--playlist-only", action="store_true",
                     help=_("with --playlist: add only the playlist (and copy its tracks "
                            "missing from the iPod), delete or change nothing"))
+    ap.add_argument("--smart", action="store_true",
+                    help=_("add ready-made smart playlists (never played, most played, top rated, "
+                           "recently added); changes nothing else"))
     ap.add_argument("--restore", action="store_true",
                     help=_("put the latest backup of the iPod's database back"))
     ap.add_argument("--rescue", action="store_true",
@@ -763,7 +784,7 @@ def main():
         return rescue_from_ipod(cfg, args.apply, os.path.join(incoming, "From iPod"), args.ipod)
     if args.disk:
         return sync_disk(args.disk, args.apply, args.subdir)
-    run(cfg, args.apply, args.ipod, args.playlist, args.playlist_only, args.restore)
+    run(cfg, args.apply, args.ipod, args.playlist, args.playlist_only, args.restore, args.smart)
 
 
 if __name__ == "__main__":
