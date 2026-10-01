@@ -452,6 +452,7 @@ class Lcd(QFrame):
     """The display in the middle of the toolbar: what's going on right now."""
 
     clicked = pyqtSignal()
+    seek = pyqtSignal(float)    # a click on (or just above) the bar: where, 0..1
 
     def __init__(self):
         super().__init__()
@@ -494,7 +495,12 @@ class Lcd(QFrame):
             self.bar.setValue(int(progress * 1000))
 
     def mouseReleaseEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        bar, pos = self.bar.geometry(), e.position()
+        if self.bar.isVisible() and pos.y() >= bar.top() - UI["lcd_seek_zone"]:
+            self.seek.emit(min(max((pos.x() - bar.left()) / bar.width(), 0.0), 1.0))
+        else:
             self.clicked.emit()
 
 

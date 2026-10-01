@@ -130,28 +130,29 @@ def device_keys(artist, title):
     return {(a, t) for a in artist_variants(artist)} if t else set()
 
 
-def index_library():
-    """Index of the whole library — Active and Archive — by track key."""
+def library_listing():
+    """Every track of the library, from the drive as it is now (library.tracks)."""
+    import library
+    print(_("  listing the library (Active and Archive)..."), flush=True)
+    return library.listing(LIBRARY)
+
+
+def index_library(listing=None):
+    """Index of the whole library — Active and Archive — by track key. The tags come from
+    the library index (library.tracks): no file is opened here."""
+    listing = listing if listing is not None else library_listing()
     idx = {}   # key -> {'A', 'R'}
     active_by_key = {}
-    for root_dir, state in ((ACTIVE, "A"), (ARCHIVE, "R")):
-        for root, _skip, files in os.walk(root_dir):
-            for fn in audiotags.audio_files(files):
-                p = os.path.join(root, fn)
-                try:
-                    t = audiotags.read(p)
-                except audiotags.Unreadable:
-                    continue
-                keys = device_keys(t["artist"], t["title"]) | \
-                    device_keys(t["albumartist"], t["title"])
-                for k in keys:
-                    idx.setdefault(k, set()).add(state)
-                if state == "A" and keys:
-                    try:
-                        dur = audiotags.info(p)["length"]
-                    except audiotags.Unreadable:
-                        dur = None
-                    active_by_key[p] = (keys, dur)
+    for p, rel, _size, _mtime, t in listing:
+        part = rel.split("/")[0]
+        if part not in ("Active", "Archive"):
+            continue
+        state = "A" if part == "Active" else "R"
+        keys = device_keys(t["artist"], t["title"]) | device_keys(t["albumartist"], t["title"])
+        for k in keys:
+            idx.setdefault(k, set()).add(state)
+        if state == "A" and keys:
+            active_by_key[p] = (keys, t["length"])
     return idx, active_by_key
 
 
@@ -314,15 +315,16 @@ def read_playlist(m3u):
     return os.path.splitext(os.path.basename(m3u))[0], paths
 
 
-def make_plan(dev, db, playlist_file=None, playlist_only=False, smart=False):
+def make_plan(dev, db, playlist_file=None, playlist_only=False, smart=False, listing=None):
     """Everything the sync would do, without touching anything.
 
     playlist_only: just add the playlist; of the tracks only its own ones
     missing from the iPod are copied, nothing is deleted or changed.
     """
-    idx, active_by_key = index_library()
+    idx, active_by_key = index_library(listing)
     tracks = db["tracks"]
     device = read_device(tracks)
+    print(_("  matching Active with the iPod: artist, title, duration..."))
     pairs, to_add = match_device(active_by_key, [(k, d) for _skip, k, d in device])
     dupes = set(find_duplicates(pairs, device, idx))
 
@@ -334,6 +336,7 @@ def make_plan(dev, db, playlist_file=None, playlist_only=False, smart=False):
         if "A" not in states:
             (archive if "R" in states else unknown).append(n)
 
+    print(_("  checking covers and genres on the iPod..."))
     thumbs = ipod.covered(dev.path, tracks)
     no_cover = [n for n, p in pairs.items() if tracks[n].get("db_track_id") not in thumbs]
     covers = [n for n in no_cover if has_cover(pairs[n])]
@@ -541,7 +544,7 @@ def apply_plan(cfg, dev, db, generation, plan):
                     f.unlink()
                     gone += 1
                 except OSError as e:
-                    print(_("  ! file not deleted: {file}: {error}").format(file=f, error=e))
+                    settings.problem(_("file not deleted: {file}: {error}").format(file=f, error=e))
         if remove:
             print(_("  deleted {n} tracks ({files} files)").format(n=len(remove), files=gone))
 
@@ -550,8 +553,10 @@ def apply_plan(cfg, dev, db, generation, plan):
     if cover_from:
         have = ipod.covered(root, now)
         got = sum(1 for d in cover_from if d in have)
-        print(f"  {'OK' if got == len(cover_from) else '!!'} "
-              + _("covers written: {n}/{total}").format(n=got, total=len(cover_from)))
+        if got == len(cover_from):
+            print("  OK " + _("covers written: {n}/{total}").format(n=got, total=len(cover_from)))
+        else:
+            settings.problem(_("covers written: {n}/{total}").format(n=got, total=len(cover_from)))
     print(_("\nDone. Eject the iPod before unplugging it (Sync -> Eject in the menu)."))
 
 
@@ -567,17 +572,24 @@ def run(cfg, apply_changes, ipod_path=None, playlist=None, playlist_only=False,
         if apply_changes or do_restore:
             sys.exit(itunes)
         print(f"  ! {itunes}\n")
+    print(_("Looking for the iPod..."))
     dev = ipod.open_ipod(cfg, ipod_path)
+    print(_("  found: {device}").format(device=ipod.describe(dev)))
     if do_restore:
         return ipod.restore(cfg, dev.path, confirmed)
 
+    listing = library_listing()       # once, for the genres and for the plan
     if not (playlist_only or smart):
         # the library's tags first, so the iPod gets the genres the file holds
         import genres
-        genres.keep_tags_in_line(cfg, write=apply_changes)
+        print(_("  checking the genres against the genres file..."))
+        genres.keep_tags_in_line(cfg, write=apply_changes, listing=listing)
     generation = snapshot_database_state(dev.path)
+    print(_("  reading the iPod's database..."))
     db = ipod.load(dev)
-    plan = make_plan(dev, db, playlist, playlist_only, smart)
+    print(_("  on the iPod: {n} tracks").format(n=len(db["tracks"])))
+    plan = make_plan(dev, db, playlist, playlist_only, smart, listing)
+    print(_("  compared: the library and the iPod"))
     show_plan(dev, plan)
 
     if not apply_changes:
@@ -670,6 +682,7 @@ def sync_disk(drive, apply_changes, subdir):
     if not os.path.isdir(drive):
         sys.exit(_("Drive not available: {drive}").format(drive=drive))
 
+    print(_("Listing Active: {folder}").format(folder=ACTIVE))
     files = active_files()
     want = {}
     for p in files:
@@ -682,6 +695,7 @@ def sync_disk(drive, apply_changes, subdir):
                 want[os.path.relpath(p, ACTIVE)] = p
 
     have = {}
+    print(_("Listing what's on the device: {folder}").format(folder=root))
     if os.path.isdir(root):
         for r, _skip, fs in os.walk(root):
             for fn in fs:
@@ -729,11 +743,13 @@ def sync_disk(drive, apply_changes, subdir):
     if to_copy:
         print("\r" + _("  copied {n}/{total}").format(n=len(to_copy), total=len(to_copy)))
 
+    if to_delete:
+        print(_("  deleting {n} files...").format(n=len(to_delete)))
     for rel in to_delete:
         try:
             os.remove(have[rel])
         except OSError as e:
-            print(_("  ! not deleted {file}: {error}").format(file=rel, error=e))
+            settings.problem(_("not deleted {file}: {error}").format(file=rel, error=e))
     # clean up folders that became empty
     for r, dirs, fs in os.walk(root, topdown=False):
         if r != root and not os.listdir(r):
@@ -788,4 +804,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    settings.run(main)

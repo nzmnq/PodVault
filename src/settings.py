@@ -2,15 +2,22 @@
 User settings.
 
 Everything that used to be hard-coded — library location, incoming folder,
-iPod options, tool folders, the ffmpeg path — lives in settings.json in the
-project root. The file is created by the window's first-run screen and can
-be edited later on the Settings screen (or by hand).
+iPod options, tool folders, the ffmpeg path — lives in settings.json. The
+file is created by the window's first-run screen and can be edited later on
+the Settings screen (or by hand).
 
-settings.json is git-ignored: it holds personal paths and must not end up
-in a public repository.
+Where it lives depends on how PodVault runs:
 
-Relative paths are resolved against the project root, so the defaults work
-wherever the project is cloned.
+    a git checkout, or a folder that already has settings.json
+        -> the project folder, as always (settings.json is git-ignored)
+    an installed copy (install.sh / install.ps1, b1air), which may be read-only
+        -> the user's folders:
+           Linux    ~/.config/podvault/settings.json, data in ~/.local/share/podvault
+           macOS    ~/Library/Application Support/PodVault
+           Windows  %APPDATA%\\PodVault
+
+Relative paths in the settings (the working folder, data/...) are resolved
+against DATA: the project folder or the user's data folder.
 """
 
 import json
@@ -19,11 +26,28 @@ import shutil
 import sys
 
 import i18n
-from i18n import N_, _
+from i18n import N_, _, n_
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _user_dirs():
+    """(settings folder, data folder) of an installed copy."""
+    home = os.path.expanduser("~")
+    if sys.platform == "win32":
+        d = os.path.join(os.environ.get("APPDATA") or home, "PodVault")
+        return d, d
+    if sys.platform == "darwin":
+        d = os.path.join(home, "Library", "Application Support", "PodVault")
+        return d, d
+    return (os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"), "podvault"),
+            os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.join(home, ".local", "share"), "podvault"))
+
+
+PORTABLE = any(os.path.exists(os.path.join(ROOT, n)) for n in (".git", "settings.json"))
+CONFIG_DIR, DATA = (ROOT, ROOT) if PORTABLE else _user_dirs()
 # MUSIC_UTILITY_SETTINGS points at another settings file (a test setup, a second library)
-FILE = os.environ.get("MUSIC_UTILITY_SETTINGS") or os.path.join(ROOT, "settings.json")
+FILE = os.environ.get("MUSIC_UTILITY_SETTINGS") or os.path.join(CONFIG_DIR, "settings.json")
 
 
 class Field:
@@ -134,6 +158,63 @@ def nothing_to_apply():
     print("\n" + _(NOTHING_TO_APPLY))
 
 
+# --- how a tool ends
+#
+# The tools were written for a terminal: a line saying "! could not ..." and then the
+# prompt again. In the window that read as "Done" (exit code 0). So a tool reports what
+# went wrong on the way through problem(), and its __main__ is run(main): a run with
+# problems ends with PROBLEMS_EXIT and a line saying how many, which the window shows as
+# "finished with problems" instead of "done". A tool that can't go on at all still says
+# why with sys.exit(message) (exit code 1).
+
+PROBLEMS_EXIT = 3
+_problems = []
+
+
+def problem(text):
+    """Something went wrong but the tool goes on: say it now, count it for the end."""
+    _problems.append(text)
+    print("  ! " + text, flush=True)
+
+
+def run(main):
+    """A tool's __main__: main(), then the exit code says whether everything went well."""
+    main()
+    if _problems:
+        print("\n" + n_("Finished, but {n} thing went wrong (the lines marked !).",
+                         "Finished, but {n} things went wrong (the lines marked !).",
+                         len(_problems)).format(n=len(_problems)), flush=True)
+        sys.exit(PROBLEMS_EXIT)
+
+
+class Progress:
+    """A long loop shows it's alive: '  tags read: 300' on one line, redrawn in place
+    ('\\r' — the terminal and the window both do it). text is already translated and has
+    {n}, and {total} when it's known (then the window shows a progress bar too).
+
+        p = settings.Progress(_("tags read: {n}"))
+        for f in files:
+            p.tick()
+            ...
+        p.end()
+    """
+
+    def __init__(self, text, total=None, every=100):
+        self.text, self.total, self.every, self.n = text, total, every, 0
+
+    def tick(self):
+        self.n += 1
+        if self.n % self.every == 0:
+            self._show("")
+
+    def end(self):
+        self._show("\n")
+
+    def _show(self, end):
+        pct = f"  · {100 * self.n // self.total}%" if self.total else ""
+        print("\r  " + self.text.format(n=self.n, total=self.total) + pct, end=end, flush=True)
+
+
 def defaults():
     return {f.key: f.default for f in FIELDS}
 
@@ -155,6 +236,8 @@ def load():
 
 def save(values):
     clean = {k: values.get(k, BY_KEY[k].default) for k in BY_KEY}
+    for d in (os.path.dirname(os.path.abspath(FILE)), DATA):
+        os.makedirs(d, exist_ok=True)
     with open(FILE, "w", encoding="utf-8") as f:
         json.dump(clean, f, ensure_ascii=False, indent=2)
 
@@ -171,11 +254,11 @@ def require():
 
 
 def resolve(value):
-    """A stored path as an absolute path; relative ones are project-relative."""
+    """A stored path as an absolute path; relative ones are relative to DATA."""
     if value in (None, ""):
         return None
     value = os.path.expandvars(os.path.expanduser(str(value)))
-    return value if os.path.isabs(value) else os.path.normpath(os.path.join(ROOT, value))
+    return value if os.path.isabs(value) else os.path.normpath(os.path.join(DATA, value))
 
 
 def path(key, values=None):
@@ -202,7 +285,11 @@ def ffmpeg(values=None):
     if found:
         return found
     for name in ("ffmpeg.exe", "ffmpeg"):
-        p = os.path.join(ROOT, "bin", name)
+        p = os.path.join(DATA, "bin", name)
+        if os.path.isfile(p):
+            return p
+    # an app started from the Finder doesn't get the shell's PATH, so Homebrew's isn't on it
+    for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
         if os.path.isfile(p):
             return p
     return None

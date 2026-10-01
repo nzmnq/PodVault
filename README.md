@@ -38,8 +38,11 @@ On the first run a short first-run screen asks for the basic settings — where 
 lives, where new tracks come from, how to sync the iPod. Everything can be
 changed later on the **Settings** screen.
 
-Settings are stored in `settings.json` in the project folder. The file is
-git-ignored: it holds personal paths and must not end up in the repository.
+Run from a checkout, settings are stored in `settings.json` in the project
+folder. The file is git-ignored: it holds personal paths and must not end up
+in the repository. An installed copy (below) keeps them in the user's folders
+instead: `~/.config/podvault` on Linux, `~/Library/Application Support/PodVault`
+on macOS, `%APPDATA%\PodVault` on Windows.
 `MUSIC_UTILITY_SETTINGS` can point at another settings file (a second library,
 a test setup).
 
@@ -65,6 +68,32 @@ Python 3.12+ (the pinned NumPy needs it).
 git clone --recurse-submodules https://github.com/nzmnq/PodVault.git
 cd PodVault
 ```
+
+### Installing it as an app
+
+The installers copy the program out of the checkout, give it its own Python
+packages, and put it where apps go. No admin rights; run them again after
+`git pull` to update. A checkout's `settings.json` is taken over on the first
+install.
+
+| | Command | Result |
+|---|---|---|
+| macOS | `./install.sh` | `~/Applications/PodVault.app` — Launchpad, Spotlight, the Dock |
+| Linux | `./install.sh` | the applications menu, and the `podvault` command |
+| Windows | `powershell -ExecutionPolicy Bypass -File install.ps1` | the Start menu; removed from Settings → Apps |
+
+`./install.sh --uninstall` / `install.ps1 -Uninstall` remove the program;
+settings and data stay. On Linux a system PyQt6 is used when there is one
+(`python-pyqt6` on Arch, `python3-pyqt6 python3-pyqt6.qtmultimedia
+python3-pyqt6.qtsvg` on Debian / Ubuntu) — the same Qt as the rest of the
+desktop. If the AI playlist packages can't be installed, everything else
+still works.
+
+On the [b1air](https://github.com/bla1r1/b1air) desktop the window takes its
+colours from the desktop theme (`~/.config/b1air/theme.json`) and follows it
+when it changes; the layout stays PodVault's own.
+
+### Running from the checkout
 
 **Windows**
 
@@ -118,7 +147,9 @@ an LCD in the toolbar, views of one library — with its own look.
   genre, and No cover. Click an album's A / R badge, or select albums and
   press `A` / `R` (`Space` toggles), to mark it; the status bar collects the
   marks and "Move the files…" applies them. Double-click or `Enter` opens an
-  album with its tracks.
+  album with its tracks; **Play** (or a double-click on a track) plays the album
+  from there, the display in the toolbar shows the track, a click on it pauses, a click on
+  its bar jumps there; ⏮ / ⏭ next to it switch tracks.
 - **Needs attention** — a strip above the library: albums without a cover or a
   genre, archive tracks still on the iPod, tracks only on the iPod — each with
   the button that fixes it.
@@ -210,6 +241,18 @@ module, [`src/tags.py`](src/tags.py), so a new format is one place to change.
 
 An album's state is **which folder it sits in**. Adding tracks wipes nothing,
 and the markup can be changed any number of times.
+
+What was read from the tags is kept with the app's data (`cache/library-….json` in the
+settings folder: `~/Library/Application Support/PodVault` on macOS, `%APPDATA%\PodVault` on
+Windows, `~/.local/share/podvault` on Linux), not on the library's own drive. On
+start the window shows the library from it at once, then checks the drive in
+the background (on a network drive that's what takes the time) and reads
+tags again only for albums whose files changed (a moved album is recognized by its files). The first scan of
+a network drive is still slow; the display shows how many albums are left
+and roughly how long it'll take. Delete the file to read everything again.
+
+An error in the window doesn't close it: it's shown, and written to
+`podvault-errors.log` next to the settings' data.
 
 ## Why the tags are rewritten
 

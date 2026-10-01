@@ -32,7 +32,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 import settings
-import tags as audiotags
 from i18n import _
 from musiclib import norm, strip_edition, strip_feat
 
@@ -57,26 +56,23 @@ def load_library():
     if not os.path.isdir(LIBRARY):
         sys.exit(_("Library not found: {folder}").format(folder=LIBRARY))
 
-    for root, _skip, files in os.walk(LIBRARY):
-        rel = os.path.relpath(root, LIBRARY).split(os.sep)[0]
-        state = "R" if rel == "Archive" else "A"
-        for fn in audiotags.audio_files(files):
-            try:
-                t = audiotags.read(os.path.join(root, fn))
-            except audiotags.Unreadable:
-                continue
-            aa = t["albumartist"] or t["artist"]
-            ti = t["title"]
-            if not (aa and ti):
-                continue
-            al = t["album"]
-            rec = albums[(norm(aa), norm(strip_edition(al)))]
-            rec["artist"] = rec["artist"] or aa
-            rec["album"] = rec["album"] or al
-            rec["state"] = state
-            rec["titles"].add(key_title(ti))
-            by_artist[norm(aa)].add(key_title(ti))
-            track_state[(norm(aa), key_title(ti))].add(state)
+    import library
+    rows = library.listing(LIBRARY)             # the index: no file opened unless it changed
+    album_of = {rel: rec.get("album") or "" for rel, rec in library.album_info(LIBRARY).items()}
+    for _fp, rel, _size, _mtime, t in rows:
+        state = "R" if rel.split("/")[0] == "Archive" else "A"
+        aa = t["albumartist"] or t["artist"]
+        ti = t["title"]
+        if not (aa and ti):
+            continue
+        al = album_of.get(rel, "")
+        rec = albums[(norm(aa), norm(strip_edition(al)))]
+        rec["artist"] = rec["artist"] or aa
+        rec["album"] = rec["album"] or al
+        rec["state"] = state
+        rec["titles"].add(key_title(ti))
+        by_artist[norm(aa)].add(key_title(ti))
+        track_state[(norm(aa), key_title(ti))].add(state)
     return albums, by_artist, track_state
 
 
@@ -256,4 +252,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    settings.run(main)

@@ -191,7 +191,9 @@ def update_features(cfg, active):
     files = active_tracks(active)
     fresh = {}
     todo = []
-    for p in files:
+    for n, p in enumerate(files, 1):
+        if n % 25 == 0:          # slow on a network drive: say how far it is
+            print("\r" + _("  checked {n}/{total}").format(n=n, total=len(files)), end="", flush=True)
         stamp = audio_stamp(p)
         old = cache.get(p)
         if old and old.get("stamp") != stamp:
@@ -205,6 +207,7 @@ def update_features(cfg, active):
             fresh[p] = {**old, "tags": track_tags(p)}
         else:
             todo.append((p, stamp))
+    print("\r" + _("  checked {n}/{total}").format(n=len(files), total=len(files)))
     if todo:
         print(_("  analysing {n} tracks (once; cached afterwards)...").format(n=len(todo)))
     for i, (p, stamp) in enumerate(todo, 1):
@@ -402,4 +405,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    settings.run(main)

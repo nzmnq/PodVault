@@ -130,7 +130,7 @@ def find_cover(artist, album, is_single, title, first_track=None):
         try:
             candidates = list(make())
         except Exception as e:
-            print("      " + _("(source unavailable: {error})").format(error=e))
+            settings.problem(_("source unavailable: {error}").format(error=e))
             continue
         for c in candidates:
             if not c.get("url"):
@@ -151,22 +151,52 @@ def find_cover(artist, album, is_single, title, first_track=None):
 
 
 def collect_missing():
-    """Albums that have tracks without embedded cover art."""
-    groups = defaultdict(lambda: {"artist": None, "album": None, "files": []})
-    for root, _skip, files in os.walk(LIBRARY):
-        for fn in audiotags.audio_files(files):
-            fp = os.path.join(root, fn)
-            try:
-                t = audiotags.read(fp)
-            except audiotags.Unreadable:
-                continue
-            if t["art"]:
-                continue
-            g = groups[os.path.relpath(root, LIBRARY)]
-            g["artist"] = g["artist"] or t["albumartist"] or t["artist"] or None
-            g["album"] = g["album"] or t["album"] or None
-            g["files"].append({"path": fp, "title": t["title"] or fn})
+    """Albums that have tracks without embedded cover art.
+
+    'local' is a track of the same folder that has one: an album's cover is
+    taken from there (or from folder.jpg) before anything is searched online.
+    """
+    groups = defaultdict(lambda: {"artist": None, "album": None, "files": [], "local": None})
+    with_art = {}
+    # the index counts each album's tracks without a cover: only those albums are opened
+    import library
+    library.listing(LIBRARY)
+    todo = sorted(rel for rel, rec in library.album_info(LIBRARY).items() if rec.get("no_art"))
+    files = [(rel, os.path.join(LIBRARY, rel, fn)) for rel in todo
+             for fn in audiotags.audio_files(os.listdir(os.path.join(LIBRARY, rel)))]
+    seen = settings.Progress(_("tags read: {n}/{total} files"), total=len(files), every=10)
+    for rel, fp in files:
+        seen.tick()
+        try:
+            t = audiotags.read(fp)
+        except audiotags.Unreadable:
+            continue
+        if t["art"]:
+            with_art.setdefault(rel, fp)
+            continue
+        g = groups[rel]
+        g["artist"] = g["artist"] or t["albumartist"] or t["artist"] or None
+        g["album"] = g["album"] or t["album"] or None
+        g["files"].append({"path": fp, "title": t["title"] or fn})
+    seen.end()
+    for rel, g in groups.items():
+        g["local"] = with_art.get(rel)
     return groups
+
+
+def local_cover(rel, g):
+    """The album's own cover: embedded in one of its tracks, else folder.jpg. None for
+    'Singles' (every single has its own) or when there's none."""
+    if (g["album"] or "").lower() == "singles":
+        return None
+    data, via = (audiotags.cover(g["local"]), _("embedded in another track")) if g["local"] else (None, None)
+    jpg = os.path.join(LIBRARY, rel, "folder.jpg")
+    if not data and os.path.exists(jpg):
+        with open(jpg, "rb") as f:
+            data, via = f.read(), "folder.jpg"
+    if not data:
+        return None
+    return {"artist": g["artist"], "title": g["album"], "data": data, "via": via, "artist_match": True}
 
 
 def embed(path, data, folder_jpg):
@@ -196,9 +226,12 @@ def main():
     if not os.path.isdir(LIBRARY):
         sys.exit(_("Library not found: {folder}").format(folder=LIBRARY))
 
+    print(_("Looking for tracks without cover art in {folder}").format(folder=LIBRARY))
     groups = collect_missing()
     total = sum(len(g["files"]) for g in groups.values())
-    print(_("Tracks without cover art: {tracks} in {albums} albums\n").format(tracks=total, albums=len(groups)))
+    print(_("Tracks without cover art: {tracks} in {albums} albums").format(tracks=total, albums=len(groups)))
+    if groups:
+        print(_("Searching Deezer, then MusicBrainz, album by album:\n"))
     found, doubtful, missing = [], [], []
 
     for rel, g in sorted(groups.items()):
@@ -214,7 +247,8 @@ def main():
 
         for f, title in targets:
             label = f"  · {title}" if title else f"  · {g['album']}"
-            hit = find_cover(
+            hit = local_cover(rel, g) if not is_single else None
+            hit = hit or find_cover(
                 g["artist"], g["album"], is_single, title,
                 first_track=g["files"][0]["title"] if g["files"] else None,
             )
@@ -256,8 +290,10 @@ def main():
         return
 
     n = 0
+    print()
     for rel, what, hit, files in found:
         folder_jpg = os.path.join(os.path.dirname(files[0]["path"]), "folder.jpg")
+        print(_("  embedding: {album} ({n} tracks)").format(album=f"{rel} / {what}", n=len(files)))
         for f in files:
             embed(f["path"], hit["data"], folder_jpg)
             n += 1
@@ -267,4 +303,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    settings.run(main)

@@ -9,6 +9,7 @@ the command line runs.
 import io
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -98,7 +99,7 @@ TOOLS = {
                              refresh={"ipod"},
                              confirm=N_("Create this playlist on the iPod? Picked tracks not on "
                                      "it yet are copied; nothing is deleted.")),
-    "incoming": dict(title=N_("Add new tracks"),
+    "incoming": dict(title=N_("Add new tracks"), script="add_incoming.py",
                      args=lambda p: [_existing(p, "folder"), "--to",
                                      "archive" if p.get("to") == "archive" else "active"],
                      apply="--apply", refresh={"library", "ipod"},
@@ -113,7 +114,7 @@ TOOLS = {
                  args=lambda p: [_text(p, "vibe")] + _count(p), refresh={"playlists"}),
     "vibe_analyze": dict(title=N_("Analyse the library for playlists"), script="vibe.py",
                          args=lambda p: ["analyze"], refresh=set()),
-    "genres_suggest": dict(title=N_("Genres — the AI suggests"),
+    "genres_suggest": dict(title=N_("Genres — the AI suggests"), script="genres.py",
                            args=lambda p: ["suggest"], refresh={"genres"}),
     "genres_apply": dict(title=N_("Genres — write the tags"), script="genres.py",
                          args=lambda p: ["apply"], apply="--apply",
@@ -125,6 +126,9 @@ TOOLS = {
     "undo": dict(title=N_("Undo the last moves"), script="library.py", args=lambda p: ["--undo"],
                  apply="--apply", refresh={"library"},
                  confirm=N_("Put the albums from the last batch of moves back?")),
+    "artists": dict(title=N_("Split glued artists"), script="add_incoming.py",
+                    args=lambda p: ["--fix-library"], apply="--apply", refresh={"library", "ipod"},
+                    confirm=N_("Move the features into the titles and the albums to the main artist?")),
     "duplicates": dict(title=N_("Find duplicates"), script="duplicates.py", args=lambda p: [],
                        refresh=set()),
     "fit": dict(title=N_("Fit Active to the iPod"), script="fit_ipod.py",
@@ -169,6 +173,10 @@ ABOUT = {
                 'the albums are moved to match. Shown as a dry run first.'),
     "undo": N_('Puts back the albums moved by the last "Apply" or by dragging in the window. '
                'Albums merged into an existing folder cannot be undone. Shown as a dry run first.'),
+    "artists": N_("Finds artists written as one name glued with a comma ('A, B'): A stays the artist, "
+                  "B goes into the title as (feat. B), and the album moves to A's folder (singles into "
+                  "A's Singles). Names that really have a comma go into artists.txt next to the genres "
+                  "file. Shown as a dry run first."),
     "duplicates": N_("Lists tracks stored more than once (Active and Archive, mp3 and m4a). "
                      "Only a report: nothing is deleted."),
     "fit": N_('Compares Active with the "Music space on the iPod" setting and suggests the least-played '
@@ -218,11 +226,24 @@ def library_root():
     return os.path.realpath(lib) if lib and os.path.isdir(lib) else None
 
 
-def scan_library():
+REVS = {}       # album path -> its "rev" (library._album): what the kept cover thumbnails go by
+
+
+def _with_revs(albums):
+    REVS.update((a["path"], a["rev"]) for a in albums)
+    return albums
+
+
+def cached_library():
+    root = library_root()
+    return _with_revs(library.cached(root)) if root else []
+
+
+def scan_library(progress=None, quick=False):
     root = library_root()
     if not root:
         raise RuntimeError(_("The library folder isn't set or doesn't exist. Open Settings."))
-    return library.scan(root, with_audio=False)
+    return _with_revs(library.scan(root, progress=progress, quick=quick))
 
 
 def _read(p):
@@ -251,38 +272,78 @@ def album_tracks(path):
     return out
 
 
+THUMBS = os.path.join(settings.DATA, "cache", "covers")
+
+
 def cover_bytes(path):
-    """The album's cover: folder art first (one file for the album), else the first embedded."""
+    """(file, bytes) of the album's cover: folder art first (one file for the album), else
+    the first embedded; (None, None) without one."""
     for name in ("folder.jpg", "cover.jpg", "folder.png", "cover.png", "front.jpg"):
         p = os.path.join(path, name)
         if os.path.isfile(p):
-            with open(p, "rb") as f:
-                return f.read()
+            try:
+                with open(p, "rb") as f:
+                    return p, f.read()
+            except OSError:         # a network drive can refuse a read now and then (EINVAL)
+                return None, None
     try:
         names = audiotags.audio_files(os.listdir(path))
     except OSError:
-        return None
+        return None, None
     for fn in names:
         data = audiotags.cover(os.path.join(path, fn))
         if data:
-            return data
-    return None
+            return os.path.join(path, fn), data
+    return None, None
+
+
+def _stamp(path, src):
+    """Changes when the album folder (a cover file added or removed) or the cover's file does."""
+    a, b = os.stat(path), os.stat(src)
+    return f"{a.st_mtime_ns} {b.st_mtime_ns} {b.st_size}"
 
 
 def thumbnail(path, size):
-    """JPEG bytes of the album's cover scaled to fit size x size, or b''."""
-    raw = cover_bytes(path)
+    """JPEG bytes of the album's cover scaled to fit size x size, or b''.
+
+    Thumbnails are kept on this computer (THUMBS): on a network drive, reading every full
+    cover again at each start is what made the grid fill slowly. A kept one is used while
+    the folder and the file it came from are unchanged — two stats instead of a read.
+    """
+    import hashlib
+    rev = REVS.get(path, "")
+    keep = os.path.join(THUMBS, hashlib.sha1(f"{path}|{size}".encode("utf-8")).hexdigest())
+    try:
+        with open(keep + ".src", encoding="utf-8") as f:
+            src, stamp, kept_rev = (f.read().split("\n") + ["", ""])[:3]
+        # the album's rev is known from the library scan: no trip to the drive at all
+        # (ponytail: a folder.jpg swapped by hand isn't noticed until the album's files change)
+        if (rev and kept_rev == rev) or (not rev and stamp == _stamp(path, src)):
+            with open(keep + ".jpg", "rb") as f:
+                return f.read()
+    except (OSError, ValueError):
+        pass
+    src, raw = cover_bytes(path)
     if not raw:
-        return b""
+        return b""      # ponytail: "no cover" isn't kept; such albums are few and read again
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(raw)).convert("RGB")
         img.thumbnail((size, size))
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=88)
-        return buf.getvalue()
+        data = buf.getvalue()
     except Exception:
         return b""
+    try:
+        os.makedirs(THUMBS, exist_ok=True)
+        with open(keep + ".jpg", "wb") as f:
+            f.write(data)
+        with open(keep + ".src", "w", encoding="utf-8") as f:       # last: it marks the .jpg done
+            f.write(f"{src}\n{_stamp(path, src)}\n{rev}")
+    except OSError:
+        pass
+    return data
 
 
 def save_marks(albums, moves, progress=None):
@@ -330,6 +391,117 @@ def ipod_mounted():
         return []
 
 
+def unidentified_text():
+    return _("PodVault doesn't know yet exactly which iPod this is: the iPod's SysInfo file is "
+             "empty, which happens after a restore.\n\n“Identify the iPod” asks the iPod itself. "
+             "The computer asks for your password once, and the iPod disconnects for a few seconds.")
+
+
+def identify_ipod(path):
+    """Run `ipod.py <path> --identify` with administrator rights, asking for them the way the
+    system does: the password dialog on macOS, polkit on Linux, UAC on Windows.
+    Returns '' when done, else what went wrong."""
+    import shlex
+    import subprocess
+    # -B: a root process must not leave root-owned __pycache__ in the program's folder
+    cmd = [python_exe(), "-B", os.path.join(SRC, "ipod.py"), path, "--identify"]
+    if sys.platform == "darwin":
+        cmd.append("--query-only")      # SysInfo is written below, by this process (ipod.identify)
+        def q(text):
+            return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        script = (f"do shell script {q(shlex.join(cmd) + ' 2>&1')} "
+                  f"with prompt {q(_('PodVault reads the model from your iPod.'))} with administrator privileges")
+        run = ["osascript", "-e", script]
+    elif sys.platform == "win32":
+        def q(text):
+            return "'" + text.replace("'", "''") + "'"
+        run = ["powershell", "-NoProfile", "-Command",
+               f"$p = Start-Process -FilePath {q(cmd[0])} -ArgumentList {q(subprocess.list2cmdline(cmd[1:]))} "
+               "-Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode"]
+    else:
+        if not shutil.which("pkexec"):
+            return _("No way to ask for administrator rights here (pkexec is missing). Run in a terminal:"
+                     "\n\n  sudo {cmd}").format(cmd=shlex.join(cmd))
+        run = ["pkexec", *cmd]
+    try:
+        r = subprocess.run(run, capture_output=True, text=True, timeout=300,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return str(e)
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode == 0 and sys.platform == "darwin":
+        import ipod
+        info = ipod.parse_identity(out)
+        if not info:
+            return _("The iPod's answer didn't come through:") + "\n" + out[-500:]
+        try:
+            ipod.write_identity(path, info)
+        except SystemExit as e:
+            return str(e.code)
+        return ""
+    if r.returncode == 0:
+        return ""
+    if "-128" in out or r.returncode == 126 or "canceled by the user" in out:
+        return _("Cancelled.")
+    return out.splitlines()[-1] if out else _("It didn't work (code {code}).").format(code=r.returncode)
+
+
+_CHILD = """
+import pickle, sys
+sys.path.insert(0, sys.argv[1])
+reply, sys.stdout = sys.stdout.buffer, sys.stderr      # stray prints mustn't spoil the answer
+from gui import backend
+name, args = pickle.load(sys.stdin.buffer)
+try:
+    out = ("ok", getattr(backend, name)(*args))
+except BaseException as e:
+    out = ("error", str(e.code) if isinstance(e, SystemExit) else str(e))
+reply.write(pickle.dumps(out))
+"""
+
+
+def in_child(name, *args):
+    """backend.<name>(*args) in a Python process of its own; raises RuntimeError with its message.
+
+    For heavy pure-Python work such as parsing the iPod's database: in the window's process
+    it holds the interpreter lock for seconds, and the cover loading and the window itself
+    wait their turn (the "fight" between the iPod and the covers). Another process can't.
+    """
+    import pickle
+    import subprocess
+    r = subprocess.run([python_exe(), "-B", "-c", _CHILD, SRC], input=pickle.dumps((name, args)),
+                       capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        kind, value = pickle.loads(r.stdout)      # our own child's answer: trusted
+    except Exception:
+        err = r.stderr.decode("utf-8", "replace").strip()
+        raise RuntimeError(err.splitlines()[-1] if err else
+                           _("It didn't work (code {code}).").format(code=r.returncode))
+    if kind == "error":
+        raise RuntimeError(value)
+    return value
+
+
+def ipod_states(tracks):
+    """For each iPod track (ipod_read's rows): 'A', 'R', or '' when it's in neither.
+
+    Goes by the library index, which the library scan fills as it reads the tags anyway: no
+    file is opened here. On a network drive reading them all again took longer than ten
+    minutes. As fresh as the last scan (the window runs one at every start)."""
+    import ipod_sync
+    idx = {}
+    for state, artist, albumartist, title in library.indexed_tags(library_root()):
+        for k in ipod_sync.device_keys(artist, title) | ipod_sync.device_keys(albumartist, title):
+            idx.setdefault(k, set()).add(state)
+    if not idx:         # an index from before the titles were kept: unknown, not "missing"
+        return ["?"] * len(tracks)
+    out = []
+    for t in tracks:
+        s = ipod_sync.states_of(ipod_sync.device_keys(t["artist"], t["title"]), idx)
+        out.append("A" if "A" in s else "R" if "R" in s else "")
+    return out
+
+
 def ipod_read():
     """The iPod as the window shows it. Raises RuntimeError with a readable message."""
     c = cfg()
@@ -337,22 +509,15 @@ def ipod_read():
         raise RuntimeError(_("Settings aren't set up yet."))
     try:
         import ipod
-        import ipod_sync
         dev = ipod.open_ipod(c)
         db = ipod.load(dev)
+    except ipod.Unidentified:
+        raise RuntimeError(unidentified_text())
     except SystemExit as e:
         raise RuntimeError(str(e.code))
     rows = db["tracks"]
     have = ipod.covered(dev.path, rows)
-    states = {}
-    try:
-        ipod_sync.configure(c)
-        idx, _skip = ipod_sync.index_library()
-        for n, t in enumerate(rows):
-            s = ipod_sync.states_of(ipod_sync.device_keys(t.get("artist"), t.get("title")), idx)
-            states[n] = "A" if "A" in s else "R" if "R" in s else ""
-    except BaseException:
-        states = {}
+    states = {}      # filled afterwards by ipod_states(): it reads the library, which takes longer
     tracks = [{"title": t.get("title") or "", "artist": t.get("artist") or "",
                "album": t.get("album") or "", "genre": t.get("genre") or "",
                "length": (t.get("length") or 0) / 1000, "plays": t.get("play_count") or 0,
@@ -421,7 +586,7 @@ def genres_rows():
     import genres
     c = cfg()
     path = settings.path("genres_file", c)
-    lib = genres.albums(c)
+    lib = genres.albums(c, fresh=False)
     known = genres.read_file(path)
     rows = [{"key": k, "part": info["part"], "genre": known.get(k, ("", ""))[0],
              "style": known.get(k, ("", ""))[1], "in_file": k in known}
@@ -438,7 +603,7 @@ def genres_missing():
     if not c:
         return 0
     known = genres.read_file(settings.path("genres_file", c))
-    return sum(1 for key in genres.albums(c) if key not in known)
+    return sum(1 for key in genres.albums(c, fresh=False) if key not in known)
 
 
 def genres_save(changes):

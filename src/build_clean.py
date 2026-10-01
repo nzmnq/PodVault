@@ -246,7 +246,7 @@ def read_album(folder, covers):
         try:
             tags, info = audiotags.read(fp), audiotags.info(fp)
         except audiotags.Unreadable as e:
-            print(_("  ! skipped {file}: {error}").format(file=os.path.join(folder, fn), error=e), file=sys.stderr)
+            settings.problem(_("skipped {file}: {error}").format(file=os.path.join(folder, fn), error=e))
             continue
         tn, tt = parse_pair(tags["track"])
         dn, dt = parse_pair(tags["disc"])
@@ -285,7 +285,16 @@ def plan():
         if os.path.isdir(os.path.join(SOURCE, f)) and f != ".covers"
     ]
 
-    raw = [a for a in (read_album(f, covers) for f in folders) if a]
+    print(_("Reading {n} folders of the old collection: {folder}").format(n=len(folders), folder=SOURCE))
+    seen = settings.Progress(_("folders read: {n}/{total}"), total=len(folders), every=20)
+    raw = []
+    for f in folders:
+        seen.tick()
+        a = read_album(f, covers)
+        if a:
+            raw.append(a)
+    seen.end()
+    print(_("Choosing artist spellings and sorting albums..."))
     canon, ties = build_canon(raw)
 
     def C(name):
@@ -521,4 +530,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    settings.run(main)

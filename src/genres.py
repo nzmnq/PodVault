@@ -48,24 +48,24 @@ HEADER = f"""\
 # ----------------------------------------------------------- the library
 
 
-def albums(cfg):
-    """{key: info} for every album folder in Active and Archive."""
-    _skip, active, archive = settings.library_paths(cfg)
+def albums(cfg, listing=None, fresh=True):
+    """{key: info} for every album folder in Active and Archive; info: part, folder, files
+    and tags ({path: library.tracks' tags}). listing: library.tracks()'s, if already made;
+    fresh: as there (the window passes False: it keeps the library index fresh itself)."""
+    import library
+    root = settings.library_paths(cfg)[0]
     out = {}
-    for part, root in (("Active", active), ("Archive", archive)):
-        if not os.path.isdir(root):
+    for path, rel, _size, _mtime, tags in (listing if listing is not None else
+                                           library.tracks(root, fresh=fresh,
+                                                          progress=library._cli_progress if fresh else None)):
+        parts = rel.split("/")
+        if len(parts) != 3 or parts[0] not in ("Active", "Archive"):
             continue
-        for artist in sorted(os.listdir(root)):
-            a_dir = os.path.join(root, artist)
-            if not os.path.isdir(a_dir):
-                continue
-            for album in sorted(os.listdir(a_dir)):
-                folder = os.path.join(a_dir, album)
-                files = [os.path.join(folder, f) for f in audiotags.audio_files(os.listdir(folder))] \
-                    if os.path.isdir(folder) else []
-                if files:
-                    out[f"{artist}/{album}"] = {"part": part, "folder": folder, "files": files}
-    return out
+        info = out.setdefault(f"{parts[1]}/{parts[2]}", {"part": parts[0], "folder": os.path.dirname(path),
+                                                         "files": [], "tags": {}})
+        info["files"].append(path)
+        info["tags"][path] = tags
+    return dict(sorted(out.items()))
 
 
 def describe(info):
@@ -96,7 +96,7 @@ def read_file(path):
                 continue
             parts = [p.strip() for p in line.split("|")]
             if len(parts) < 2 or not parts[0] or not parts[1]:
-                print(_("  ! line {n} skipped (expected 'Artist/Album | Genre | Style'): {line}").format(n=n, line=line))
+                settings.problem(_("line {n} skipped (expected 'Artist/Album | Genre | Style'): {line}").format(n=n, line=line))
                 continue
             out[parts[0]] = (parts[1], parts[2] if len(parts) > 2 else "")
     return out
@@ -136,45 +136,72 @@ SCHEMA = {
 }
 
 
+BATCH = 20   # albums per question: answers show up as they come, and a stop loses one batch at most
+
+
 def suggest(cfg, path, backend):
+    """Ask the AI about the albums the file doesn't have yet, a batch at a time, writing each
+    batch's answers to the file at once. A run that stops (closed, no network, a limit hit)
+    is picked up by the next one: albums already in the file are never asked about again."""
     lib = albums(cfg)
     known = read_file(path)
     todo = [k for k in lib if k not in known]
     if not todo:
         print(_("  every album is already in {file}").format(file=path))
         return
-    print(_("  {n} albums without a genre line; asking the AI...").format(n=len(todo)))
-    lines = ["id | artist | album | year | current genre | some titles"]
-    for i, k in enumerate(todo):
-        d = describe(lib[k])
-        lines.append(" | ".join(str(x).replace("|", "/") for x in
-                                (i, d["artist"], d["album"], d["year"], d["genre"],
-                                 "; ".join(d["titles"]))))
     backend = ai.pick_backend(cfg, backend)
-    print(_("  through {ai} (usually under a minute)").format(ai=ai.backend_name(backend)))
-    answer = ai.ask_json(cfg, SYSTEM, "\n".join(lines), SCHEMA, backend)
-
-    got = {}
-    for a in answer.get("albums", []):
-        if 0 <= a.get("id", -1) < len(todo):
-            got[todo[a["id"]]] = (a["genre"], a.get("style", "").replace("|", "/").strip())
-    new = not os.path.isfile(path)
+    if known:
+        print(_("  {n} albums already have a line (earlier runs, your edits): kept, not asked again").format(
+            n=len(known)))
+    print(_("  {n} albums without a genre line; asking {ai}, {batch} at a time").format(
+        n=len(todo), ai=ai.backend_name(backend), batch=BATCH))
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        if new:
+    if not os.path.isfile(path):
+        with open(path, "w", encoding="utf-8") as f:
             f.write(HEADER)
-        f.write(f"\n# suggested {datetime.date.today()} — check these\n")
-        for k in todo:
-            if k in got:
-                f.write(f"{k} | {got[k][0]} | {got[k][1]}\n")
-    missing = [k for k in todo if k not in got]
-    print(_("\n  suggested {n} albums -> {file}").format(n=len(got), file=path))
-    for k in list(got)[:15]:
-        print(f"    {k}  ->  {got[k][0]} / {got[k][1]}")
-    if len(got) > 15:
-        print("  " + _("  ... {n} more").format(n=len(got) - 15))
+    marked, got, missing = False, 0, []
+    for start in range(0, len(todo), BATCH):
+        part = todo[start:start + BATCH]
+        # the line the window's progress bar reads: done/total
+        print(_("\n  {done}/{total} albums — asking about the next {n}...").format(
+            done=start, total=len(todo), n=len(part)), flush=True)
+        lines = ["id | artist | album | year | current genre | some titles"]
+        for i, k in enumerate(part):
+            try:
+                d = describe(lib[k])
+            except audiotags.Unreadable:
+                d = {"artist": k.split("/")[0], "album": k.split("/")[-1], "year": "", "genre": "", "titles": []}
+            lines.append(" | ".join(str(x).replace("|", "/") for x in
+                                    (i, d["artist"], d["album"], d["year"], d["genre"],
+                                     "; ".join(d["titles"]))))
+        try:
+            answer = ai.ask_json(cfg, SYSTEM, "\n".join(lines), SCHEMA, backend)
+        except (Exception, SystemExit) as e:
+            print(_("\n  !! {error}").format(error=e))
+            sys.exit(_("Stopped after {n} albums. What was suggested is saved: Suggest again carries on "
+                       "from here.").format(n=got))
+        answers = {}
+        for a in answer.get("albums", []):
+            if 0 <= a.get("id", -1) < len(part):
+                answers[part[a["id"]]] = (a["genre"], a.get("style", "").replace("|", "/").strip())
+        with open(path, "a", encoding="utf-8") as f:
+            if not marked and answers:
+                f.write(f"\n# suggested {datetime.date.today()} — check these\n")
+                marked = True
+            for k in part:
+                if k in answers:
+                    f.write(f"{k} | {answers[k][0]} | {answers[k][1]}\n")
+        for k in part:
+            if k in answers:
+                print(f"    {k}  ->  {answers[k][0]} / {answers[k][1]}")
+            else:
+                missing.append(k)
+                print(f"    {k}  ->  " + _("no answer"))
+        got += len(answers)
+    print(_("\n  {done}/{total} albums — suggested {n} -> {file}").format(
+        done=len(todo), total=len(todo), n=got, file=path))
     if missing:
-        print(_("  !! no answer for {n} albums; run suggest again").format(n=len(missing)))
+        settings.problem(_("no answer for {n} albums; run suggest again").format(n=len(missing)))
     print(_("\nCheck the file, correct what's wrong, then apply."))
 
 
@@ -182,17 +209,15 @@ def suggest(cfg, path, backend):
 
 
 def differences(lib, wanted):
-    """[(key, files to change, old genre, new genre, new style)]: tags that don't match the file."""
+    """[(key, files to change, old genre, new genre, new style)]: tags that don't match the file.
+    Goes by the tags albums() brought from the library index: no file is opened."""
     changes = []
     for key, (genre, style) in sorted(wanted.items()):
         if key not in lib:
             continue
         todo, old = [], set()
         for p in lib[key]["files"]:
-            try:
-                tags = audiotags.read(p)
-            except audiotags.Unreadable:
-                continue
+            tags = lib[key]["tags"][p]
             if tags["genre"] != genre or tags["grouping"] != style:
                 todo.append(p)
                 old.add(f"{tags['genre']} / {tags['grouping']}".strip(" /"))
@@ -211,7 +236,7 @@ def write_tags(changes):
     return done
 
 
-def keep_tags_in_line(cfg, write=True):
+def keep_tags_in_line(cfg, write=True, listing=None):
     """Bring tags that differ from the genres file back in line — quietly, one line of output.
 
     Run after new tracks are added and before a sync, so neither a new track
@@ -221,8 +246,9 @@ def keep_tags_in_line(cfg, write=True):
     wanted = read_file(settings.path("genres_file", cfg))
     if not wanted:
         return 0
-    changes = differences(albums(cfg), wanted)
+    changes = differences(albums(cfg, listing), wanted)
     if not changes:
+        print(_("  genres: every track matches the genres file"))
         return 0
     if write:
         done = write_tags(changes)
@@ -286,4 +312,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    settings.run(main)

@@ -34,6 +34,13 @@ if not os.path.isfile(os.path.join(PODSYNC, "podsync", "__init__.py")):
 sys.path.insert(0, PODSYNC)
 
 import podsync.hardware as hardware              # noqa: E402
+from podsync.hardware.probes import libusb as _vpd  # noqa: E402
+
+# Finding the iPod must not ask it for its model: on macOS that query takes the disk from
+# the system, and with an empty SysInfo every read, sync or eject made the iPod drop off and
+# come back. The model is asked only by "Identify the iPod" (identify(), as administrator),
+# which writes SysInfo once; after that it's read from the file.
+_vpd.AUTO_PROBE = False
 from podsync.library import database             # noqa: E402
 
 # podsync reports refusals and repairs through logging
@@ -86,8 +93,96 @@ def open_ipod(cfg, given=None):
     try:
         hardware.select_device(dev)
     except hardware.UnidentifiedDeviceError:
-        sys.exit(unidentified_help(dev.path))
+        raise Unidentified(unidentified_help(dev.path), dev.path)
     return dev
+
+
+class Unidentified(SystemExit):
+    """The iPod's model isn't known: the command line prints the help, the window offers a button."""
+
+    def __init__(self, text, path):
+        super().__init__(text)
+        self.path = path
+
+
+REPLY = "PODVAULT-IDENTITY "    # the line `--identify --query-only` prints for the window
+
+
+def ask_model(path):
+    """Ask the iPod itself for its model (USB, as administrator). Returns podsync's answer."""
+    from podsync.hardware.probes.libusb import identify_by_vpd
+    print(_("Asking the iPod for its model (it disconnects for a few seconds)..."), flush=True)
+    found = identify_by_vpd(path, write_sysinfo_to_device=False)
+    if not found or not found.get("model_number"):
+        sys.exit(_("The iPod didn't tell its model. Reconnect it and try again."))
+    print(_("{model} ({number}), serial {serial}").format(
+        model=" ".join(x for x in (found.get("model_family"), found.get("generation"), found.get("capacity")) if x),
+        number=found["model_number"], serial=found.get("serial")), flush=True)
+    return found
+
+
+def identity_line(vpd_info):
+    """The answer as one line of JSON, for the process that writes it (see identify)."""
+    import base64
+    keep = {k: v for k, v in vpd_info.items()
+            if not k.startswith("_") and isinstance(v, (str, int, float, bool))}
+    raw = vpd_info.get("vpd_raw_xml") or b""
+    keep["vpd_raw_xml"] = base64.b64encode(raw.encode() if isinstance(raw, str) else raw).decode()
+    return REPLY + json.dumps(keep)
+
+
+def parse_identity(output):
+    """vpd_info back from identity_line() in a process's output; None without one."""
+    import base64
+    for line in output.splitlines():      # splitlines: osascript hands the output back with \r
+        if line.startswith(REPLY):
+            info = json.loads(line[len(REPLY):])
+            info["vpd_raw_xml"] = base64.b64decode(info.get("vpd_raw_xml") or "")
+            return info
+    return None
+
+
+def write_identity(path, vpd_info):
+    """Wait for the iPod to come back after the query and write its SysInfo."""
+    import time
+    from podsync.hardware.probes.libusb import write_sysinfo
+    print(_("Waiting for the iPod to come back at {path}...").format(path=path), flush=True)
+    device_dir = os.path.join(path, "iPod_Control", "Device")
+    for _i in range(8):      # first gone (the query takes the disk from the system)...
+        if not os.path.isdir(device_dir):
+            break
+        time.sleep(1)
+    for _i in range(30):     # ...then back
+        if os.path.isdir(device_dir):
+            break
+        time.sleep(1)
+    else:
+        sys.exit(_("The iPod didn't come back at {path}. Reconnect it and run Identify again.").format(path=path))
+    time.sleep(2)    # mounted is not yet settled: let the system finish with the volume
+    print(_("Writing SysInfo..."), flush=True)
+    try:
+        written = write_sysinfo(path, vpd_info)
+    except Exception as e:
+        sys.exit(_("SysInfo could not be written: {error}").format(error=e))
+    if not written:
+        sys.exit(_("The iPod's reply had nothing to write into SysInfo."))
+    print(_("SysInfo written: {file}").format(file=os.path.join(path, "iPod_Control", "Device", "SysInfo")))
+
+
+def identify(path, query_only=False):
+    """Read the model from the iPod itself and write its SysInfo. The query needs administrator
+    rights (root on macOS / Linux, to take the disk from the system for a moment; an elevated
+    process on Windows): the window starts `ipod.py <path> --identify` that way.
+
+    query_only: print the answer (identity_line) instead of writing it. On macOS the window
+    writes it itself: the permission to write to the iPod is the app's, and a process
+    started as administrator through the password dialog may not get it.
+    """
+    found = ask_model(path)
+    if query_only:
+        print(identity_line(found["vpd_info"]), flush=True)
+        return
+    write_identity(path, found["vpd_info"])
 
 
 def unidentified_help(path):
@@ -239,6 +334,7 @@ def restore(cfg, root, confirmed):
 
 
 def report(dev):
+    print(_("Reading the iPod's database: {folder}").format(folder=dev.path))
     db = load(dev)
     rows = db["tracks"]
     have = covered(dev.path, rows)
@@ -264,12 +360,23 @@ def main():
     ap = argparse.ArgumentParser(description=_("what the iPod has (read only)"))
     ap.add_argument("ipod", nargs="?", help=_("the iPod's drive or mount point"))
     ap.add_argument("--eject", action="store_true", help=_("flush and eject the iPod"))
+    ap.add_argument("--identify", action="store_true",
+                    help=_("read the model from the iPod and write its SysInfo (as administrator)"))
+    ap.add_argument("--query-only", action="store_true",
+                    help=_("with --identify: print the answer, don't write SysInfo"))
     args = ap.parse_args()
+    if args.identify:
+        if not args.ipod:
+            sys.exit(_("--identify needs the iPod's drive or mount point"))
+        identify(args.ipod, args.query_only)
+        return
+    print(_("Looking for the iPod..."))
     dev = open_ipod(settings.load() or {}, args.ipod)
     if args.eject:
+        print(_("Ejecting: {device}").format(device=describe(dev)))
         sys.exit(0 if eject(dev) else 1)
     report(dev)
 
 
 if __name__ == "__main__":
-    main()
+    settings.run(main)

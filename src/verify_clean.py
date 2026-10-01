@@ -61,11 +61,14 @@ def main():
     unreadable = []
     hires = []
     broken = []
+    print(_("Reading the tags in {folder}").format(folder=dest))
+    seen = settings.Progress(_("tags read: {n} files"))
     for root, _skip, files in os.walk(dest):
         for fn in audiotags.audio_files(files):
             fp = os.path.join(root, fn)
             rel = os.path.relpath(fp, dest)
             total += 1
+            seen.tick()
             try:
                 t = audiotags.read(fp)
                 inf = audiotags.info(fp)
@@ -113,6 +116,7 @@ def main():
                     fixed += 1
                 else:
                     v24_frames.append((rel, ", ".join(present)))
+    seen.end()
 
     def block(title, items, limit=10):
         mark = "OK " if not items else "!! "
@@ -171,4 +175,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    settings.run(main)

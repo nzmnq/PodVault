@@ -4,6 +4,7 @@
 """
 
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -14,6 +15,8 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 os.environ["MUSIC_UTILITY_SETTINGS"] = os.path.join(tempfile.mkdtemp(), "settings.json")
 
 from gui import backend  # noqa: E402  (plain Python: no Qt imported)
+import settings  # noqa: E402
+settings.DATA = tempfile.mkdtemp()      # the library index and caches too: never the checkout's
 
 
 class ToolArgs(unittest.TestCase):
@@ -33,11 +36,66 @@ class ToolArgs(unittest.TestCase):
             backend.tool_steps("disk", {"drive": "nonsense"}, False)
 
 
+class EveryToolRuns(unittest.TestCase):
+    def test_every_tool_names_a_script_that_exists(self):
+        # a tool without one raised KeyError in the window's click handler, and PyQt aborts on that
+        # a real folder too: 'Add new tracks' refused an empty one and so hid its missing script
+        here = {"folder": ROOT, "path": __file__, "file": __file__}
+        for tool in backend.TOOLS:
+            for applying in (False, True):
+                try:
+                    steps = backend.tool_steps(tool, here, applying)
+                except (ValueError, SystemExit):
+                    continue                    # needs parameters / has nothing to apply: refused properly
+                for step in steps:
+                    self.assertTrue(os.path.isfile(os.path.join(backend.SRC, step[0])), (tool, step))
+
+
+class IncomingNames(unittest.TestCase):
+    def test_glued_artists_are_split_and_listed_names_stay_whole(self):
+        import add_incoming
+        from musiclib import norm
+        protect = {norm(n): n for n in add_incoming.DEFAULT_PROTECT}
+        split = add_incoming.split_artists
+        # a glued name once in the library used to protect itself and stay one artist
+        self.assertEqual(split("санкен, левко", protect), ["санкен", "левко"])
+        self.assertEqual(split("A feat. B, C", protect), ["A", "B", "C"])
+        self.assertEqual(split("125, Rue Montmartre", protect), ["125, Rue Montmartre"])
+        self.assertEqual(split("ac/dc", protect), ["AC/DC"])
+        self.assertEqual(add_incoming.with_feats("330", ["#keyoo"]), "330 (feat. #keyoo)")
+
+    def test_soundcloud_titles(self):
+        import soundcloud
+        soundcloud.selfcheck()
+
+
 class SettingsValues(unittest.TestCase):
     def test_zero_means_not_set_only_where_the_default_is_zero(self):
         import settings
         self.assertEqual(settings.validate("ipod_capacity_gb", "0"), (0, None))
         self.assertIsNotNone(settings.validate("ipod_backups", "0")[1])
+
+
+class SettingsPlace(unittest.TestCase):
+    def test_installed_copy_keeps_settings_with_the_user_and_a_checkout_keeps_its_own(self):
+        import subprocess
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        installed, home = os.path.realpath(tempfile.mkdtemp()), tempfile.mkdtemp()
+        for name in ("src", "locale"):
+            shutil.copytree(os.path.join(root, name), os.path.join(installed, name))
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("MUSIC_UTILITY_SETTINGS", "XDG_CONFIG_HOME", "XDG_DATA_HOME")}
+        env.update(HOME=home, USERPROFILE=home, APPDATA=os.path.join(home, "AppData"))
+
+        def where(folder):
+            out = subprocess.run([sys.executable, "-c", "import settings; print(settings.FILE); print(settings.DATA)"],
+                                 cwd=os.path.join(folder, "src"), env=env, capture_output=True, text=True, check=True)
+            return out.stdout.split("\n")[:2]
+
+        file, data = where(installed)
+        self.assertTrue(file.startswith(home) and data.startswith(home), (file, data))
+        open(os.path.join(installed, "settings.json"), "w").close()   # a portable copy: settings beside it
+        self.assertEqual(where(installed), [os.path.join(installed, "settings.json"), installed])
 
 
 class DiskMirror(unittest.TestCase):
@@ -213,6 +271,28 @@ class TagsForEveryFormat(unittest.TestCase):
         albums = library.scan(root)
         self.assertEqual([(a["album"], a["tracks"], a["genre"]) for a in albums], [("Земля", 3, "Rock")])
 
+    def test_index_skips_unchanged_and_moved_albums(self):
+        import library
+        import tags
+        root = tempfile.mkdtemp()
+        album = os.path.join(root, "Active", "Band", "Record")
+        os.makedirs(album)
+        tags.write(sample(album, "mp3", "01"), {**self.FIELDS, "track": "1"})
+        first = library.scan(root)
+        self.assertEqual(library.cached(root), first)           # what the window shows at once
+        read, library._read_album = library._read_album, None    # any read now fails
+        try:
+            self.assertEqual(library.scan(root), first)
+            moved = os.path.join(root, "Archive", "Band", "Record")
+            shutil.move(album, moved)
+            self.assertEqual([(a["state"], a["album"]) for a in library.scan(root)], [("R", "Земля")])
+        finally:
+            library._read_album = read
+        f = os.path.join(moved, os.listdir(moved)[0])
+        tags.write(f, {"genre": "Jazz"})
+        os.utime(f, (1, 1))                                       # a changed file is read again
+        self.assertEqual(library.scan(root)[0]["genre"], "Jazz")
+
 
 class GenresFollowTheFile(unittest.TestCase):
     def test_tags_that_differ_from_the_genres_file_are_rewritten_once(self):
@@ -234,6 +314,40 @@ class GenresFollowTheFile(unittest.TestCase):
             t = tags.read(os.path.join(album, fn))
             self.assertEqual((t["genre"], t["grouping"]), ("Rock", "Post-punk"))
         self.assertEqual(genres.keep_tags_in_line(cfg), 0)                # nothing left to do
+
+
+class GenresSuggestCarriesOn(unittest.TestCase):
+    def test_a_stopped_run_keeps_its_answers_and_the_next_one_carries_on(self):
+        import ai
+        import genres
+        import tags
+        root = tempfile.mkdtemp()
+        for n in range(5):
+            album = os.path.join(root, "lib", "Active", f"Band{n}", "Record")
+            os.makedirs(album)
+            tags.write(sample(album, "mp3", "1"), {"artist": f"Band{n}", "album": "Record"})
+        cfg = {"library_dir": os.path.join(root, "lib")}
+        path = os.path.join(root, "genres.txt")
+        asked = []
+
+        def fake(cfg, system, user, schema, backend=None):
+            rows = user.splitlines()[1:]
+            asked.append([r.split(" | ")[1] for r in rows])
+            if len(asked) == 2:
+                raise RuntimeError("limit hit")
+            return {"albums": [{"id": i, "genre": "Rock", "style": "Indie"} for i in range(len(rows))]}
+
+        old = genres.BATCH, ai.ask_json, ai.pick_backend
+        genres.BATCH, ai.ask_json, ai.pick_backend = 2, fake, lambda cfg, b=None: "api"
+        try:
+            with self.assertRaises(SystemExit):
+                genres.suggest(cfg, path, None)                       # batch 2 fails
+            self.assertEqual(sorted(genres.read_file(path)), ["Band0/Record", "Band1/Record"])
+            genres.suggest(cfg, path, None)                           # carries on from Band2
+        finally:
+            genres.BATCH, ai.ask_json, ai.pick_backend = old
+        self.assertEqual(asked, [["Band0", "Band1"], ["Band2", "Band3"], ["Band2", "Band3"], ["Band4"]])
+        self.assertEqual(len(genres.read_file(path)), 5)
 
 
 class Translations(unittest.TestCase):
@@ -288,6 +402,59 @@ class Translations(unittest.TestCase):
         self.assertIn("Interface language", found)             # a Field label
         self.assertIn("Audio tools", found)                    # a Field section
         self.assertEqual(found.get("{n} track"), "{n} tracks")  # plural() / n_()
+
+
+class IdentityCrossesProcesses(unittest.TestCase):
+    def test_the_administrator_process_answer_reaches_the_window_intact(self):
+        import ipod
+        info = {"SerialNumber": "2Z7253DUV9M", "FamilyID": 6, "vpd_raw_xml": b"<plist><dict/></plist>",
+                "_usb_vendor_info": {"not": "json"}}
+        back = ipod.parse_identity("asking...\r" + ipod.identity_line(info) + "\rdone")   # osascript: \r
+        self.assertEqual((back["SerialNumber"], back["vpd_raw_xml"]), ("2Z7253DUV9M", info["vpd_raw_xml"]))
+        self.assertNotIn("_usb_vendor_info", back)
+        self.assertIsNone(ipod.parse_identity("no answer"))
+
+
+class ToolsSayHowTheyEnded(unittest.TestCase):
+    def test_a_problem_on_the_way_makes_the_exit_code_say_so(self):
+        import subprocess
+        code = ("import sys; sys.path.insert(0, 'src'); import settings\n"
+                "def ok(): print('fine')\n"
+                "def bumpy(): settings.problem('one file was unreadable')\n"
+                "settings.run(ok if sys.argv[1] == 'ok' else bumpy)\n")
+        good = subprocess.run([sys.executable, "-c", code, "ok"], capture_output=True, text=True, cwd=ROOT)
+        bumpy = subprocess.run([sys.executable, "-c", code, "bumpy"], capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(good.returncode, 0)
+        self.assertEqual(bumpy.returncode, 3)
+        self.assertIn("! one file was unreadable", bumpy.stdout)
+        self.assertIn("1 thing went wrong", bumpy.stdout.strip().splitlines()[-1])
+
+
+class HeavyWorkRunsApart(unittest.TestCase):
+    def test_a_child_process_answers_and_its_errors_come_back_as_messages(self):
+        self.assertTrue(backend.in_child("python_exe"))
+        with self.assertRaises(RuntimeError) as e:
+            backend.in_child("ipod_read")             # no settings in the test setup
+        self.assertTrue(str(e.exception))
+
+
+class QuickLookAtStart(unittest.TestCase):
+    def test_unchanged_folders_are_trusted_and_new_files_still_seen(self):
+        import library
+        import tags
+        root = tempfile.mkdtemp()
+        album = os.path.join(root, "Active", "Band", "Record")
+        os.makedirs(album)
+        tags.write(sample(album, "mp3", "1"), {"album": "Record", "artist": "Band", "title": "One"})
+        self.assertEqual(library.scan(root)[0]["tracks"], 1)
+        before = os.stat(album)
+        tags.write(os.path.join(album, "1.mp3"), {"genre": "Jazz"})      # a tag inside a file:
+        os.utime(os.path.join(album, "1.mp3"), (1, 1))                     # (a later time, really)
+        os.utime(album, ns=(before.st_atime_ns, before.st_mtime_ns))       # the folder's time stays
+        self.assertEqual(library.scan(root, quick=True)[0]["genre"], "")  # quick: not looked at
+        self.assertEqual(library.scan(root)[0]["genre"], "Jazz")          # the full check sees it
+        tags.write(sample(album, "mp3", "2"), {"album": "Record", "artist": "Band", "title": "Two"})
+        self.assertEqual(library.scan(root, quick=True)[0]["tracks"], 2)  # a new file: seen
 
 
 if __name__ == "__main__":

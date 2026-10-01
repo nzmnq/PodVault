@@ -16,6 +16,7 @@ mp3 keeps the rules an old iPod needs: ID3v2.3, UTF-16 text, no v2.4-only
 frames (see musiclib.drop_v24_frames).
 """
 
+import io
 import os
 import re
 
@@ -27,6 +28,19 @@ from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 from musiclib import drop_v24_frames
 
 AUDIO_EXTS = (".mp3", ".m4a")
+
+# Files whose tags this process wrote. The library index keeps every track's tags, checked
+# by file size and time, and a tag rewritten in place (the padding taking the change) can
+# keep both: so library.tracks reads these again, and on exit their albums are marked to be
+# read again by the next scan (library.forget).
+WRITTEN = set()
+
+
+def _wrote(path):
+    if not WRITTEN:
+        import atexit
+        atexit.register(lambda: __import__("library").forget(WRITTEN))
+    WRITTEN.add(os.path.normpath(path))
 FIELDS = ("artist", "albumartist", "album", "title", "genre", "grouping", "composer", "year",
           "track", "disc")
 
@@ -70,31 +84,82 @@ def read(path):
     """{field: str} plus 'art' (bool: a picture is embedded) and 'version' ('2.3.0', 'MP4')."""
     try:
         if _mp4(path):
-            t = MP4(path).tags or {}
-            out = {}
-            for f, key in _MP4.items():
-                v = t.get(key)
-                if not v:
-                    out[f] = ""
-                elif f in ("track", "disc"):
-                    out[f] = _pair(v[0])
-                else:
-                    out[f] = str(v[0]).strip()
-            out["artists"] = [str(x).strip() for x in t.get("\xa9ART") or [] if str(x).strip()]
-            if not out["genre"] and t.get("gnre"):                # an old numeric genre
-                from mutagen._constants import GENRES
-                i = t["gnre"][0] - 1
-                out["genre"] = GENRES[i] if 0 <= i < len(GENRES) else ""
-            out["year"] = out["year"][:4]
-            out["art"] = bool(t.get("covr"))
-            out["version"] = "MP4"
-            return out
-        tags = ID3(path)
+            return _from_mp4(MP4(path).tags or {})
+        return _from_id3(ID3(path))
     except ID3NoHeaderError:
         raise Unreadable("no ID3 tag") from None
     except (MutagenError, OSError, ValueError) as e:
         raise Unreadable(str(e)) from None
 
+
+class _Head(io.BytesIO):
+    """The start of a file standing in for all of it: seeking from the end goes by the real
+    size (an MP3's length without a VBR header is worked out from it), reads past the
+    start find nothing (an ID3v1 tag at the very end isn't looked for)."""
+
+    def __init__(self, data, size):
+        super().__init__(data)
+        self.size = size
+
+    def seek(self, pos, whence=0):
+        return super().seek(self.size + pos if whence == 2 else pos, 0 if whence == 2 else whence)
+
+
+def _mp3_head(path):
+    """An MP3 parsed from its start alone: the ID3 tag and the first audio frames, read in one
+    go. On a slow drive it's the jumps around a file that cost (a Time Capsule: ~0.2 s to a
+    file's first byte, little after that; mutagen reading the file itself took over a second
+    a track, the tag at the start, then the audio, then the very end)."""
+    with open(path, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        head = f.read(10)
+        tag = (((head[6] & 127) << 21) | ((head[7] & 127) << 14) | ((head[8] & 127) << 7) | (head[9] & 127)) \
+            if len(head) == 10 and head[:3] == b"ID3" else 0
+        head += f.read(tag + 65536)          # the tag, then enough for the first frames and a VBR header
+    return MP3(_Head(head, size))
+
+
+def summary(path):
+    """read() plus 'length' (s), from one read of the file — for the library scan, which
+    reads every new or changed track (see _mp3_head)."""
+    try:
+        if _mp4(path):
+            f = MP4(path)
+            out = _from_mp4(f.tags or {})
+        else:
+            f = _mp3_head(path)
+            if f.tags is None:
+                raise Unreadable("no ID3 tag")
+            out = _from_id3(f.tags)
+    except (MutagenError, OSError, ValueError) as e:
+        raise Unreadable(str(e)) from None
+    out["length"] = f.info.length or 0
+    out["bitrate"] = int((f.info.bitrate or 0) / 1000)
+    return out
+
+
+def _from_mp4(t):
+    out = {}
+    for f, key in _MP4.items():
+        v = t.get(key)
+        if not v:
+            out[f] = ""
+        elif f in ("track", "disc"):
+            out[f] = _pair(v[0])
+        else:
+            out[f] = str(v[0]).strip()
+    out["artists"] = [str(x).strip() for x in t.get("\xa9ART") or [] if str(x).strip()]
+    if not out["genre"] and t.get("gnre"):                # an old numeric genre
+        from mutagen._constants import GENRES
+        i = t["gnre"][0] - 1
+        out["genre"] = GENRES[i] if 0 <= i < len(GENRES) else ""
+    out["year"] = out["year"][:4]
+    out["art"] = bool(t.get("covr"))
+    out["version"] = "MP4"
+    return out
+
+
+def _from_id3(tags):
     def one(key):
         v = tags.get(key)
         return str(v.text[0]).strip() if v is not None and getattr(v, "text", None) else ""
@@ -128,6 +193,7 @@ def info(path):
 
 def write(path, values, replace=False):
     """Set the fields in values; '' or None removes one. replace: clear every field first."""
+    _wrote(path)
     if replace:
         values = {**{f: None for f in FIELDS}, **values}
     if "year" in values:                                  # just the year, in every format
@@ -169,6 +235,7 @@ def write(path, values, replace=False):
 
 def save_id3(tags, path):
     """Save an ID3 tag the way an old iPod reads it: v2.3, no v2.4-only frames."""
+    _wrote(path)
     drop_v24_frames(tags)
     tags.save(path, v2_version=3, v1=2)
 
@@ -187,6 +254,7 @@ def cover(path):
 
 def set_cover(path, jpeg):
     """Replace the embedded picture with a JPEG; None removes it."""
+    _wrote(path)
     if _mp4(path):
         f = MP4(path)
         if f.tags is None:
@@ -231,6 +299,7 @@ def norm_tag(path):
 
 def set_norm_tag(path, value):
     """Write the iTunNORM string."""
+    _wrote(path)
     if _mp4(path):
         f = MP4(path)
         if f.tags is None:

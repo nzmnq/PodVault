@@ -210,12 +210,13 @@ class AlbumDetail(QFrame):
 
     closed = pyqtSignal()
     mark = pyqtSignal(str, str)
+    play = pyqtSignal(list, int)     # [{path, title, artist}], the index to start from
 
     def __init__(self):
         super().__init__()
         self.setObjectName("detail")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.album = None
+        self.album, self.rows = None, []
         lay = QHBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(22)
@@ -245,6 +246,10 @@ class AlbumDetail(QFrame):
         self.move.clicked.connect(self._toggle)
         self.folder_btn = button(_("Show in folder"))
         self.folder_btn.clicked.connect(lambda: self.album and self._open())
+        self.play_btn = button(GLYPHS["play"] + "  " + _("Play"), tip=_("Or double-click a track. "
+                                                                        "Click the display to pause."))
+        self.play_btn.clicked.connect(lambda: self._play(0))
+        acts.addWidget(self.play_btn)
         acts.addWidget(self.move)
         acts.addWidget(self.folder_btn)
         acts.addStretch(1)
@@ -256,6 +261,7 @@ class AlbumDetail(QFrame):
         self.tracks.setSortingEnabled(False)
         self.tracks.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.tracks.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.tracks.cellDoubleClicked.connect(lambda row, col: self._play(row))
         right.addWidget(self.tracks, 1)
         lay.addLayout(right, 1)
         covers().ready.connect(self._cover_ready)
@@ -275,6 +281,7 @@ class AlbumDetail(QFrame):
         self.set_state(state, a["path"])
         self._cover_ready(a["path"])
         self.tracks.setRowCount(0)
+        self.rows = []
         path = a["path"]
         run_async(backend.album_tracks, path,
                   ok=lambda rows: self._tracks(path, rows),
@@ -304,9 +311,15 @@ class AlbumDetail(QFrame):
         self.cover.setPixmap(pm or placeholder(f"{self.album['artist']} {self.album['album']}",
                                                UI["detail_cover"]))
 
+    def _play(self, at):
+        if at < len(self.rows):
+            self.play.emit([{"path": os.path.join(self.album["path"], r["file"]), "title": r["title"],
+                             "artist": r["artist"] or self.album["artist"]} for r in self.rows], at)
+
     def _tracks(self, path, rows):
         if not self.album or self.album["path"] != path:
             return
+        self.rows = rows
         fill(self.tracks, [[
             (r["track"], int(r["track"]) if r["track"].isdigit() else 999, "r"),
             r["title"], r["artist"],
@@ -887,9 +900,19 @@ class IpodPage(Page):
         self.head.addWidget(self.refresh_btn)
 
         self.stack = QStackedWidget()
+        say = QWidget()
+        say_col = QVBoxLayout(say)
         self.message = muted("", wrap=True)
         self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.stack.addWidget(self.message)
+        self.identify_btn = button(_("Identify the iPod…"), primary=True)
+        self.identify_btn.clicked.connect(self._identify)
+        self.identify_btn.hide()
+        say_col.addStretch(1)
+        say_col.addWidget(self.message)
+        say_col.addSpacing(12)
+        say_col.addWidget(self.identify_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        say_col.addStretch(1)
+        self.stack.addWidget(say)
 
         content = QWidget()
         content.setObjectName("page")
@@ -983,23 +1006,52 @@ class IpodPage(Page):
         self.loading = True
         self.refresh_btn.setEnabled(False)
         self._say(_("Reading the iPod…"))
-        run_async(backend.ipod_read, ok=self._loaded, failed=self._failed)
+        run_async(backend.in_child, "ipod_read", ok=self._loaded, failed=self._failed)
 
     def invalidate(self):
         self.data = None
         if self.isVisible():
             self.load()
 
-    def _say(self, text):
+    def _say(self, text, identify=False):
         self.message.setText(text)
+        self.identify_btn.setVisible(identify)
         self.stack.setCurrentIndex(0)
 
     def _failed(self, msg):
         self.loading = False
         self.refresh_btn.setEnabled(True)
-        self._say(_("Could not read the iPod.\n\n{error}").format(error=msg))
+        if msg == backend.unidentified_text():
+            self._say(msg, identify=True)
+        else:
+            self._say(_("Could not read the iPod.\n\n{error}").format(error=msg))
 
-    def _loaded(self, d):
+    def _identify(self):
+        if not self.win.ipods:
+            return
+        self.loading = True
+        self.refresh_btn.setEnabled(False)
+        self.identify_btn.setVisible(False)
+        # the iPod drops off for a few seconds on purpose: the window mustn't take that for
+        # an unplug (leave this page, read the iPod again) — see Window._polled
+        self.win.identifying = True
+        self._say(_("Identifying the iPod… It disconnects for a few seconds, then PodVault "
+                    "writes its model to the iPod. Don't unplug it."))
+        run_async(backend.identify_ipod, self.win.ipods[0], ok=self._identified,
+                  failed=lambda m: self._identified(m or "?"))
+
+    def _identified(self, error):
+        self.loading = False
+        self.refresh_btn.setEnabled(True)
+        self.win.identifying = False
+        if error:
+            self._say(backend.unidentified_text() + "\n\n" + error, identify=True)
+            self.win._poll_ipod()
+        else:
+            self.win.ipods = []             # the next poll reads it afresh, now with its model
+            self.win._poll_ipod()
+
+    def _loaded(self, d, compare=True):
         self.loading = False
         self.refresh_btn.setEnabled(True)
         self.data = d
@@ -1017,7 +1069,8 @@ class IpodPage(Page):
                  (_("Serial number"), d["serial"] or "—"), (_("Software"), d["firmware"] or "—"),
                  (_("Tracks"), f"{len(tracks)} · {fmt_total(sum(t['length'] for t in tracks))}"),
                  (_("Without a cover"), str(sum(1 for t in tracks if not t["cover"]))),
-                 (_("Not in the library"), str(sum(1 for t in tracks if t["state"] == "")))]
+                 (_("Not in the library"), "…" if any(t["state"] == "?" for t in tracks)
+                  else str(sum(1 for t in tracks if t["state"] == "")))]
         for r, (k, v) in enumerate(facts):
             self.facts.addWidget(muted(k, wrap=False), r, 0)
             val = QLabel(v)
@@ -1029,6 +1082,35 @@ class IpodPage(Page):
         widths(self.lists, {1: "count"})
         self._render()
         self.stack.setCurrentIndex(1)
+        if compare:
+            self.win.note(_("iPod read"), _("{n} tracks; comparing with the library…").format(n=len(tracks)))
+            self._compare(d)
+
+    def _compare(self, d):
+        """Which iPod tracks are in Active / Archive: goes by the library index, so it waits
+        for the library check that keeps the index up to date."""
+        if self.win.scanning:
+            self.count.setText(_("Waiting for the library check to finish…"))
+            QTimer.singleShot(2000, lambda: self._compare(d) if self.data is d else None)
+            return
+
+        def done(states):
+            if self.data is not d:       # read again meanwhile: this answer is for the old one
+                return
+            for t, s in zip(d["tracks"], states):
+                t["state"] = s
+            self._loaded(d, compare=False)
+            missing = sum(1 for s in states if s == "")
+            self.win.note(_("iPod compared with the library"),
+                          _("{n} tracks aren't in the library").format(n=missing) if missing
+                          else _("every track is in the library"))
+
+        def failed(msg):
+            if self.data is d:
+                self.count.setText(_("Couldn't compare with the library: {error}").format(error=msg))
+
+        self.count.setText(_("Comparing with the library…"))
+        run_async(backend.in_child, "ipod_states", d["tracks"], ok=done, failed=failed)
 
     def _filter(self, i):
         self.flt = i

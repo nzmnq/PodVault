@@ -1,14 +1,18 @@
 """The main window: toolbar with the LCD, the source list (places only), pages,
 the status bar with the Active summary, the ☰ menu with the tools, the task sheet."""
 
+import faulthandler
 import os
 import sys
 import time
+import traceback
 
-from PyQt6.QtCore import QEvent, QProcess, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
+from PyQt6.QtCore import (QEvent, QFileSystemWatcher, QRect, QRectF, QSize, Qt, QTimer, QUrl,
+                          pyqtSignal)
+from PyQt6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QShortcut
+from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-                             QMainWindow, QMenu, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
+                             QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
                              QStackedWidget, QStyle, QStyledItemDelegate, QTreeWidget,
                              QTreeWidgetItem, QVBoxLayout, QWidget)
 
@@ -20,28 +24,15 @@ from i18n import N_, _
 from gui.jobs import Jobs
 from gui.pages import (IpodPage, LibraryPage, PlaylistPage, SettingsPage, ToolDialog, VibePage)
 from gui.theme import C, GLYPHS, UI, icon
-from gui.widgets import Lcd, ask, button, covers, fmt_gb, inform, plural, run_async
+from gui.widgets import Lcd, ask, button, covers, fmt_gb, fmt_time, inform, plural, run_async
 
 KeyRole = Qt.ItemDataRole.UserRole + 10
 AddRole = Qt.ItemDataRole.UserRole + 11      # a section heading with a "+" on the right
 
 
 def app_icon():
-    pm = QPixmap(64, 64)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setBrush(QColor(C["accent"]))
-    p.setPen(Qt.PenStyle.NoPen)
-    p.drawEllipse(2, 2, 60, 60)
-    f = QFont()
-    f.setPixelSize(38)
-    f.setBold(True)
-    p.setFont(f)
-    p.setPen(QColor(C["on_accent"]))
-    p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, GLYPHS["app"])
-    p.end()
-    return QIcon(pm)
+    """The same picture the installers put in the menu, the Dock and the Start menu."""
+    return QIcon(os.path.join(settings.ROOT, "packaging", "podvault.svg"))
 
 
 # ------------------------------------------------------------------ task sheet
@@ -142,7 +133,7 @@ class JobSheet(QDialog):
         status, progress = job.status()
         running = job.running
         if running:
-            self.status.setText(cur.strip() or status or _("working…"))
+            self.status.setText(status or _("working…"))         # status: the last line + time left
             if progress is None:
                 self.bar.setRange(0, 0)
             else:
@@ -153,12 +144,15 @@ class JobSheet(QDialog):
             self.timer.stop()
             self.bar.setRange(0, 1)
             self.bar.setValue(1)
-            ok = job.code == 0
+            ok = job.ok and not job.problems
             self.bar.setProperty("state", "ok" if ok else "bad")
             took = (job.finished or time.time()) - job.started
             self.status.setText((_("Done — nothing to change") if ok and job.nothing else
-                                 _("Done") if ok else _("Cancelled") if job.cancelled else
-                                 _("Stopped with an error (exit code {code})").format(code=job.code))
+                                 _("Done") if ok else
+                                 _("Done, with problems") + ": " + job.reason if job.problems else
+                                 _("Cancelled") if job.cancelled else
+                                 _("Stopped with an error (exit code {code})").format(code=job.code)
+                                 + (": " + job.reason if job.reason else ""))
                                 + " · " + _("{s} s").format(s=f"{took:.0f}"))
         self.bar.style().unpolish(self.bar)
         self.bar.style().polish(self.bar)
@@ -268,7 +262,7 @@ class SideDelegate(QStyledItemDelegate):
 
 
 # the ☰ menu: a string is a tool, None a separator, a 1-tuple a section heading
-MENU = [(N_("Library"),), "covers", "tags", "duplicates", "likes",
+MENU = [(N_("Library"),), "covers", "tags", "duplicates", "artists", "likes",
         (N_("iPod"),), "fit", "soundcheck", "smart",
         (N_("Active / Archive as a text list"),), "export", "marks", "undo",
         (N_("Audio"),), "flac", None,
@@ -295,11 +289,20 @@ class MainWindow(QMainWindow):
         self.jobs.started.connect(self._job_started)
         self.jobs.finished.connect(self._job_finished)
         self.albums, self.albums_error, self.scanning = None, None, False
+        self.scan_progress = None     # (done, total, seconds left), written by the scan's thread
+        self.rescan = False
         self.ipods, self.ipod_info, self.polling = [], None, False
+        self.identifying = False    # IpodPage._identify: the iPod drops off on purpose
         self.playlists, self.genres_missing = [], 0
         self.current_key = None
         self.lcd_note, self.lcd_note_until = None, 0
-        self.relabel_after_job, self.replaced = False, False
+        self.relabel_after_job, self.replaced = None, False    # relabel_after_job: the toast to show then
+        # the b1air desktop's theme: a new one picked in its Settings recolours the window
+        self.b1air = theme.b1air_palette()
+        self.theme_watch = QFileSystemWatcher(self)
+        if os.path.isdir(os.path.dirname(theme.B1AIR_THEME)):
+            self.theme_watch.addPath(os.path.dirname(theme.B1AIR_THEME))   # the file is replaced, not edited
+        self.theme_watch.directoryChanged.connect(lambda _p: QTimer.singleShot(200, self._b1air_changed))
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -353,6 +356,12 @@ class MainWindow(QMainWindow):
 
         self.library_page = LibraryPage(self)
         self.library_page.marks_changed.connect(self._marks_changed)
+        self.library_page.detail.play.connect(self.play)
+        self.player = QMediaPlayer(self)
+        self.player.setAudioOutput(QAudioOutput(self))
+        self.player.mediaStatusChanged.connect(self._media_status)
+        self.player.errorOccurred.connect(lambda err, msg: self.note(_("Can't play this track"), msg))
+        self.queue, self.queue_at, self.resume_at = [], 0, 0
         self.revert_btn = self.library_page.revert_btn
         self.save_marks_btn = self.library_page.save_marks_btn
         self.save_marks_btn.clicked.connect(self.apply_marks)
@@ -381,7 +390,7 @@ class MainWindow(QMainWindow):
         if backend.cfg() is None:
             self.navigate("settings")
         else:
-            self.reload_library()
+            self.reload_library(quick=True)      # at start: only what came and went (library.scan)
             self.reload_playlists()
             self.navigate(key if key in ("settings", "ipod", "vibe") else "library")
         self._poll_ipod()
@@ -414,6 +423,16 @@ class MainWindow(QMainWindow):
         left.addStretch(1)
         self.lcd = Lcd()
         self.lcd.clicked.connect(self._lcd_clicked)
+        self.lcd.seek.connect(self._lcd_seek)
+        self.tb_prev = button(GLYPHS["prev"], tip=_("Previous track"))
+        self.tb_next = button(GLYPHS["next"], tip=_("Next track"))
+        for b, step in ((self.tb_prev, -1), (self.tb_next, 1)):
+            b.setObjectName("tb")
+            b.clicked.connect(lambda _c, s=step: self.skip(s))
+            sp = b.sizePolicy()
+            sp.setRetainSizeWhenHidden(True)      # the display doesn't jump when they show up
+            b.setSizePolicy(sp)
+            b.hide()
         self.search = QLineEdit()
         self.search.setObjectName("search")
         self.search.setPlaceholderText(_("Search"))
@@ -430,7 +449,9 @@ class MainWindow(QMainWindow):
         right.addWidget(self.search)
         right.addWidget(self.tb_menu)
         lay.addLayout(left, 1)
+        lay.addWidget(self.tb_prev)
         lay.addWidget(self.lcd, 2)
+        lay.addWidget(self.tb_next)
         lay.addLayout(right, 1)
         return bar
 
@@ -660,8 +681,10 @@ class MainWindow(QMainWindow):
 
     # --- library
 
-    def reload_library(self, force=False):
+    def reload_library(self, force=False, quick=False):
         if self.scanning:
+            # the cached library can be worked with during a scan: a move made then needs one more
+            self.rescan = True
             return
         if force and self.library_page.marks:
             if not ask(self, _("Read the library again"),
@@ -674,17 +697,40 @@ class MainWindow(QMainWindow):
         self.library_page.set_albums(None)
         covers().clear()
         self.library_page.delegate.scaled.clear()
-        run_async(backend.scan_library, ok=self._scanned, failed=self._scan_failed)
+        self.scan_progress = None
+        # what the index remembers is shown at once; the scan then checks it against the drive
+        run_async(backend.cached_library, ok=self._cached)
+        run_async(backend.scan_library, lambda *p: setattr(self, "scan_progress", p), quick,
+                  ok=self._scanned, failed=self._scan_failed)
+
+    def _cached(self, albums):
+        if self.scanning and self.albums is None and albums:
+            self.albums = albums
+            self.library_page.set_albums(albums)
+            self.update_status()
+
+    def _scan_over(self):
+        self.scanning = False
+        if self.rescan:
+            self.rescan = False
+            QTimer.singleShot(0, self.reload_library)
 
     def _scanned(self, albums):
-        self.scanning = False
+        self._scan_over()
+        same = albums == self.albums
         self.albums, self.albums_error = albums, None
-        self.library_page.set_albums(albums)
+        if not same:                            # an unchanged library keeps the grid as it is
+            self.library_page.set_albums(albums)
+        self.note(_("Library checked"), plural(len(albums), "{n} album", "{n} albums")
+                  + (" · " + _("changes found") if not same else " · " + _("nothing changed")))
         self.update_status()
         self.refresh_attention()
 
     def _scan_failed(self, msg):
-        self.scanning = False
+        self._scan_over()
+        if self.albums:                         # the cached library stays; the drive may be back soon
+            self.toast(_("Could not check the library: {error}").format(error=msg), bad=True)
+            return
         self.albums, self.albums_error = None, msg
         self.library_page.set_albums(None, msg)
         self.update_status()
@@ -822,7 +868,7 @@ class MainWindow(QMainWindow):
 
     def _job_finished(self, job):
         if self.relabel_after_job and not self.jobs.busy():
-            QTimer.singleShot(0, self.relabel)
+            QTimer.singleShot(0, lambda note=self.relabel_after_job: self.relabel(note))
         refresh = backend.TOOLS[job.tool].get("refresh", set())
         real = job.applying or not backend.TOOLS[job.tool].get("apply")
         if job.tool == "eject":
@@ -830,7 +876,7 @@ class MainWindow(QMainWindow):
             self.ipod_page.data = None
             self.ipod_info = None
             QTimer.singleShot(UI["eject_repoll_ms"], self._poll_ipod)
-        elif real and job.code == 0 or job.tool == "restore":
+        elif real and job.ok or job.tool == "restore":
             if "library" in refresh:
                 self.reload_library()
             if "ipod" in refresh:
@@ -843,16 +889,20 @@ class MainWindow(QMainWindow):
         self.sheet.refresh()
         self._follow_ups(job)
         self._busy_buttons()
-        ok = job.code == 0
-        self.note((_("Done — {tool}") if ok else _("Stopped — {tool}")).format(tool=job.base_title), "")
-        if not self.sheet.isVisible():
-            self.toast((_("Done: {tool}") if ok else _("Didn't finish: {tool}")).format(tool=job.title),
-                       good=ok, bad=not ok,
-                       action=lambda: self.sheet.open_for(job))
+        if job.ok and not job.problems:
+            head, good = _("Done: {tool}").format(tool=job.title), True
+        elif job.problems:
+            head, good = _("Done, with problems: {tool}").format(tool=job.title), False
+        else:
+            head, good = _("Didn't finish: {tool}").format(tool=job.title), False
+        self.note(head, job.reason)
+        # always, the log open or not: its last line can be scrolled out of sight
+        self.toast(head + ("\n" + job.reason if job.reason else ""), good=good, bad=not good,
+                   action=lambda: self.sheet.open_for(job))
 
     def _follow_ups(self, job):
         sheet = self.sheet
-        if job is not sheet.job or job.code != 0:
+        if job is not sheet.job or not job.ok:
             return
         if job.tool == "sync" and job.applying:
             sheet.add_follow(_("Eject the iPod"), self.eject)
@@ -902,7 +952,7 @@ class MainWindow(QMainWindow):
 
     def _polled(self, roots):
         self.polling = False
-        if roots == self.ipods:
+        if roots == self.ipods or self.identifying:
             return
         self.ipods = roots
         self.ipod_info = None
@@ -933,10 +983,51 @@ class MainWindow(QMainWindow):
         self.lcd_note_until = time.time() + (seconds or UI["note_s"])
 
     def _lcd_clicked(self):
-        if self.jobs.current is not None:
-            self.sheet.open_for(self.jobs.current)
+        job = self.jobs.current
+        if self.queue and not (job and job.running):
+            playing = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+            self.player.pause() if playing else self.player.play()
+        elif job is not None:
+            self.sheet.open_for(job)
+
+    def _lcd_seek(self, where):
+        job = self.jobs.current
+        if self.queue and not (job and job.running) and self.player.duration() > 0:
+            self.player.setPosition(int(where * self.player.duration()))
+        else:
+            self._lcd_clicked()
+
+    # --- playing tracks: an album from the chosen track to its end
+
+    def play(self, queue, at, position=0):
+        self.queue, self.queue_at, self.resume_at = queue, at, position
+        self.player.setSource(QUrl.fromLocalFile(queue[at]["path"]))
+        self.player.play()
+
+    def skip(self, step):
+        """Next / previous track; 'previous' a few seconds into a track starts it over."""
+        if step < 0 and self.player.position() > UI["restart_ms"]:
+            self.player.setPosition(0)
+            return
+        at = self.queue_at + step
+        if 0 <= at < len(self.queue):
+            self.play(self.queue, at)
+        elif step > 0:
+            self.player.stop()
+            self.queue = []
+        else:
+            self.player.setPosition(0)
+
+    def _media_status(self, status):
+        if status == QMediaPlayer.MediaStatus.LoadedMedia and self.resume_at:
+            self.player.setPosition(self.resume_at)      # can't be set before the file is open
+            self.resume_at = 0
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            self.skip(1)
 
     def update_lcd(self):
+        for b in (self.tb_prev, self.tb_next):
+            b.setVisible(bool(self.queue))
         job = self.jobs.current
         if job is not None and job.running:
             status, progress = job.status()
@@ -946,8 +1037,19 @@ class MainWindow(QMainWindow):
             self.lcd.show_idle(*self.lcd_note)
             return
         self.lcd_note = None
+        if self.queue:
+            t, p = self.queue[self.queue_at], self.player
+            paused = p.playbackState() != QMediaPlayer.PlaybackState.PlayingState
+            self.lcd.show_progress((GLYPHS["pause"] if paused else GLYPHS["play"]) + "  " + t["title"],
+                                   f"{t['artist']} · {fmt_time(p.position() / 1000)} / "
+                                   f"{fmt_time(p.duration() / 1000)}",
+                                   p.position() / p.duration() if p.duration() > 0 else 0)
+            return
         if self.scanning:
-            self.lcd.show_progress(_("PodVault"), _("Reading the library…"), None)
+            text, frac = self.scan_text()
+            self.lcd.show_progress(_("Reading the library…"), text, frac)
+            if self.albums is None:
+                self.library_page.loading.setText(_("Reading the library…") + "\n" + text)
             return
         info = self.ipod_info if self.ipods else None
         if info:
@@ -957,6 +1059,21 @@ class MainWindow(QMainWindow):
             self.lcd.show_idle(_("PodVault"), _("iPod connected — reading it…"))
         else:
             self.lcd.show_idle(_("PodVault"), _("No iPod — connect one to sync"))
+
+    def scan_text(self):
+        """What the scan is doing, and how far it is (0..1 or None)."""
+        p = self.scan_progress
+        if not p:
+            return "", None
+        done, total, left = p
+        if not total:
+            return plural(done, "Looking through the folders: {n} album",
+                          "Looking through the folders: {n} albums"), None
+        text = _("Reading tags: {done}/{total}").format(done=done, total=total)
+        if left is not None:
+            text += " · " + (_("less than a minute left") if left < 60 else
+                             plural(round(left / 60), "about {n} minute left", "about {n} minutes left"))
+        return text, done / total
 
     def update_status(self):
         """The one number that matters: how much Active is, and whether it fits the iPod."""
@@ -989,10 +1106,10 @@ class MainWindow(QMainWindow):
         if (backend.cfg() or {}).get("language") != self.language:
             # every text in the window was set when it was built: a new language gets a new window
             if self.jobs.busy():
-                self.relabel_after_job = True
+                self.relabel_after_job = _("Language changed.")
                 self.toast(_("The new language is applied when the running task finishes."))
             else:
-                self.relabel()
+                self.relabel(_("Language changed."))
                 return
         self.reload_library()
         self.reload_playlists()
@@ -1002,8 +1119,20 @@ class MainWindow(QMainWindow):
         if self.current_key == "settings" and self.settings_page.first:
             self.navigate("library")
 
-    def relabel(self):
-        """A new language, in place: the same window rebuilt with the new texts, state carried over."""
+    def _b1air_changed(self):
+        pal = theme.b1air_palette()
+        if pal == self.b1air or self.replaced:
+            return
+        self.b1air = pal
+        theme.apply(QApplication.instance())
+        # the stylesheet is new already; icons and pictures drawn at build time need a new window
+        if self.jobs.busy():
+            self.relabel_after_job = self.relabel_after_job or _("Colours changed.")
+        else:
+            self.relabel(_("Colours changed."))
+
+    def relabel(self, note):
+        """A new language or colours, in place: the same window rebuilt, state carried over."""
         i18n.reset()
         QApplication.instance().setApplicationName(_("PodVault"))
         new = MainWindow(key=self.current_key if backend.cfg() is not None else None)
@@ -1017,7 +1146,12 @@ class MainWindow(QMainWindow):
         nlp.set_view(lp.view)
         new.search.setText(self.search.text())
         new._marks_changed()
-        new.toast(_("Language changed."), good=True)
+        if self.queue:
+            new.play(self.queue, self.queue_at, self.player.position())
+            if self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                new.player.pause()
+        self.player.stop()
+        new.toast(note, good=True)
         self.replaced = True
         # hidden, not deleted: background reads started by this window may still call back into it
         self.poll.stop()
@@ -1078,6 +1212,44 @@ class MainWindow(QMainWindow):
         e.accept()
 
 
+def catch_errors():
+    """An exception in a click handler or a timer would end the program: PyQt aborts on one,
+    and started from Finder or the Start menu nothing is left to say why. Show it and log it
+    instead; faulthandler logs real crashes (in Qt, in a decoder) into the same file."""
+    log = None
+    try:
+        os.makedirs(settings.DATA, exist_ok=True)
+        log = open(os.path.join(settings.DATA, "podvault-errors.log"), "a", encoding="utf-8")
+        faulthandler.enable(log)
+    except OSError:
+        pass
+    showing = []
+
+    def hook(kind, value, tb):
+        text = "".join(traceback.format_exception(kind, value, tb))
+        if sys.stderr:                          # None under pythonw
+            sys.stderr.write(text)
+        if log:
+            log.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')}\n{text}\n")
+            log.flush()
+        if showing:                             # an error while showing one: logged is enough
+            return
+        showing.append(1)
+        try:
+            box = QMessageBox(QApplication.activeWindow())
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle(_("PodVault"))
+            box.setText(_("Something went wrong: {error}").format(error=str(value) or kind.__name__)
+                        + ("\n\n" + _("The details are in {file}").format(file=log.name) if log else ""))
+            box.setDetailedText(text)
+            box.exec()
+        finally:
+            showing.clear()
+
+    sys.excepthook = hook
+    return log
+
+
 def run():
     if sys.platform == "win32":
         try:
@@ -1087,6 +1259,8 @@ def run():
             pass
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(_("PodVault"))
+    app.setDesktopFileName("podvault")      # Wayland finds the menu entry and its icon by this
+    app._error_log = catch_errors()         # kept open for faulthandler
     theme.apply(app)
     win = MainWindow()
     win.show()

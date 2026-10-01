@@ -22,8 +22,7 @@ class FlacToAlacConverter:
         cfg = settings.require()
         ffmpeg = settings.ffmpeg(cfg)
         if not ffmpeg:
-            print(_("ffmpeg not found. Set its path on the Settings screen."))
-            return
+            sys.exit(_("ffmpeg not found. Set its path on the Settings screen."))
 
         if input_folder is None:
             input_folder = settings.path("flac_input_dir", cfg)
@@ -74,15 +73,17 @@ class FlacToAlacConverter:
                 subprocess.run(command, check=True)
                 print(_("Ready: {file}").format(file=output_file.name))
             except subprocess.CalledProcessError:
-                print(_("Could not convert {file}.").format(file=flac_file.name))
+                settings.problem(_("Could not convert {file}.").format(file=flac_file.name))
 
 
-if __name__ == "__main__":
+def main():
     if not FlacToAlacConverter.check_ffmpeg():
-        print(_("ffmpeg not found. Set its path on the Settings screen."))
-        sys.exit(1)
-
+        sys.exit(_("ffmpeg not found. Set its path on the Settings screen."))
     print(_("Started"))
     FlacToAlacConverter.convert_flac_to_alac()
     print("-" * 30)
     print(_("All done."))
+
+
+if __name__ == "__main__":
+    settings.run(main)

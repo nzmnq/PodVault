@@ -3,9 +3,15 @@
 The layout follows iTunes (a source list, an LCD in the toolbar, views of one
 library) but the look is our own: flat light chrome, an indigo accent. Light by
 default; dark when the system is dark. Nothing visual is hard-coded elsewhere.
+
+On the b1air desktop the colours come from its theme instead
+(~/.config/b1air/theme.json, written by its Settings → Appearance): the
+surfaces, text, lines and the accent follow the desktop, the layout and
+PodVault's own pictures (the album panel, the iPod, the badges) stay.
 """
 
 import functools
+import json
 import os
 import tempfile
 
@@ -90,18 +96,22 @@ GLYPHS = dict(
     on_disk="–",           # tile badge: Archive, stays on disk (en dash)
     small="▫",             # white small square: the cover-size slider
     large="◻",             # white medium square
+    play="▶",              # black right-pointing triangle
+    pause="❚❚",            # two heavy vertical bars
+    prev="⏮",              # black left-pointing double triangle with vertical bar
+    next="⏭",              # black right-pointing double triangle with vertical bar
 )
 
 UI = dict(
     window=(1320, 840), window_min=(1040, 640), sheet=(900, 600), dialog_w=560,
     toolbar_h=64, status_h=28, status_button_h=20,
-    lcd_h=50, lcd_w=(260, 440), lcd_bar_w=340,
+    lcd_h=50, lcd_w=(260, 440), lcd_bar_w=340, lcd_seek_zone=8,
     side_w=220, side_min=180, side_row=26, side_device_row=44, side_head=28, icon=16,
     side_capacity_h=4, side_eject=22, side_pad=6, side_gap=10,
     tile=150, tile_range=(100, 240), thumb=256, cover_large=640, detail_cover=220,
     artists_w=190, ipod_picture=(112, 184), capacity_h=40, vibe_text_h=80,
     close_button_w=30, form_w=760, form_label_w=190, form_number_w=120, slider_w=110, combo_extra_w=44, genre_box_max_w=260,
-    poll_ms=3000, sheet_refresh_ms=150, lcd_refresh_ms=250, eject_repoll_ms=1500,
+    poll_ms=3000, sheet_refresh_ms=150, lcd_refresh_ms=250, restart_ms=3000, eject_repoll_ms=1500,
     note_s=6, toast_ms=5000, toast_bad_ms=8000, toast_w=420, toast_gap=14, list_preview=12,
     cover_threads=3, cache_max=3000, log_lines=10000,
 )
@@ -111,6 +121,47 @@ COLUMNS = dict(num=36, state=30, time=56, kbps=44, cover=54, plays=50, count=80,
                artist=170, album=190, genre=140, style=260)
 
 C = dict(LIGHT)   # the colours in use; filled by apply()
+
+B1AIR_THEME = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                           "b1air", "theme.json")
+
+# our key <- the b1air palette's key (src/shell/qml/Services/Theme.qml in b1air)
+B1AIR = dict(
+    bg="ground", sheet="mid", alt="low", hover="high",
+    text="text", muted="textDim", faint="outline", line="outlineVariant",
+    tb_top="mid", tb_bottom="mid", tb_line="outlineVariant",
+    btn_top="high", btn_bottom="high", btn_line="outlineVariant",
+    lcd_top="lowest", lcd_bottom="lowest", lcd_line="outlineVariant", lcd_text="text",
+    side="low", side_text="text", side_head="textDim", side_hover="high",
+    accent="primary", on_accent="primaryText", accent_soft="primaryBox",
+    cap_audio_top="primary", cap_audio="primary",
+    active="green", archive="peach", danger="error", pending="pink",
+)
+
+
+def _luminance(c):
+    """Relative luminance, the way b1air-daemon tells a dark palette from a light one."""
+    lin = [x / 12.92 if x <= .04045 else ((x + .055) / 1.055) ** 2.4 for x in (c.redF(), c.greenF(), c.blueF())]
+    return .2126 * lin[0] + .7152 * lin[1] + .0722 * lin[2]
+
+
+def b1air_palette():
+    """Our colours with the b1air desktop's over them, or None outside b1air."""
+    try:
+        with open(B1AIR_THEME, encoding="utf-8") as f:
+            theirs = json.load(f)
+        ground = QColor(theirs["ground"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not ground.isValid():
+        return None
+    # ponytail: follows the palette's own darkness; b1air's "apps light/dark" override isn't read
+    out = dict(DARK if _luminance(ground) < .4 else LIGHT)
+    for ours, key in B1AIR.items():
+        v = theirs.get(key)
+        if isinstance(v, str) and QColor(v).isValid():
+            out[ours] = v
+    return out
 
 
 def is_dark():
@@ -343,8 +394,13 @@ class _ComboItems(QObject):
 
 
 def apply(app):
+    b1air = b1air_palette()
     C.clear()
-    C.update(DARK if is_dark() else LIGHT)
+    C.update(b1air or (DARK if is_dark() else LIGHT))
+    if b1air and "Inter" in QFontDatabase.families():    # the desktop's face, as its own apps use
+        f = app.font()
+        f.setFamily("Inter")
+        app.setFont(f)
     if not hasattr(app, "_combo_items"):
         app._combo_items = _ComboItems(app)
         app.installEventFilter(app._combo_items)

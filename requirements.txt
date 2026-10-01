@@ -1,3 +1,6 @@
+# install.sh / install.ps1 treat everything from the "# AI" line down as
+# optional: when it can't be installed, PodVault works without AI playlists.
+
 # Tags, cover art, HTTPS
 mutagen==1.48.1
 pillow==12.3.0

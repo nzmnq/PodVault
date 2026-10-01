@@ -238,7 +238,7 @@ def main():
             else:
                 n, kind = from_text(path, bucket), N_("text list")
         except Exception as e:
-            print(_("  skipped {file}: {error}").format(file=name, error=e))
+            settings.problem(_("skipped {file}: {error}").format(file=name, error=e))
             continue
         if n:
             print(_("  {file}: {n} entries ({kind})").format(file=name, n=n, kind=_(kind)))
@@ -257,4 +257,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    settings.run(main)

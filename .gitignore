@@ -7,11 +7,13 @@ env/
 # Personal settings — created by the first-run wizard, holds local paths
 settings.json
 
-# Tool output
+# Tool output, and the log of errors the window caught
 reports/
+podvault-errors.log
 
 # Personal library data: genres per album
 data/genres.txt
+data/artists.txt
 data/tracklist.txt
 
 # Binaries
@@ -42,3 +44,6 @@ pip-delete-this-directory.txt
 .idea/
 .DS_Store
 Thumbs.db
+
+# Cover thumbnails kept by the window (a checkout keeps its data here)
+cache/

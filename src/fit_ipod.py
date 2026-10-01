@@ -61,7 +61,8 @@ def main():
     gb = args.gb or int(cfg.get("ipod_capacity_gb") or 0)
     if gb <= 0:
         sys.exit(_("Set \"Music space on the iPod, GB\" in Settings first."))
-    albums = library.scan(with_audio=False)
+    print(_("Reading the library..."))
+    albums = library.scan(progress=library._cli_progress)
     active = sum(a["bytes"] for a in albums if a["state"] == "A")
     print(_("Active: {have} GB, the iPod: {gb} GB").format(have=f"{active / 1024 ** 3:.1f}", gb=gb))
     if active <= gb * 1024 ** 3:
@@ -90,4 +91,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    settings.run(main)

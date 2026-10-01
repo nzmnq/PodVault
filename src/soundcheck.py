@@ -62,6 +62,7 @@ def main():
 
     cfg = settings.require()
     active = settings.library_paths(cfg)[1]
+    print(_("Looking for tracks without Sound Check in {folder}").format(folder=active))
     todo = [os.path.join(p, f) for p, _d, files in os.walk(active)
             for f in audiotags.audio_files(files) if not audiotags.norm_tag(os.path.join(p, f))]
     print(_("Active tracks without Sound Check: {n}").format(n=len(todo)))
@@ -77,7 +78,7 @@ def main():
     for n, fp in enumerate(todo, 1):
         lufs = measure(ffmpeg, fp)
         if lufs is None:
-            print("  " + _("! could not measure: {file}").format(file=os.path.relpath(fp, active)))
+            settings.problem(_("could not measure: {file}").format(file=os.path.relpath(fp, active)))
             continue
         audiotags.set_norm_tag(fp, norm_string(soundcheck_from_lufs(lufs)))
         done += 1
@@ -88,4 +89,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    settings.run(main)

@@ -26,3 +26,52 @@ jobs:
         run: ruff check --select F,E9 --exclude vendor .
       - name: Tests
         run: python -m unittest discover tests -v
+
+  # The installers, end to end: install, check where things went, uninstall.
+  installer:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: ./install.sh
+      - name: Check (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          R=~/Applications/PodVault.app/Contents/Resources
+          test -x ~/Applications/PodVault.app/Contents/MacOS/PodVault
+          test -s $R/podvault.icns
+          $R/venv/bin/python $R/app/packaging/helper.py where | grep -q "Application Support/PodVault"
+          $R/venv/bin/python -c "import PyQt6.QtMultimedia, PyQt6.QtSvg, mutagen"
+      - name: Check (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          test -x ~/.local/bin/podvault
+          grep -q "^Exec=$HOME/.local/bin/podvault" ~/.local/share/applications/podvault.desktop
+          ~/.local/lib/podvault/venv/bin/python ~/.local/lib/podvault/app/packaging/helper.py where | grep -q "/.config/podvault/"
+      - name: Uninstall (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: |
+          ./install.sh --uninstall
+          test ! -e ~/Applications/PodVault.app && test ! -e ~/.local/lib/podvault
+      - name: Install, check, uninstall (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./install.ps1
+          $d = "$env:LOCALAPPDATA\Programs\PodVault"
+          if (-not (Test-Path "$d\venv\Scripts\pythonw.exe")) { throw 'no venv' }
+          if (-not (Test-Path "$d\podvault.ico")) { throw 'no icon' }
+          if (-not (Test-Path "$([Environment]::GetFolderPath('Programs'))\PodVault.lnk")) { throw 'no shortcut' }
+          if (-not (& "$d\venv\Scripts\python.exe" "$d\app\packaging\helper.py" where).Contains('\PodVault\')) { throw 'settings not in %APPDATA%' }
+          ./install.ps1 -Uninstall
+          if (Test-Path $d) { throw 'not removed' }
