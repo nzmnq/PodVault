@@ -82,6 +82,11 @@ FIELDS = [
     Field("new_tracks_target", "active", "choice", "New tracks go to",
           "Active = on the iPod at the next sync, Archive = set aside.",
           "Library", first_run=True, options=["active", "archive"]),
+    Field("singles", "own", "choice", "Singles go to",
+          "own = each single is an album of its own, named after the track, as stores file them. "
+          "merged = all of an artist's singles in one 'Singles' album (how older versions did it). "
+          "\"Split the Singles albums\" in the menu turns a merged library into own albums.",
+          "Library", options=["own", "merged"]),
     Field("genres_file", os.path.join("data", "genres.txt"), "file", "Genres file",
           "Genre and style per album: suggested by the AI, edited by you, "
           "written into the tags by 'Genres'.", "Library"),
@@ -127,6 +132,22 @@ FIELDS = [
           "(key from aistudio.google.com).", "AI"),
     Field("anthropic_model", "claude-opus-5", "text", "Anthropic API model",
           "Model for the Anthropic API mode.", "AI"),
+
+    # -------------------------------------------------------------- Spotify
+    Field("spotify_client_id", "", "text", "Spotify client ID",
+          "For cover art from Spotify, which has nearly every release. Create an app (any name, any "
+          "redirect URI) at developer.spotify.com/dashboard and copy its client ID and secret. "
+          "Without them covers come from Deezer and MusicBrainz.", "Covers", optional=True),
+    Field("spotify_client_secret", "", "text", "Spotify client secret",
+          "Shown under the client ID on the app's page (View client secret).", "Covers", optional=True),
+
+    # -------------------------------------------------------------- Last.fm
+    Field("lastfm_api_key", "", "text", "Last.fm API key",
+          "From last.fm/api/account/create (any name and description will do). With it and the "
+          "secret, \"Connect Last.fm\" in the menu lets every iPod sync scrobble what was played.",
+          "Last.fm", optional=True),
+    Field("lastfm_api_secret", "", "text", "Last.fm shared secret",
+          "Shown next to the API key on the same Last.fm page.", "Last.fm", optional=True),
 
     # ---------------------------------------------------------- audio tools
     Field("ffmpeg_path", "auto", "file", "ffmpeg",
@@ -230,6 +251,10 @@ def load():
     with open(FILE, encoding="utf-8") as f:
         stored = json.load(f)
     values = defaults()
+    # settings saved before "singles" existed belong to a library built the old way: keep it
+    # until its owner switches (or splits the Singles albums), new ones get own albums
+    if "singles" not in stored:
+        values["singles"] = "merged"
     values.update({k: v for k, v in stored.items() if k in BY_KEY})
     return values
 

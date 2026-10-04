@@ -1,9 +1,12 @@
 """
 Find cover art for tracks that have none, and embed it.
 
-Sources: the public Deezer API (no key needed, and it knows this catalogue
-best — the library was collected from there); fallback: MusicBrainz plus
-the Cover Art Archive, which is more accurate for Western releases.
+Sources: Spotify first when its keys are in the settings (it has nearly
+everything, small underground releases too; a free app at
+developer.spotify.com gives a client ID and secret), then the public Deezer
+API (no key needed), then MusicBrainz plus the Cover Art Archive, which is
+more accurate for Western releases. An album's own cover — embedded in one
+of its tracks, or folder.jpg — always comes first.
 
 What's found is NOT applied blindly: the artist name in the response is
 checked against the tag, and anything that doesn't match is flagged as
@@ -37,6 +40,7 @@ from i18n import _
 
 # Set from the settings in main()
 LIBRARY = None
+SPOTIFY = {"id": "", "secret": "", "token": None, "until": 0}
 SIZE = (500, 500)
 
 SSL_CTX = ssl.create_default_context(cafile=certifi.where())
@@ -86,6 +90,51 @@ def deezer_track(artist, title, strict=True):
         }
 
 
+def spotify_token():
+    """An app token (client credentials); None without keys."""
+    if not (SPOTIFY["id"] and SPOTIFY["secret"]):
+        return None
+    if SPOTIFY["token"] and time.time() < SPOTIFY["until"]:
+        return SPOTIFY["token"]
+    import base64
+    auth = base64.b64encode(f"{SPOTIFY['id']}:{SPOTIFY['secret']}".encode()).decode()
+    req = urllib.request.Request("https://accounts.spotify.com/api/token",
+                                 data=b"grant_type=client_credentials",
+                                 headers={"Authorization": "Basic " + auth, "User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, context=SSL_CTX, timeout=20) as r:
+            d = json.loads(r.read().decode())
+    except Exception as e:
+        # wrong keys: say it once and go on without Spotify, not once per album
+        settings.problem(_("Spotify refused the client ID / secret ({error}); covers come from the other "
+                           "sources").format(error=e))
+        SPOTIFY["id"] = ""
+        return None
+    SPOTIFY["token"], SPOTIFY["until"] = d["access_token"], time.time() + d.get("expires_in", 3600) - 60
+    return SPOTIFY["token"]
+
+
+def spotify(artist, name, kind="album"):
+    """Spotify's search: kind 'album' or 'track'. Nothing without keys."""
+    token = spotify_token()
+    if not token:
+        return
+    q = urllib.parse.quote(f'{kind}:"{name}" artist:"{artist}"')
+    req = urllib.request.Request(f"https://api.spotify.com/v1/search?q={q}&type={kind}&limit=5",
+                                 headers={"Authorization": "Bearer " + token, "User-Agent": UA})
+    with urllib.request.urlopen(req, context=SSL_CTX, timeout=20) as r:
+        d = json.loads(r.read().decode())
+    for it in (d.get(kind + "s") or {}).get("items", []):
+        alb = it if kind == "album" else (it.get("album") or {})
+        images = alb.get("images") or []
+        yield {
+            "artist": ((it.get("artists") or [{}])[0]).get("name"),
+            "title": alb.get("name"),
+            "url": images[0]["url"] if images else None,        # the largest, 640 px
+            "via": "spotify/" + kind,
+        }
+
+
 def musicbrainz(artist, album):
     q = urllib.parse.quote(f'artist:"{artist}" AND release:"{album}"')
     d = get_json(f"https://musicbrainz.org/ws/2/release?query={q}&fmt=json&limit=5")
@@ -106,6 +155,7 @@ def find_cover(artist, album, is_single, title, first_track=None):
     if is_single:
         t = strip_feat(title)
         attempts += [
+            lambda: spotify(artist, t, "track"),
             lambda: deezer_track(artist, t),
             lambda: deezer_album(artist, t),
             lambda: deezer_track(a1, t),
@@ -115,6 +165,7 @@ def find_cover(artist, album, is_single, title, first_track=None):
     else:
         base = strip_edition(album)
         attempts += [
+            lambda: spotify(artist, base, "album"),
             lambda: deezer_album(artist, album),
             lambda: deezer_album(artist, base),  # without the edition suffix
             lambda: deezer_album(a1, base),
@@ -124,7 +175,10 @@ def find_cover(artist, album, is_single, title, first_track=None):
         if first_track:
             # compilations often have a different album title in each
             # catalogue, but a specific track is found more reliably
+            attempts.append(lambda: spotify(artist, strip_feat(first_track), "track"))
             attempts.append(lambda: deezer_track(artist, strip_feat(first_track)))
+            # the strict query misses some Cyrillic titles the plain one finds; the artist is still checked
+            attempts.append(lambda: deezer_track(artist, strip_feat(first_track), strict=False))
 
     for make in attempts:
         try:
@@ -221,6 +275,8 @@ def main():
 
     global LIBRARY, SIZE
     cfg = settings.require()
+    SPOTIFY["id"] = (cfg.get("spotify_client_id") or "").strip()
+    SPOTIFY["secret"] = (cfg.get("spotify_client_secret") or "").strip()
     LIBRARY = settings.library_paths(cfg)[0]
     SIZE = (int(cfg["cover_size"]), int(cfg["cover_size"]))
     if not os.path.isdir(LIBRARY):
@@ -231,11 +287,15 @@ def main():
     total = sum(len(g["files"]) for g in groups.values())
     print(_("Tracks without cover art: {tracks} in {albums} albums").format(tracks=total, albums=len(groups)))
     if groups:
-        print(_("Searching Deezer, then MusicBrainz, album by album:\n"))
+        print((_("Searching Spotify, Deezer, then MusicBrainz, album by album:\n") if SPOTIFY["id"] else
+               _("Searching Deezer, then MusicBrainz, album by album:\n")))
     found, doubtful, missing = [], [], []
 
     for rel, g in sorted(groups.items()):
-        is_single = (g["album"] or "").lower() == "singles"
+        # the old 'Singles' album, or a single filed as an album of its own (one track, its title)
+        is_single = (g["album"] or "").lower() == "singles" or (
+            len(g["files"]) == 1 and norm(strip_feat(g["files"][0]["title"])) in
+            (norm(g["album"]), norm((g["album"] or "").removesuffix(" - Single"))))
         print(f"{rel}")
 
         if is_single:

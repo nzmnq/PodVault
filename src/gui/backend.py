@@ -102,6 +102,8 @@ TOOLS = {
     "incoming": dict(title=N_("Add new tracks"), script="add_incoming.py",
                      args=lambda p: [_existing(p, "folder"), "--to",
                                      "archive" if p.get("to") == "archive" else "active"],
+                     # the dry run's plan, as the review table left it: nothing is read twice
+                     apply_args=lambda p: ["--plan", incoming_plan()] if os.path.exists(incoming_plan()) else [],
                      apply="--apply", refresh={"library", "ipod"},
                      confirm=N_("Fix the tags and add these tracks to the library?")),
     "covers": dict(title=N_("Find missing cover art"), script="fetch_covers.py", args=lambda p: [],
@@ -126,6 +128,13 @@ TOOLS = {
     "undo": dict(title=N_("Undo the last moves"), script="library.py", args=lambda p: ["--undo"],
                  apply="--apply", refresh={"library"},
                  confirm=N_("Put the albums from the last batch of moves back?")),
+    "lastfm": dict(title=N_("Connect Last.fm"), script="lastfm.py", args=lambda p: ["login"], refresh=set()),
+    "undo_tags": dict(title=N_("Undo the last tag changes"), script="undo_tags.py", args=lambda p: [],
+                      apply="--apply", refresh={"library", "ipod"},
+                      confirm=N_("Put back what the last import, artist split or genre write changed?")),
+    "split_singles": dict(title=N_("Split the Singles albums"), script="add_incoming.py",
+                          args=lambda p: ["--split-singles"], apply="--apply", refresh={"library", "ipod"},
+                          confirm=N_("Make every single an album of its own?")),
     "artists": dict(title=N_("Split glued artists"), script="add_incoming.py",
                     args=lambda p: ["--fix-library"], apply="--apply", refresh={"library", "ipod"},
                     confirm=N_("Move the features into the titles and the albums to the main artist?")),
@@ -173,9 +182,18 @@ ABOUT = {
                 'the albums are moved to match. Shown as a dry run first.'),
     "undo": N_('Puts back the albums moved by the last "Apply" or by dragging in the window. '
                'Albums merged into an existing folder cannot be undone. Shown as a dry run first.'),
+    "lastfm": N_("Opens the Last.fm page where you allow PodVault to scrobble, and waits for it. Needs "
+                 "the API key and secret in Settings → Last.fm. After that every iPod sync sends what "
+                 "was played since the last one."),
+    "undo_tags": N_("Puts back what the last \u201cAdd new tracks\u201d, \u201cSplit glued artists\u201d or "
+                    "\u201cGenres \u2014 write the tags\u201d changed: old tags, files moved back. Tracks an import "
+                    "added are moved out to reports/undone, not deleted. Shown as a dry run first."),
+    "split_singles": N_("For a library from older versions, where all of an artist's singles sit in one "
+                        "\u201cSingles\u201d album: every single becomes an album of its own, named after the track "
+                        "(\u201cTitle - Single\u201d if the artist has an album of that name). New singles then follow "
+                        "(Settings \u2192 Singles go to). Undoable. Shown as a dry run first."),
     "artists": N_("Finds artists written as one name glued with a comma ('A, B'): A stays the artist, "
-                  "B goes into the title as (feat. B), and the album moves to A's folder (singles into "
-                  "A's Singles). Names that really have a comma go into artists.txt next to the genres "
+                  "B goes into the title as (feat. B), and the album moves to A's folder. Names that really have a comma go into artists.txt next to the genres "
                   "file. Shown as a dry run first."),
     "duplicates": N_("Lists tracks stored more than once (Active and Archive, mp3 and m4a). "
                      "Only a report: nothing is deleted."),
@@ -203,7 +221,8 @@ def tool_steps(tool, params, applying):
         return spec["steps"](params)
     args = spec["args"](params)
     if applying:
-        args = [*args, spec["apply"], *spec.get("apply_extra", [])]
+        args = [*args, spec["apply"], *spec.get("apply_extra", []),
+                *(spec["apply_args"](params) if "apply_args" in spec else [])]
     return [[spec["script"], *args]]
 
 
@@ -366,6 +385,11 @@ def save_marks(albums, moves, progress=None):
     except Exception as e:
         errors.append(_("cleaning up empty folders: {error}").format(error=e))
     return done, errors
+
+
+def incoming_plan():
+    """The plan the last "Add new tracks" dry run saved (add_incoming.save_plan)."""
+    return os.path.join(settings.path("reports_dir", cfg()) or "", "incoming_plan.json")
 
 
 def marks_file():

@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -170,6 +171,75 @@ def sample(folder, kind, name="track"):
         path = os.path.join(folder, name + ".m4a")
         shutil.copy(os.path.join(DATA, f"silence_{kind}.m4a"), path)
     return path
+
+
+class IpodRetag(unittest.TestCase):
+    def test_renamed_track_is_updated_in_place_and_keeps_its_plays(self):
+        import ipod_sync
+        import library
+        import tags
+        root = tempfile.mkdtemp()
+        album = os.path.join(root, "Active", "ooes", "мне не страшно")
+        os.makedirs(album)
+        p = sample(album, "mp3", "01")
+        tags.write(p, {"artist": "ooes", "albumartist": "ooes", "album": "мне не страшно",
+                       "title": "слизывай (feat. Apex)", "track": "2/8", "year": "2023"})
+        ipod_sync.LIBRARY = root
+        listing = library.tracks(root)
+        on_ipod = [{"artist": "ooes, Apex", "album_artist": "ooes, Apex", "album": "мне не страшно",
+                    "title": "слизывай", "play_count": 41, "sort_artist": "ooes, Apex"}]
+        pairs, _missing = ipod_sync.match_device(
+            {p: (ipod_sync.device_keys("ooes", "слизывай (feat. Apex)"), None)},
+            [(ipod_sync.device_keys("ooes, Apex", "слизывай"), None)])
+        self.assertEqual(pairs, {0: p})          # the old copy on the iPod is recognised
+        d = ipod_sync.retag_plan(pairs, on_ipod, listing)[0]
+        self.assertEqual((d["artist"], d["album_artist"], d["title"], d["track_number"]),
+                         ("ooes", "ooes", "слизывай (feat. Apex)", 2))
+        self.assertIsNone(d["sort_artist"])
+        self.assertNotIn("play_count", d)
+
+
+class SinglesMode(unittest.TestCase):
+    def test_own_album_by_default_merged_on_request(self):
+        import add_incoming
+        def single(title):
+            return {"album": None, "artists": ["Band"], "aa_raw": "Band", "title": title, "genre": None,
+                    "src": "x.m4a", "track": None, "track_total": None}
+        lib = {("band", "hit"): {"intro"}, ("band", "singles"): {"old one"}}
+        spell = lambda n: n
+        own, _n = add_incoming.build_plan([single("Song (feat. X)"), single("Hit")], {}, spell, "/L", lib)
+        self.assertEqual(sorted((p["album"], p["track"]) for p in own),
+                         [("Hit - Single", 1), ("Song", 1)])     # 'Hit' is a real album of theirs
+        merged, _n = add_incoming.build_plan([single("Song"), single("Hit")], {}, spell, "/L", lib, merged=True)
+        self.assertEqual(sorted((p["album"], p["track"], p["track_total"]) for p in merged),
+                         [("Singles", 2, 3), ("Singles", 3, 3)])  # numbered on after the one there
+
+    def test_settings_from_before_keep_the_old_way(self):
+        import json
+        with open(settings.FILE, "w", encoding="utf-8") as f:
+            json.dump({"library_dir": "/L"}, f)
+        self.assertEqual(settings.load()["singles"], "merged")
+        settings.save({**settings.load(), "singles": "own"})
+        self.assertEqual(settings.load()["singles"], "own")
+        os.remove(settings.FILE)
+
+
+class Scrobbles(unittest.TestCase):
+    def test_plays_are_spaced_back_and_never_sent_twice(self):
+        import lastfm
+        row = {"artist": "ooes, Apex", "title": "слизывай", "album": "мне не страшно",
+               "recent_playcount": 2, "play_count": 12, "last_played": 2_000_000_000, "length": 120000}
+        names = {0: ("ooes", "слизывай (feat. Apex)", "мне не страшно")}
+        got = lastfm.plays([row], names, before={})
+        self.assertEqual([(p["artist"], p["timestamp"]) for p in got],
+                         [("ooes", 2_000_000_000), ("ooes", 2_000_000_000 - 120)])
+        # the last sync already saw 11 plays: only the one since then counts
+        before = {"ooes, Apex | слизывай | мне не страшно": {"play_count": 11}}
+        self.assertEqual(len(lastfm.plays([row], None, before)), 1)
+        cfg = {"reports_dir": tempfile.mkdtemp()}
+        with unittest.mock.patch.object(settings, "path", lambda k, c=None: cfg[k]):
+            self.assertEqual(lastfm.queue(cfg, got), 2)
+            self.assertEqual(lastfm.queue(cfg, got), 0)      # a second sync: nothing new
 
 
 class TagsForEveryFormat(unittest.TestCase):

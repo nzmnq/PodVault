@@ -18,7 +18,7 @@ What it does to the tags:
   APIC                — cover art from .covers/ipod_jpg is embedded
   tag version         — for mp3 ID3v2.3 / UTF-16, otherwise an old iPod garbles Cyrillic
 
-Folders with a single track are merged into a 'Singles' album per artist.
+A folder with a single track stays an album of its own, as stores file singles.
 
 Dry run by default (nothing written). To write for real: --apply
 
@@ -300,7 +300,6 @@ def plan():
     def C(name):
         return canon.get(norm(name), name) if name else name
 
-    singles = defaultdict(list)
     regular = []
     notes = []
 
@@ -351,10 +350,7 @@ def plan():
         alb["album_artist"] = album_artist
         alb["art_source"] = how
 
-        if len(alb["tracks"]) == 1:
-            singles[album_artist].append(alb)
-        else:
-            regular.append(alb)
+        regular.append(alb)
 
     out = []
     for alb in regular:
@@ -372,28 +368,7 @@ def plan():
                 }
             )
 
-    # singles: one 'Singles' album per artist, numbered by title
-    for artist, albs in sorted(singles.items()):
-        adir = os.path.join(DEST, safe_name(artist), "Singles")
-        ordered = sorted(albs, key=lambda a: norm(a["tracks"][0]["out_title"]))
-        for i, alb in enumerate(ordered, 1):
-            t = alb["tracks"][0]
-            out.append(
-                {
-                    **t,
-                    "album_artist": artist,
-                    "album": "Singles",
-                    "track": i,
-                    "track_total": len(ordered),
-                    "disc": None,
-                    "disc_total": None,
-                    "art": alb["art"],
-                    "dest": os.path.join(adir, f"{i:02d} - {safe_name(t['out_title'])}"
-                                               f"{audiotags.extension(t['src'])}"),
-                }
-            )
-
-    return out, notes, ties, singles
+    return out, notes, ties
 
 
 # -------------------------------------------------------------- write
@@ -445,7 +420,7 @@ def main():
     DEST = os.path.abspath(args.dest) if args.dest else settings.library_paths(cfg)[0]
     REPORT_DIR = settings.path("reports_dir", cfg)
 
-    items, notes, ties, singles = plan()
+    items, notes, ties = plan()
     if args.limit:
         items = items[: args.limit]
 
@@ -478,8 +453,6 @@ def main():
             (_("tracks with features in TPE1"), len(feats)),
             (_("titles that will change"), len(retitled)),
             (_("genres that will change"), len(regenred)),
-            (_("merged into 'Singles'"), _("{tracks} tracks for {artists} artists").format(
-                tracks=sum(len(v) for v in singles.values()), artists=len(singles))),
             (_("without cover art"), len(no_art))]
     width = max(len(label) for label, _v in rows)
     for label, value in rows:

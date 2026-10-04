@@ -308,6 +308,9 @@ def main():
     if args.step == "suggest":
         suggest(cfg, path, args.backend)
     else:
+        if args.apply:
+            import undo_tags
+            undo_tags.start(cfg, "genres")
         apply(cfg, path, args.apply)
 
 

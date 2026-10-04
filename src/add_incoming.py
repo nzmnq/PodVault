@@ -10,7 +10,11 @@ art embedded, so their own is kept.
 SoundCloud downloads get their real title and artist from the track page
 (see soundcloud.py); their fragmented m4a, which an iPod won't play and
 which reads as 0 s long, is rewritten as a plain one (no re-encoding).
-A single-track release goes into the artist's 'Singles' album.
+A single is an album of its own, named after the track, the way every store
+files it ('Artist/Title/01 - Title'); ' - Single' is added when the artist
+already has an album of that name. With the setting "Singles go to" on
+'merged' (the old way, kept for libraries built like that) they go into the
+artist's one 'Singles' album instead, numbered on.
 
 A track counts as already there when its tags match a library track, or
 when its audio does: the Chromaprint fingerprint (duplicates.py) catches
@@ -20,6 +24,11 @@ Names that contain a comma, and aliases, are in artists.txt next to the
 genres file — see ARTISTS_HELP.
 
   python src/add_incoming.py --fix-library        # unglue 'A, B' artists in the library
+
+The dry run also saves its plan (<reports>/incoming_plan.json): every track,
+what it becomes and whether it's already there. The window shows it as a
+table to correct or untick tracks; '--apply --plan FILE' then adds exactly
+that, without reading the library or comparing the audio a second time.
 
 New files arrive as a flat pile with no folders, so the tags are the only
 source of structure. The dry run (the default) shows what's in them —
@@ -37,6 +46,7 @@ from come from the settings; both can be overridden on the command line.
 """
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -71,7 +81,15 @@ ARTISTS_HELP = """\
 # 'alias = Name' writes the alias as Name everywhere (case doesn't matter).
 """
 DEFAULT_PROTECT = ("AC/DC", "125, Rue Montmartre")
-SINGLES = "Singles"
+SINGLES = "Singles"      # setting singles = 'merged': every single of an artist in one album
+
+
+def single_album(title, artist, lib_albums):
+    """A single's album: its title without features — or 'Title - Single' when the artist
+    already has a real album of that name that doesn't hold this track."""
+    album = strip_feat(title) or title
+    have = lib_albums.get((norm(artist), norm(album)))
+    return f"{album} - Single" if have and norm(strip_feat(title)) not in have else album
 
 
 def load_artists(cfg):
@@ -351,44 +369,48 @@ def speller(spelling, alias, files):
     return spell
 
 
-def build_plan(files, protect, spell, dest_root, lib_albums):
+def build_plan(files, protect, spell, dest_root, lib_albums, merged=False):
     # group by the base album title, so that the three variants of
     # 'wifiskeleton, X' merge into one album; a track with no album is a
-    # single and goes into its artist's 'Singles'
+    # single: an album of its own
     groups = defaultdict(list)
     for f in files:
         if f["album"] and norm(f["album"]) != norm(SINGLES):
             groups[norm(strip_edition(f["album"]))].append(f)
         else:
             first = f["artists"][0] if f["artists"] else (f["aa_raw"] or "")
-            groups[("singles", norm(spell(first)))].append(f)
+            groups[("single", norm(spell(first)), "" if merged else norm(f["title"]))].append(f)
 
     plan, notes = [], []
     for key, g in groups.items():
-        singles = isinstance(key, tuple)
+        single = isinstance(key, tuple)
         cands = {f["aa_raw"] for f in g if f["aa_raw"]}
         aa = resolve_album_artist({spell(c) for c in cands})
         if aa is None:
             counts = Counter(spell(f["artists"][0]) for f in g if f["artists"])
             aa = counts.most_common(1)[0][0] if counts else "Unknown Artist"
-            if not singles:
+            if not single:
                 notes.append({"kind": "compilation?", "album": g[0]["album"], "used": aa,
                               "candidates": sorted(cands)})
         else:
             parts = split_artists(aa, protect)
             if len(parts) > 1:
-                notes.append({"kind": "glued", "album": g[0]["album"] or SINGLES,
+                notes.append({"kind": "glued", "album": g[0]["album"] or g[0]["title"],
                               "used": parts[0], "candidates": [aa]})
                 aa = parts[0]
         aa = spell(aa)
 
-        album = SINGLES if singles else g[0]["album"]
-        # singles continue the numbering of the artist's 'Singles' already in the library
-        have = len(lib_albums.get((norm(aa), norm(SINGLES)), ())) if singles else 0
-        for n, f in enumerate(sorted(g, key=lambda f: f["title"].lower()) if singles else g, 1):
+        if single and merged:
+            album = SINGLES
+        else:
+            album = single_album(g[0]["title"], aa, lib_albums) if single else g[0]["album"]
+        # merged singles continue the numbering of the artist's 'Singles' already in the library
+        have = len(lib_albums.get((norm(aa), norm(SINGLES)), ())) if single and merged else 0
+        for n, f in enumerate(sorted(g, key=lambda f: f["title"].lower()) if single else g, 1):
             names = [spell(a) for a in f["artists"]] or [aa]
             title = with_feats(f["title"], [x for x in names[1:] if norm(x) != norm(names[0])])
-            track, total = (have + n, have + len(g)) if singles else (f["track"], f["track_total"])
+            track, total = ((have + n, have + len(g)) if merged else (1, 1)) if single \
+                else (f["track"], f["track_total"])
             plan.append({
                 **f,
                 "album_artist": aa,
@@ -441,14 +463,83 @@ def same_audio(plan, lib_lengths, cfg):
     return found
 
 
+# what a saved plan keeps of each track: enough to write it without reading anything again
+PLAN_KEYS = ("orig", "file", "out_artist", "out_title", "album_artist", "album", "out_genre", "year",
+             "composer", "track", "track_total", "disc", "disc_total", "bitrate", "length", "same_as")
+
+
+def plan_file(cfg):
+    return os.path.join(settings.path("reports_dir", cfg), "incoming_plan.json")
+
+
+def save_plan(cfg, args, plan, dupes, lib_albums):
+    """The dry run's plan, for the window's review table and for '--apply --plan'."""
+    dupe_ids = {id(it) for it in dupes}
+    items = [{**{k: it.get(k) for k in PLAN_KEYS}, "status": "dupe" if id(it) in dupe_ids else "new",
+              "skip": id(it) in dupe_ids} for it in plan]
+    singles = {it["album_artist"]: len(lib_albums.get((norm(it["album_artist"]), norm(SINGLES)), ()))
+               for it in plan if it["album"] == SINGLES}
+    path = plan_file(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"source": os.path.abspath(args.source), "to": args.to, "singles": singles,
+                   "items": items}, f, ensure_ascii=False, indent=1)
+
+
+def add_from_plan(args, cfg, path, dest_root):
+    """--apply --plan: add what the (maybe corrected) plan says. Nothing is read again but
+    the tracks themselves; a fragmented m4a is rewritten again, the temporary copy is gone."""
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if data["source"] != os.path.abspath(args.source) or data["to"] != args.to:
+        sys.exit(_("The plan was made for another folder or target: check again."))
+    ffmpeg = settings.ffmpeg(cfg)
+    have = {(norm(aa), norm(SINGLES)): n for aa, n in data.get("singles", {}).items()}
+    with tempfile.TemporaryDirectory(prefix="podvault-") as tmp:
+        todo = []
+        for it in data["items"]:
+            if it["skip"]:
+                continue
+            if not os.path.exists(it["orig"]):
+                settings.problem(_("gone since the check: {file}").format(file=it["file"]))
+                continue
+            src = it["orig"]
+            if needs_remux(src):
+                src = remux(ffmpeg, src, tmp) if ffmpeg else None
+                if not src:
+                    settings.problem(_("fragmented m4a, and ffmpeg can't rewrite it") + f": {it['file']}")
+                    continue
+            album = it["album"] or strip_feat(it["out_title"])
+            todo.append({**it, "src": src, "album": album, "replace": False,
+                         "dest": os.path.join(dest_root, safe_name(it["album_artist"]), safe_name(album),
+                                              f"{it['track'] or 0:02d} - {safe_name(it['out_title'])}"
+                                              f"{audiotags.extension(src)}")})
+        renumber_singles(todo, have)
+        todo, renamed, dropped = unique_dests(todo)
+        for n, it in enumerate(todo, 1):
+            write_track(it)
+            if n % 50 == 0:
+                print(f"  ... {n}/{len(todo)}")
+    print(_("\nTracks added: {n}").format(n=len(todo)))
+    skipped = sum(1 for it in data["items"] if it["skip"])
+    if skipped:
+        print(_("Left out, as the plan says: {n}").format(n=skipped))
+    os.remove(path)             # used up: the next import starts from a fresh check
+    import genres
+    import library
+    genres.keep_tags_in_line(cfg, listing=library.listing(settings.library_paths(cfg)[0], quick=True))
+
+
 def renumber_singles(items, lib_albums):
-    """Number the singles that are really added on from the library's, without gaps."""
+    """Merged singles that are really added: numbered on from the library's, without gaps.
+    lib_albums: load_library's, or {(artist, 'singles'): count} from a saved plan."""
     by_artist = defaultdict(list)
     for it in items:
         if it["album"] == SINGLES:
             by_artist[it["album_artist"]].append(it)
     for aa, group in by_artist.items():
-        have = len(lib_albums.get((norm(aa), norm(SINGLES)), ()))
+        have = lib_albums.get((norm(aa), norm(SINGLES)), ())
+        have = have if isinstance(have, int) else len(have)
         for n, it in enumerate(group, have + 1):
             it["track"], it["track_total"] = n, have + len(group)
             it["dest"] = os.path.join(os.path.dirname(it["dest"]),
@@ -488,6 +579,8 @@ def unique_dests(items):
 
 def write_track(item):
     os.makedirs(os.path.dirname(item["dest"]), exist_ok=True)
+    if audiotags.JOURNAL:
+        audiotags.JOURNAL.added(item["dest"])
     shutil.copy2(item["src"], item["dest"])
 
     def pair(n, total):
@@ -506,6 +599,8 @@ def write_track(item):
     folder_jpg = os.path.join(os.path.dirname(item["dest"]), "folder.jpg")
     pic = audiotags.cover(item["dest"])
     if pic and not os.path.exists(folder_jpg):
+        if audiotags.JOURNAL:
+            audiotags.JOURNAL.added(folder_jpg)
         with open(folder_jpg, "wb") as f:
             f.write(pic)
 
@@ -522,14 +617,32 @@ def main():
                     help=_("overwrite tracks that are already in the library"))
     ap.add_argument("--to", choices=("archive", "active"), default=cfg["new_tracks_target"],
                     help=_("where to put new tracks (setting: {value})").format(value=cfg['new_tracks_target']))
+    ap.add_argument("--plan", metavar="FILE",
+                    help=_("with --apply: add what this saved plan says (the window's review)"))
+    ap.add_argument("--split-singles", action="store_true",
+                    help=_("take the old 'Singles' albums apart: every single an album of its own"))
     ap.add_argument("--fix-library", action="store_true",
                     help=_("split 'A, B' artists already in the library: features into the title"))
     args = ap.parse_args()
     protect, alias = load_artists(cfg)
+    if args.apply:
+        import undo_tags
+        undo_tags.start(cfg, "fix-library" if args.fix_library else
+                        "split-singles" if args.split_singles else "import")
+
+    if args.split_singles:
+        import fix_artists
+        fix_artists.split_singles(library, args.apply, settings.path("genres_file", cfg),
+                                  os.path.join(settings.path("reports_dir", cfg), "undone", "singles"))
+        if args.apply and cfg.get("singles") != "own":
+            # the library is filed the new way now: new singles follow it
+            settings.save({**cfg, "singles": "own"})
+            print(_("Setting \"Singles go to\" is now: own albums."))
+        return
 
     if args.fix_library:
         import fix_artists
-        return fix_artists.run(library, protect, alias, args.apply)
+        return fix_artists.run(library, protect, alias, args.apply, settings.path("genres_file", cfg))
 
     if not args.source or not os.path.isdir(args.source):
         sys.exit(_("Folder not found: {folder}").format(folder=args.source))
@@ -537,6 +650,8 @@ def main():
     # After the Active/Archive split, writing into the library root would
     # put tracks outside both folders — so the target is always one of them.
     dest_root = archive if args.to == "archive" else active
+    if args.apply and args.plan:
+        return add_from_plan(args, cfg, args.plan, dest_root)
 
     print(_("Reading the library (what's there, how names are spelled): {folder}").format(folder=library))
     lib_albums, spelling, lib_lengths = load_library(library)
@@ -545,7 +660,8 @@ def main():
         files, broken = read_incoming(args.source, protect, cfg, tmp)
         print(_("  read: {n} tracks").format(n=len(files)))
         print(_("Making the plan: albums, artists, file names..."))
-        plan, notes = build_plan(files, protect, speller(spelling, alias, files), dest_root, lib_albums)
+        plan, notes = build_plan(files, protect, speller(spelling, alias, files), dest_root, lib_albums,
+                                 merged=cfg.get("singles") == "merged")
         return report_and_add(args, cfg, plan, notes, files, broken, lib_albums, lib_lengths, dest_root)
 
 
@@ -626,6 +742,7 @@ def report_and_add(args, cfg, plan, notes, files, broken, lib_albums, lib_length
             print(f"  {label.ljust(width)} : {value}")
 
     if not args.apply:
+        save_plan(cfg, args, plan, dupes, lib_albums)
         if fresh or (args.replace and plan):
             print(_("\nNothing written. Run with --apply to add the new tracks."))
         else:

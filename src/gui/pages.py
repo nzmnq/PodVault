@@ -1376,6 +1376,90 @@ class ToolDialog(QDialog):
             self.accept()
 
 
+class ImportReview(QDialog):
+    """The dry run's plan of "Add new tracks" as a table: untick a track to leave it out,
+    correct its artist, title or album. Saved back to the plan, which --apply then follows."""
+
+    COLS = (("out_artist", N_("Artist")), ("out_title", N_("Title")), ("album", N_("Album")),
+            ("album_artist", N_("Album artist")))
+
+    def __init__(self, win, job):
+        import json
+        super().__init__(win)
+        self.win, self.job = win, job
+        self.path = backend.incoming_plan()
+        with open(self.path, encoding="utf-8") as f:
+            self.data = json.load(f)
+        self.setWindowTitle(_("Review the new tracks"))
+        self.resize(UI["dialog_w"] * 2, 560)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 12)
+        head = QLabel(_("Review the new tracks"))
+        head.setObjectName("h2")
+        lay.addWidget(head)
+        lay.addWidget(muted(_("Unticked tracks are left out. Double-click a cell to correct it. "
+                              "Tracks already in the library start unticked.")))
+        items = self.data["items"]
+        self.table = QTableWidget(len(items), len(self.COLS) + 2)
+        self.table.setHorizontalHeaderLabels([""] + [_(t) for _k, t in self.COLS] + [_("Status")])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        for r, it in enumerate(items):
+            box = QTableWidgetItem()
+            box.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            box.setCheckState(Qt.CheckState.Unchecked if it["skip"] else Qt.CheckState.Checked)
+            self.table.setItem(r, 0, box)
+            for c, (key, _t) in enumerate(self.COLS, 1):
+                self.table.setItem(r, c, QTableWidgetItem(it.get(key) or ""))
+            if it["status"] == "dupe":
+                where = it.get("same_as")
+                text = (_("same audio as {file}").format(file=os.path.basename(where)) if where
+                        else _("already in the library"))
+            else:
+                text = _("new")
+            st = QTableWidgetItem(text)
+            st.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            st.setToolTip(it.get("same_as") or it["file"])
+            self.table.setItem(r, len(self.COLS) + 1, st)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hh.setStretchLastSection(True)
+        self.table.resizeColumnsToContents()
+        self.table.itemChanged.connect(self._count)
+        lay.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        self.counter = muted("")
+        row.addWidget(self.counter)
+        row.addStretch(1)
+        cancel = button(_("Cancel"))
+        cancel.clicked.connect(self.reject)
+        self.go = button("", primary=True)
+        self.go.clicked.connect(self._apply)
+        row.addWidget(cancel)
+        row.addWidget(self.go)
+        lay.addLayout(row)
+        self._count()
+
+    def _count(self, *_args):
+        n = sum(1 for r in range(self.table.rowCount())
+                if self.table.item(r, 0).checkState() == Qt.CheckState.Checked)
+        self.go.setText(plural(n, "Add {n} track", "Add {n} tracks"))
+        self.go.setEnabled(n > 0)
+
+    def _apply(self):
+        import json
+        for r, it in enumerate(self.data["items"]):
+            it["skip"] = self.table.item(r, 0).checkState() != Qt.CheckState.Checked
+            for c, (key, _t) in enumerate(self.COLS, 1):
+                text = self.table.item(r, c).text().strip()
+                if text:
+                    it[key] = text
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=1)
+        self.accept()
+        self.win.run_tool(self.job.tool, self.job.params, applying=True)
+
+
 # ================================================================ genres
 
 

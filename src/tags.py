@@ -35,6 +35,10 @@ AUDIO_EXTS = (".mp3", ".m4a")
 # read again by the next scan (library.forget).
 WRITTEN = set()
 
+# undo_tags.Journal while a tool keeps a record of what it changes: write() gives it the
+# old values first, so "Undo the last tag changes" can put them back.
+JOURNAL = None
+
 
 def _wrote(path):
     if not WRITTEN:
@@ -196,6 +200,12 @@ def write(path, values, replace=False):
     _wrote(path)
     if replace:
         values = {**{f: None for f in FIELDS}, **values}
+    if JOURNAL is not None:
+        try:
+            old = read(path)
+            JOURNAL.tags(path, {f: old.get(f, "") for f in values})
+        except Unreadable:
+            pass
     if "year" in values:                                  # just the year, in every format
         m = re.search(r"\d{4}", str(values["year"] or ""))
         values = {**values, "year": m.group(0) if m else ""}

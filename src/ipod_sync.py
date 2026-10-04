@@ -35,6 +35,7 @@ Safety:
 """
 
 import argparse
+import json
 import os
 import random
 import re
@@ -253,11 +254,41 @@ def has_cover(path):
     return extract_art_with_source(path)[0] is not None
 
 
-def file_genre(path):
-    try:
-        return audiotags.read(path)["genre"]
-    except audiotags.Unreadable:
-        return ""
+def retag_plan(pairs, tracks, listing):
+    """{iPod track index: {field: value}} for paired tracks whose tags differ from the file.
+
+    The record on the iPod is kept and only these fields change, so play counts, ratings
+    and the date added stay: a track renamed in the library ('ooes, Apex — слизывай' ->
+    'ooes — слизывай (feat. Apex)') is updated in place, not deleted and copied again.
+    Compared from the library index; a file is opened only when its names changed, for
+    the track number, year and composer.
+    """
+    import library
+    rows = {os.path.normcase(p): (rel, t) for p, rel, _s, _m, t in listing}
+    album_of = {rel: rec.get("album") for rel, rec in library.album_info(LIBRARY).items()}
+    out = {}
+    for n, p in pairs.items():
+        rel, t = rows.get(os.path.normcase(p), (None, None))
+        if t is None:
+            continue
+        want = {"artist": t["artist"], "album_artist": t["albumartist"], "title": t["title"],
+                "album": album_of.get(rel), "genre": t["genre"]}
+        diff = {k: v for k, v in want.items() if v and (tracks[n].get(k) or "") != v}
+        if set(diff) - {"genre"}:
+            try:
+                f = audiotags.read(p)
+            except audiotags.Unreadable:
+                continue
+            track, total = _pair(f["track"])
+            disc, discs = _pair(f["disc"])
+            diff.update(track_number=track, total_tracks=total, disc_number=disc or 1,
+                        total_discs=discs or 1, year=int(f["year"]) if f["year"].isdigit() else 0,
+                        composer=f["composer"] or None,
+                        # old sort names would keep the track filed under the old artist
+                        sort_artist=None, sort_album_artist=None, sort_album=None, sort_name=None)
+        if diff:
+            out[n] = diff
+    return out
 
 
 def _pair(raw):
@@ -321,6 +352,7 @@ def make_plan(dev, db, playlist_file=None, playlist_only=False, smart=False, lis
     playlist_only: just add the playlist; of the tracks only its own ones
     missing from the iPod are copied, nothing is deleted or changed.
     """
+    listing = listing if listing is not None else library_listing()
     idx, active_by_key = index_library(listing)
     tracks = db["tracks"]
     device = read_device(tracks)
@@ -340,24 +372,23 @@ def make_plan(dev, db, playlist_file=None, playlist_only=False, smart=False, lis
     thumbs = ipod.covered(dev.path, tracks)
     no_cover = [n for n, p in pairs.items() if tracks[n].get("db_track_id") not in thumbs]
     covers = [n for n in no_cover if has_cover(pairs[n])]
-    regenre = [(n, g) for n, p in pairs.items()
-               if (g := file_genre(p)) and (tracks[n].get("genre") or "") != g]
+    retag = retag_plan(pairs, tracks, listing)
     playlist = read_playlist(playlist_file) if playlist_file else None
 
     if playlist_only or smart:
         wanted = {os.path.normcase(p) for p in playlist[1]} if playlist else set()
         to_add = [p for p in to_add if os.path.normcase(p) in wanted]
-        dupes, archive, covers, no_cover, regenre = set(), [], [], [], []
+        dupes, archive, covers, no_cover, retag = set(), [], [], [], {}
     have = {r.get("title") for r in db.get("dataset2_standard_playlists") or []}
     new_smart = [n for n, _p, _r in smart_presets.presets() if n not in have] if smart else []
     return {"tracks": tracks, "pairs": pairs, "to_add": to_add, "dupes": sorted(dupes),
             "archive": archive, "unknown": unknown, "covers": covers,
-            "bare": len(no_cover) - len(covers), "regenre": regenre, "playlist": playlist,
+            "bare": len(no_cover) - len(covers), "retag": retag, "playlist": playlist,
             "smart": new_smart}
 
 
 def has_changes(plan):
-    return any(plan[k] for k in ("archive", "dupes", "to_add", "covers", "regenre", "playlist", "smart"))
+    return any(plan[k] for k in ("archive", "dupes", "to_add", "covers", "retag", "playlist", "smart"))
 
 
 def show_plan(dev, plan):
@@ -377,7 +408,9 @@ def show_plan(dev, plan):
     if plan["bare"]:
         rows.append(("  + " + _("no cover in the file"), plan['bare'],
                      _("(nothing to set; 'covers' in the menu fetches them)")))
-    rows.append((_("genre differs from file"), len(plan['regenre']), _("(updated)")))
+    renamed = [n for n, d in plan["retag"].items() if set(d) - {"genre"}]
+    rows.append((_("names differ from the file"), len(renamed), _("(updated, play counts kept)")))
+    rows.append((_("only the genre differs"), len(plan["retag"]) - len(renamed), _("(updated)")))
     if plan["playlist"]:
         rows.append((_("playlist to add"), plan['playlist'][0],
                      _("({n} tracks)").format(n=len(plan['playlist'][1]))))
@@ -401,6 +434,14 @@ def show_plan(dev, plan):
                 print(f"  {name(n)}")
             if len(items) > 20:
                 print(_("  ... {n} more").format(n=len(items) - 20))
+    if renamed:
+        print("\n--- " + _("RENAMED ON THE IPOD (play counts kept)") + " ---")
+        for n in renamed[:20]:
+            d, x = plan["retag"][n], t[n]
+            print(f"  {x.get('artist')} — {x.get('title')}")
+            print(f"    -> {d.get('artist', x.get('artist'))} — {d.get('title', x.get('title'))}")
+        if len(renamed) > 20:
+            print(_("  ... {n} more").format(n=len(renamed) - 20))
     if plan["to_add"]:
         print("\n--- " + _("WILL BE COPIED") + " ---")
         for p in plan["to_add"][:20]:
@@ -431,7 +472,7 @@ def apply_plan(cfg, dev, db, generation, plan):
     root = dev.path
     tracks = plan["tracks"]
     remove = set(plan["archive"]) | set(plan["dupes"])
-    genre = dict(plan["regenre"])
+    retag = plan["retag"]
 
     profile = check_write_ready(root)
 
@@ -450,8 +491,8 @@ def apply_plan(cfg, dev, db, generation, plan):
             if n in remove:
                 continue
             rec = record_from_row(t)
-            if n in genre:
-                rec.genre = genre[n]
+            for field, value in retag.get(n, {}).items():
+                setattr(rec, field, value)
             if n in plan["pairs"]:
                 if not rec.sound_check:
                     rec.sound_check = soundcheck.soundcheck_from_norm(audiotags.norm_tag(plan["pairs"][n]))
@@ -595,6 +636,7 @@ def run(cfg, apply_changes, ipod_path=None, playlist=None, playlist_only=False,
     if not apply_changes:
         print(_("\nNothing changed. Add --apply."))
         return
+    scrobble(cfg, db["tracks"], plan)        # before save_stats: it compares with the stats saved last time
     n = ipod.save_stats(cfg, db["tracks"])
     print(_("  play stats of {n} tracks saved to {file}").format(n=n, file=ipod.stats_file(cfg)))
     if not has_changes(plan):
@@ -609,6 +651,23 @@ def run(cfg, apply_changes, ipod_path=None, playlist=None, playlist_only=False,
             print(_("Cancelled."))
             return
     apply_plan(cfg, dev, db, generation, plan)
+
+
+def scrobble(cfg, rows, plan):
+    """Queue the plays since the last sync for Last.fm and send them (lastfm.py). Under the
+    library's names where the sync is renaming the track."""
+    import lastfm
+    try:
+        with open(ipod.stats_file(cfg), encoding="utf-8") as f:
+            before = json.load(f)
+    except (OSError, ValueError):
+        before = {}
+    names = {n: (d.get("artist", rows[n].get("artist")), d.get("title", rows[n].get("title")),
+                 d.get("album", rows[n].get("album"))) for n, d in plan["retag"].items()}
+    n = lastfm.queue(cfg, lastfm.plays(rows, names, before))
+    if n:
+        print(_("  plays since the last sync, queued for Last.fm: {n}").format(n=n))
+    lastfm.send(cfg, quiet=not lastfm.keys(cfg))
 
 
 # ------------------------------------------------------ save from the iPod

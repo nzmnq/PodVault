@@ -262,8 +262,8 @@ class SideDelegate(QStyledItemDelegate):
 
 
 # the ☰ menu: a string is a tool, None a separator, a 1-tuple a section heading
-MENU = [(N_("Library"),), "covers", "tags", "duplicates", "artists", "likes",
-        (N_("iPod"),), "fit", "soundcheck", "smart",
+MENU = [(N_("Library"),), "covers", "tags", "duplicates", "artists", "split_singles", "undo_tags", "likes",
+        (N_("iPod"),), "fit", "soundcheck", "smart", "lastfm",
         (N_("Active / Archive as a text list"),), "export", "marks", "undo",
         (N_("Audio"),), "flac", None,
         "build", "shortcuts", "settings"]
@@ -907,6 +907,9 @@ class MainWindow(QMainWindow):
         if job.tool == "sync" and job.applying:
             sheet.add_follow(_("Eject the iPod"), self.eject)
             sheet.add_follow(_("Show the iPod"), lambda: self.navigate("ipod"))
+        elif job.tool == "incoming" and not job.applying and os.path.exists(backend.incoming_plan()):
+            from gui.pages import ImportReview
+            sheet.add_follow(_("Review the tracks…"), lambda: ImportReview(self, job).exec(), primary=True)
         elif job.tool == "incoming" and job.applying:
             if job.params.get("to") != "archive" and self.ipods:
                 sheet.add_follow(_("Sync the iPod…"), lambda: self.run_tool("sync"), primary=True)
