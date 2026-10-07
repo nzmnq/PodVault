@@ -1,5 +1,6 @@
-"""The main window: toolbar with the LCD, the source list (places only), pages,
-the status bar with the Active summary, the ☰ menu with the tools, the task sheet."""
+"""The main window, in b1air's Air layout: a sidebar (search, the library's views,
+playlists, the iPod as a card, what's running, the tools), the pages, and the
+player along the whole bottom while something is loaded. The task sheet."""
 
 import faulthandler
 import os
@@ -7,14 +8,12 @@ import sys
 import time
 import traceback
 
-from PyQt6.QtCore import (QEvent, QFileSystemWatcher, QRect, QRectF, QSize, Qt, QTimer, QUrl,
-                          pyqtSignal)
-from PyQt6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QShortcut
+from PyQt6.QtCore import QFileSystemWatcher, QPoint, Qt, QTimer, QUrl
+from PyQt6.QtGui import QIcon, QKeySequence, QShortcut
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-                             QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
-                             QStackedWidget, QStyle, QStyledItemDelegate, QTreeWidget,
-                             QTreeWidgetItem, QVBoxLayout, QWidget)
+                             QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+                             QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 import settings
 import tags as audiotags
@@ -24,10 +23,10 @@ from i18n import N_, _
 from gui.jobs import Jobs
 from gui.pages import (IpodPage, LibraryPage, PlaylistPage, SettingsPage, ToolDialog, VibePage)
 from gui.theme import C, GLYPHS, UI, icon
-from gui.widgets import Lcd, ask, button, covers, fmt_gb, fmt_time, inform, plural, run_async
+from gui.widgets import (ElidedLabel, PlayerBar, ask, button, covers, fmt_gb, inform, placeholder, plural,
+                         run_async)
 
-KeyRole = Qt.ItemDataRole.UserRole + 10
-AddRole = Qt.ItemDataRole.UserRole + 11      # a section heading with a "+" on the right
+VIEW_KEYS = ("albums", "artists", "genres")
 
 
 def app_icon():
@@ -183,87 +182,12 @@ class JobSheet(QDialog):
 # ------------------------------------------------------------------ source list
 
 
-class SideDelegate(QStyledItemDelegate):
-    """Draws the iPod row (its name, a small capacity bar and an eject button)
-    and the "+" of the Playlists heading."""
-
-    eject = pyqtSignal()
-    add = pyqtSignal()
-
-    def __init__(self, win):
-        super().__init__(win.sidebar)
-        self.win = win
-
-    def _eject_rect(self, rect):
-        size = UI["side_eject"]
-        return QRect(rect.right() - size - UI["side_pad"], rect.top() + (rect.height() - size) // 2,
-                     size, size)
-
-    def sizeHint(self, option, index):
-        hint = super().sizeHint(option, index)
-        key = index.data(KeyRole)
-        if key == "ipod":
-            return QSize(hint.width(), UI["side_device_row"])
-        if key:
-            return QSize(hint.width(), UI["side_row"])
-        return QSize(hint.width(), UI["side_head"] if index.data() else UI["side_gap"])
-
-    def paint(self, p, option, index):
-        super().paint(p, option, index)
-        if index.data(AddRole):
-            p.save()
-            f = QFont(option.font)
-            f.setPixelSize(UI["side_eject"] - 2)
-            p.setFont(f)
-            p.setPen(QColor(C["side_text"]))
-            p.drawText(self._eject_rect(option.rect), Qt.AlignmentFlag.AlignCenter, "+")
-            p.restore()
-            return
-        if index.data(KeyRole) != "ipod":
-            return
-        selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        fg = QColor(C["on_accent"] if selected else C["side_text"])
-        rect = option.rect
-        p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setFont(theme.symbol_font(UI["side_eject"] - UI["side_pad"]))
-        p.setPen(fg)
-        p.drawText(self._eject_rect(rect), Qt.AlignmentFlag.AlignCenter, GLYPHS["eject"])
-        info = self.win.ipod_info
-        if info and info.get("capacity_gb"):
-            used = 1 - info["free_gb"] / info["capacity_gb"]
-            left = rect.left() + UI["icon"] + 3 * UI["side_pad"]
-            width = self._eject_rect(rect).left() - UI["side_pad"] - left
-            bar = QRectF(left, rect.bottom() - UI["side_pad"] - UI["side_capacity_h"],
-                         width, UI["side_capacity_h"])
-            track = QColor(fg)
-            track.setAlpha(QColor(C["lcd_track"]).alpha())
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(track)
-            p.drawRoundedRect(bar, 2, 2)
-            p.setBrush(fg if selected else QColor(C["accent"]))
-            p.drawRoundedRect(QRectF(bar.left(), bar.top(), bar.width() * max(0, min(used, 1)),
-                                     bar.height()), 2, 2)
-        p.restore()
-
-    def editorEvent(self, event, model, option, index):
-        if index.data(AddRole) and event.type() == QEvent.Type.MouseButtonRelease \
-                and self._eject_rect(option.rect).contains(event.position().toPoint()):
-            self.add.emit()
-            return True
-        if index.data(KeyRole) == "ipod" and event.type() == QEvent.Type.MouseButtonRelease \
-                and self._eject_rect(option.rect).contains(event.position().toPoint()):
-            self.eject.emit()
-            return True
-        return super().editorEvent(event, model, option, index)
-
-
 # ------------------------------------------------------------------ the window
 
 
 # the ☰ menu: a string is a tool, None a separator, a 1-tuple a section heading
 MENU = [(N_("Library"),), "covers", "tags", "duplicates", "artists", "split_singles", "undo_tags", "likes",
-        (N_("iPod"),), "fit", "soundcheck", "smart", "lastfm",
+        (N_("iPod"),), "fit", "soundcheck", "smart",
         (N_("Active / Archive as a text list"),), "export", "marks", "undo",
         (N_("Audio"),), "flac", None,
         "build", "shortcuts", "settings"]
@@ -305,48 +229,20 @@ class MainWindow(QMainWindow):
         self.theme_watch.directoryChanged.connect(lambda _p: QTimer.singleShot(200, self._b1air_changed))
 
         central = QWidget()
+        central.setObjectName("shell")
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(self._toolbar())
-        split = QSplitter(Qt.Orientation.Horizontal)
-        split.setHandleWidth(1)
-        self.sidebar = QTreeWidget()
-        self.sidebar.setObjectName("sidebar")
-        self.sidebar.setHeaderHidden(True)
-        self.sidebar.setIndentation(0)
-        self.sidebar.setRootIsDecorated(False)
-        self.sidebar.setIconSize(QSize(UI["icon"], UI["icon"]))
-        self.sidebar.setMinimumWidth(UI["side_min"])
-        self.sidebar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.sidebar.customContextMenuRequested.connect(self._side_menu)
-        self.sidebar.currentItemChanged.connect(self._side_changed)
-        self.side_delegate = SideDelegate(self)
-        self.side_delegate.eject.connect(self.eject)
-        self.side_delegate.add.connect(lambda: self.navigate("vibe"))
-        self.sidebar.setItemDelegate(self.side_delegate)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        self.side_items = {}
+        row.addWidget(self._sidebar())
         self.stack = QStackedWidget()
-        # the source list, and Settings pinned under it
-        side = QWidget()
-        side.setObjectName("sideBox")
-        side.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        side_lay = QVBoxLayout(side)
-        side_lay.setContentsMargins(0, 0, 0, 0)
-        side_lay.setSpacing(0)
-        side_lay.addWidget(self.sidebar, 1)
-        self.settings_btn = QPushButton(_("Settings"))
-        self.settings_btn.setObjectName("sideSettings")
-        self.settings_btn.setCheckable(True)
-        self.settings_btn.setToolTip(_("Settings (Ctrl+,)"))
-        self.settings_btn.clicked.connect(lambda: (self.navigate("settings"), self.settings_btn.setChecked(
-            self.current_key == "settings")))
-        side_lay.addWidget(self.settings_btn)
-        split.addWidget(side)
-        split.addWidget(self.stack)
-        split.setStretchFactor(1, 1)
-        split.setSizes([UI["side_w"], UI["window"][0] - UI["side_w"]])
-        root.addWidget(split, 1)
-        root.addWidget(self._statusbar())
+        row.addWidget(self.stack, 1)
+        root.addLayout(row, 1)
+        self.player_bar = PlayerBar()
+        root.addWidget(self.player_bar)
         self.setCentralWidget(central)
         self.drop_hint = QLabel(_("Drop to add these tracks to the library"), self)
         self.drop_hint.setObjectName("dropHint")
@@ -358,10 +254,25 @@ class MainWindow(QMainWindow):
         self.library_page.marks_changed.connect(self._marks_changed)
         self.library_page.detail.play.connect(self.play)
         self.player = QMediaPlayer(self)
-        self.player.setAudioOutput(QAudioOutput(self))
+        self.audio = QAudioOutput(self)
+        self.audio.setVolume(.8)
+        self.player.setAudioOutput(self.audio)
         self.player.mediaStatusChanged.connect(self._media_status)
         self.player.errorOccurred.connect(lambda err, msg: self.note(_("Can't play this track"), msg))
         self.queue, self.queue_at, self.resume_at = [], 0, 0
+        pb = self.player_bar
+        pb.toggle.connect(self.toggle_play)
+        pb.step.connect(self.skip)
+        pb.seek.connect(lambda f: self.player.duration() > 0 and self.player.setPosition(
+            int(f * self.player.duration())))
+        pb.volume.connect(self.audio.setVolume)
+        pb.stop.connect(self.stop_playing)
+        pb.opened.connect(self._show_playing_album)
+        covers().ready.connect(self._player_cover)
+        self.tb_add, self.tb_sync = self.library_page.add_btn, self.library_page.sync_btn
+        self.tb_add.clicked.connect(lambda: self.open_tool("incoming"))
+        self.tb_sync.clicked.connect(lambda: self.run_tool("sync"))
+        self.library_page.view_changed.connect(lambda v: self._select_side(v))
         self.revert_btn = self.library_page.revert_btn
         self.save_marks_btn = self.library_page.save_marks_btn
         self.save_marks_btn.clicked.connect(self.apply_marks)
@@ -380,10 +291,10 @@ class MainWindow(QMainWindow):
         self.poll.setInterval(UI["poll_ms"])
         self.poll.timeout.connect(self._poll_ipod)
         self.poll.start()
-        self.lcd_timer = QTimer(self)
-        self.lcd_timer.setInterval(UI["lcd_refresh_ms"])
-        self.lcd_timer.timeout.connect(self.update_lcd)
-        self.lcd_timer.start()
+        self.player_timer = QTimer(self)
+        self.player_timer.setInterval(UI["player_refresh_ms"])
+        self.player_timer.timeout.connect(self.update_player)
+        self.player_timer.start()
 
         self.build_sidebar()
         self._busy_buttons()
@@ -401,59 +312,82 @@ class MainWindow(QMainWindow):
 
     # --- chrome
 
-    def _toolbar(self):
-        bar = QFrame()
-        bar.setObjectName("toolbar")
-        bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        bar.setFixedHeight(UI["toolbar_h"])
-        lay = QHBoxLayout(bar)
-        lay.setContentsMargins(14, 8, 14, 8)
-        lay.setSpacing(8)
-        self.tb_sync = button(_("Sync"), tip=_("Sync the iPod with Active (Ctrl+S)"))
-        self.tb_add = button(_("Add"), tip=_("Add new tracks — or drop a folder onto the window (Ctrl+N)"))
-        for b, name in ((self.tb_sync, "sync"), (self.tb_add, "incoming")):
-            b.setObjectName("tb")
-            b.setIcon(icon(name))
-        self.tb_sync.clicked.connect(lambda: self.run_tool("sync"))
-        self.tb_add.clicked.connect(lambda: self.open_tool("incoming"))
-        left = QHBoxLayout()
-        left.setSpacing(8)
-        left.addWidget(self.tb_sync)
-        left.addWidget(self.tb_add)
-        left.addStretch(1)
-        self.lcd = Lcd()
-        self.lcd.clicked.connect(self._lcd_clicked)
-        self.lcd.seek.connect(self._lcd_seek)
-        self.tb_prev = button(GLYPHS["prev"], tip=_("Previous track"))
-        self.tb_next = button(GLYPHS["next"], tip=_("Next track"))
-        for b, step in ((self.tb_prev, -1), (self.tb_next, 1)):
-            b.setObjectName("tb")
-            b.clicked.connect(lambda _c, s=step: self.skip(s))
-            sp = b.sizePolicy()
-            sp.setRetainSizeWhenHidden(True)      # the display doesn't jump when they show up
-            b.setSizePolicy(sp)
-            b.hide()
+    def _sidebar(self):
+        side = QFrame()
+        side.setObjectName("side")
+        side.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        side.setFixedWidth(UI["side_w"])
+        lay = QVBoxLayout(side)
+        lay.setContentsMargins(10, 14, 10, 12)
+        lay.setSpacing(2)
+        self.side = side
         self.search = QLineEdit()
         self.search.setObjectName("search")
-        self.search.setPlaceholderText(_("Search"))
+        self.search.setPlaceholderText(_("Search (Ctrl+F)"))
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._search)
-        self.tb_menu = button("")
-        self.tb_menu.setObjectName("tb")
-        self.tb_menu.setIcon(icon("menu"))
-        self.tb_menu.setToolTip(_("Tools and settings"))
-        self.tb_menu.setMenu(self._menu())
-        right = QHBoxLayout()
-        right.setSpacing(8)
-        right.addStretch(1)
-        right.addWidget(self.search)
-        right.addWidget(self.tb_menu)
-        lay.addLayout(left, 1)
-        lay.addWidget(self.tb_prev)
-        lay.addWidget(self.lcd, 2)
-        lay.addWidget(self.tb_next)
-        lay.addLayout(right, 1)
-        return bar
+        lay.addWidget(self.search)
+        lay.addSpacing(8)
+        self.side_list = QWidget()
+        self.side_box = QVBoxLayout(self.side_list)
+        self.side_box.setContentsMargins(0, 0, 0, 0)
+        self.side_box.setSpacing(2)
+        lay.addWidget(self.side_list)
+        lay.addStretch(1)
+        # what's running: a tool, the library being read, a passing note; click: the task sheet
+        self.activity = QFrame()
+        self.activity.setObjectName("activity")
+        self.activity.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.activity.setCursor(Qt.CursorShape.PointingHandCursor)
+        al = QVBoxLayout(self.activity)
+        al.setContentsMargins(12, 8, 12, 9)
+        al.setSpacing(3)
+        self.act_title = ElidedLabel()
+        self.act_title.setObjectName("bold")
+        self.act_sub = ElidedLabel()
+        self.act_sub.setObjectName("small")
+        self.act_sub.setProperty("muted", True)
+        self.act_bar = QProgressBar()
+        self.act_bar.setTextVisible(False)
+        for w in (self.act_title, self.act_sub, self.act_bar):
+            al.addWidget(w)
+        self.activity.mousePressEvent = lambda e: self.jobs.current and self.sheet.open_for(self.jobs.current)
+        self.activity.hide()
+        lay.addWidget(self.activity)
+        lay.addSpacing(6)
+        self.summary = QLabel()
+        self.summary.setObjectName("summary")
+        self.summary.setWordWrap(True)
+        lay.addWidget(self.summary)
+        lay.addSpacing(6)
+        self.tools_btn = self._side_row(_("Tools"), "tools")
+        self.tools_btn.setCheckable(False)
+        self.tools_menu = self._menu()
+        self.tools_btn.clicked.connect(lambda: self.tools_menu.exec(
+            self.tools_btn.mapToGlobal(QPoint(0, -self.tools_menu.sizeHint().height()))))
+        self.settings_btn = self._side_row(_("Settings"), "settings")
+        self.settings_btn.setToolTip(_("Settings (Ctrl+,)"))
+        self.settings_btn.clicked.connect(lambda: (self.navigate("settings"), self._select_side(self.current_key)))
+        lay.addWidget(self.tools_btn)
+        lay.addWidget(self.settings_btn)
+        return side
+
+    def _side_row(self, text, glyph, count=None):
+        """A sidebar row: an icon, the name, a count on the right."""
+        b = QPushButton(text)
+        b.setObjectName("sideRow")
+        b.setCheckable(True)
+        b.setIcon(icon(glyph, "muted"))
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        if count is not None:
+            inner = QHBoxLayout(b)
+            inner.setContentsMargins(0, 0, 12, 0)
+            inner.addStretch(1)
+            n = QLabel(str(count))
+            n.setObjectName("sideCount")
+            n.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            inner.addWidget(n)
+        return b
 
     def _menu(self):
         def add(menu, name):
@@ -481,20 +415,6 @@ class MainWindow(QMainWindow):
                 add(menu, entry)
         return menu
 
-    def _statusbar(self):
-        bar = QFrame()
-        bar.setObjectName("statusbar")
-        bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        bar.setFixedHeight(UI["status_h"])
-        lay = QHBoxLayout(bar)
-        lay.setContentsMargins(14, 2, 14, 2)
-        lay.setSpacing(10)
-        self.summary = QLabel()
-        self.summary.setObjectName("summary")
-        lay.addWidget(self.summary)
-        lay.addStretch(1)
-        return bar
-
     def _shortcuts(self):
         QShortcut(QKeySequence.StandardKey.Find, self, activated=lambda: (
             self.search.setFocus(), self.search.selectAll()))
@@ -503,77 +423,137 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+R"), self, activated=lambda: self.reload_library(force=True))
         QShortcut(QKeySequence("Ctrl+,"), self, activated=lambda: self.navigate("settings"))
         QShortcut(QKeySequence("Ctrl+E"), self, activated=self.eject)
-        for n, view in enumerate(("albums", "artists", "genres"), 1):
-            QShortcut(QKeySequence(f"Ctrl+{n}"), self,
-                      activated=lambda v=view: self.navigate("library") and self.library_page.set_view(v))
+        for n, view in enumerate(VIEW_KEYS, 1):
+            QShortcut(QKeySequence(f"Ctrl+{n}"), self, activated=lambda v=view: self.navigate(v))
+        QShortcut(QKeySequence(Qt.Key.Key_MediaTogglePlayPause), self, activated=self.toggle_play)
 
-    # --- source list: places only
+    # --- the sidebar: the library's views, playlists, the iPod
 
     def build_sidebar(self):
-        self.sidebar.blockSignals(True)
-        self.sidebar.clear()
-        head_font = QFont()
-        head_font.setPointSizeF(8)
-        head_font.setBold(True)
+        while self.side_box.count():
+            w = self.side_box.takeAt(0).widget()
+            if w:
+                w.deleteLater()
         self.side_items = {}
-        sections = [(N_("LIBRARY"), [("library", "library", _("Music"))])]
+
+        def head(text, add=None):
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 12, 6, 4)
+            lab = QLabel(_(text))
+            lab.setObjectName("sideHead")
+            h.addWidget(lab)
+            h.addStretch(1)
+            if add:
+                plus = QPushButton("+")
+                plus.setObjectName("sideAdd")
+                plus.setToolTip(add[0])
+                plus.setCursor(Qt.CursorShape.PointingHandCursor)
+                plus.clicked.connect(add[1])
+                h.addWidget(plus)
+            self.side_box.addWidget(row)
+
+        def row(key, text, glyph, count=None):
+            b = self._side_row(text, glyph, count)
+            b.clicked.connect(lambda _c=False, k=key: (self.navigate(k), self._select_side(self.current_key)))
+            b.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            b.customContextMenuRequested.connect(lambda pos, k=key, w=b: self._side_menu(k, w.mapToGlobal(pos)))
+            self.side_box.addWidget(b)
+            self.side_items[key] = b
+
+        albums = self.albums or []
+        head(N_("LIBRARY"))
+        row("albums", _("Albums"), "albums", len(albums) if self.albums is not None else None)
+        row("artists", _("Artists"), "artists", len({a["artist"] for a in albums}) if albums else None)
+        row("genres", _("Genres"), "genres", len({a["genre"] for a in albums if a["genre"]}) if albums else None)
+        head(N_("PLAYLISTS"), (_("New vibe playlist…"), lambda: (self.navigate("vibe"),
+                                                                  self._select_side(self.current_key))))
+        for p in self.playlists:
+            row(f"playlist:{p['file']}", p["name"], "playlist")
+        if not self.playlists:
+            row("vibe", _("New vibe playlist…"), "vibe")
         if self.ipods:
-            name = (self.ipod_info or {}).get("name") or "iPod"
-            sections.append((N_("DEVICE"), [("ipod", "ipod", name)]))
-        # "+" on the heading makes a new one; the row only while there are none yet
-        sections.append((N_("PLAYLISTS"), [(f"playlist:{p['file']}", "playlist", p["name"])
-                                           for p in self.playlists]
-                         or [("vibe", "vibe", _("New vibe playlist…"))]))
-        for title, items in sections:
-            head = QTreeWidgetItem([_(title)])
-            head.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            if title == "PLAYLISTS":
-                head.setData(0, AddRole, True)
-                head.setToolTip(0, _("New vibe playlist…"))
-            head.setFont(0, head_font)
-            head.setForeground(0, QColor(C["side_head"]))
-            self.sidebar.addTopLevelItem(head)
-            for key, glyph_name, text in items:
-                it = QTreeWidgetItem([text])
-                it.setIcon(0, icon(glyph_name, "side_text"))
-                it.setData(0, KeyRole, key)
-                if key == "ipod" and self.ipod_info:
-                    d = self.ipod_info
-                    it.setToolTip(0, f"{d['model']}\n" + _("{free} free of {total}").format(
-                        free=fmt_gb(d['free_gb']), total=fmt_gb(d['capacity_gb'])))
-                head.addChild(it)
-                self.side_items[key] = it
-            head.setExpanded(True)
-        cur = self.side_items.get(self.current_key)
-        if cur:
-            self.sidebar.setCurrentItem(cur)
-        self.sidebar.blockSignals(False)
+            head(N_("DEVICE"))
+            self.side_box.addWidget(self._device_card())
+        self._select_side(self.current_key)
 
-    def _side_changed(self, item, previous):
-        key = item.data(0, KeyRole) if item else None
-        if not key or (key != self.current_key and not self.navigate(key)):
-            self.sidebar.blockSignals(True)
-            self.sidebar.setCurrentItem(previous)
-            self.sidebar.blockSignals(False)
+    def _device_card(self):
+        """The iPod in the sidebar: its name, how full it is, eject. Click: the iPod page."""
+        card = QFrame()
+        card.setObjectName("deviceCard")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(12, 10, 8, 10)
+        lay.setSpacing(6)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        glyph = QLabel()
+        glyph.setPixmap(icon("ipod", "accent").pixmap(UI["icon"], UI["icon"]))
+        info = self.ipod_info or {}
+        names = QVBoxLayout()
+        names.setSpacing(0)
+        name = ElidedLabel(info.get("name") or "iPod")
+        name.setObjectName("deviceName")
+        model = ElidedLabel(info.get("model") or _("reading it…"))
+        model.setObjectName("small")
+        model.setProperty("muted", True)
+        names.addWidget(name)
+        names.addWidget(model)
+        eject = QPushButton(GLYPHS["eject"])
+        eject.setProperty("flat", True)
+        eject.setToolTip(_("Eject the iPod (Ctrl+E)"))
+        eject.setFixedWidth(30)
+        eject.clicked.connect(self.eject)
+        top.addWidget(glyph)
+        top.addLayout(names, 1)
+        top.addWidget(eject)
+        lay.addLayout(top)
+        if info.get("capacity_gb"):
+            bar = QProgressBar()
+            bar.setTextVisible(False)
+            bar.setRange(0, 1000)
+            bar.setValue(int(1000 * (1 - info["free_gb"] / info["capacity_gb"])))
+            used = QLabel(_("{used} of {total}").format(used=fmt_gb(info["capacity_gb"] - info["free_gb"]),
+                                                        total=fmt_gb(info["capacity_gb"])))
+            used.setObjectName("small")
+            used.setProperty("muted", True)
+            lay.addWidget(bar)
+            lay.addWidget(used)
+        card.mousePressEvent = lambda e: (e.button() == Qt.MouseButton.LeftButton and (
+            self.navigate("ipod"), self._select_side(self.current_key)))
+        card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        card.customContextMenuRequested.connect(lambda pos: self._side_menu("ipod", card.mapToGlobal(pos)))
+        self.side_items["ipod"] = card
+        return card
 
-    def _side_menu(self, pos):
-        item = self.sidebar.itemAt(pos)
-        key = item.data(0, KeyRole) if item else None
+    def _select_side(self, key):
+        """Mark the row of the page that's showing."""
+        for k, w in self.side_items.items():
+            if isinstance(w, QPushButton):
+                w.setChecked(k == key)
+            else:
+                w.setProperty("current", k == key)
+                w.style().unpolish(w)
+                w.style().polish(w)
+        self.settings_btn.setChecked(key == "settings")
+
+    def _side_menu(self, key, at):
         menu = QMenu(self)
         if key == "ipod":
             menu.addAction(_("Sync…"), lambda: self.run_tool("sync"))
             menu.addAction(_("Eject"), self.eject)
             menu.addAction(_("Read it again"), lambda: self.ipod_page.load(force=True))
-        elif key and key.startswith("playlist:"):
+        elif key.startswith("playlist:"):
             f = key.split(":", 1)[1]
             act = menu.addAction(_("Create on the iPod…"), lambda: self.run_tool(
                 "playlist_to_ipod", {"file": f}))
             act.setEnabled(bool(self.ipods))
-        elif key == "library":
+        elif key in VIEW_KEYS:
             menu.addAction(_("Read the library again"), lambda: self.reload_library(force=True))
         else:
             return
-        menu.exec(self.sidebar.viewport().mapToGlobal(pos))
+        menu.exec(at)
 
     # --- navigation
 
@@ -589,7 +569,11 @@ class MainWindow(QMainWindow):
             self.toast(_("Fill in the basic settings first."), bad=True)
             return False
         if key == "library":
+            key = self.library_page.view
+        if key in VIEW_KEYS:
             target = self.library_page
+            if not self.library_page.set_view(key):
+                return False
         elif key == "ipod":
             target = self.ipod_page
         elif key.startswith("playlist:"):
@@ -602,19 +586,10 @@ class MainWindow(QMainWindow):
         else:
             return False
         self.current_key = key
-        self.settings_btn.setChecked(key == "settings")
         self.stack.setCurrentWidget(target)
         target.set_search(self.search.text())
         target.shown()
-        item = self.side_items.get(key)
-        if self.sidebar.currentItem() is not item:
-            self.sidebar.blockSignals(True)
-            if item:
-                self.sidebar.setCurrentItem(item)
-            else:
-                self.sidebar.setCurrentItem(None)
-                self.sidebar.clearSelection()
-            self.sidebar.blockSignals(False)
+        self._select_side(key)
         return True
 
     def _search(self, text):
@@ -764,8 +739,7 @@ class MainWindow(QMainWindow):
         if self.genres_missing:
             items.append((plural(self.genres_missing, "{n} album without a genre",
                                  "{n} albums without a genre"), _("Suggest…"),
-                          lambda: (self.navigate("library"), self.library_page.set_view("genres"),
-                                   self.run_tool("genres_suggest"))))
+                          lambda: (self.navigate("genres"), self.run_tool("genres_suggest"))))
         info = self.ipod_info if self.ipods else None
         if info:
             only = sum(1 for t in info["tracks"] if t["state"] == "")
@@ -927,16 +901,16 @@ class MainWindow(QMainWindow):
                     sheet.add_follow(_("Create on the iPod…"), lambda: self.run_tool(
                         "playlist_to_ipod", {"file": newest}), primary=True)
         elif job.tool == "genres_suggest":
-            sheet.add_follow(_("Review the genres"), lambda: (
-                self.navigate("library"), self.library_page.set_view("genres")), primary=True)
+            sheet.add_follow(_("Review the genres"), lambda: self.navigate("genres"), primary=True)
 
     def _busy_buttons(self):
         ready = backend.cfg() is not None
-        self.tb_sync.setEnabled(ready and not self.jobs.busy() and bool(self.ipods))
+        self.tb_sync.setVisible(bool(self.ipods))          # no iPod: no Sync to offer
+        self.tb_sync.setEnabled(ready and not self.jobs.busy())
 
     def set_ready(self, ready):
         """Before the first settings are saved there's no library: nothing to add, search or open."""
-        for w in (self.tb_add, self.search, self.tb_menu, self.sidebar, self.settings_btn):
+        for w in (self.tb_add, self.search, self.tools_btn, self.side_list):
             w.setEnabled(ready)
         self._busy_buttons()
 
@@ -964,6 +938,7 @@ class MainWindow(QMainWindow):
             self.ipod_page.load(force=True)     # fills ipod_info: sidebar bar, attention
         elif self.current_key == "ipod":
             self.navigate("library")
+        self.library_page.set_ipod(None)
         self.build_sidebar()
         self._busy_buttons()
         self._show_attention()
@@ -975,40 +950,41 @@ class MainWindow(QMainWindow):
     def ipod_read(self, info):
         """IpodPage read the iPod: remember it for the sidebar, attention and status."""
         self.ipod_info = info
+        self.library_page.set_ipod(info)
         self.build_sidebar()
         self._show_attention()
         self.update_status()
 
-    # --- LCD and status
+    # --- what's running, and the player
 
     def note(self, title, sub, seconds=None):
         self.lcd_note = (title, sub)
         self.lcd_note_until = time.time() + (seconds or UI["note_s"])
 
-    def _lcd_clicked(self):
-        job = self.jobs.current
-        if self.queue and not (job and job.running):
-            playing = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
-            self.player.pause() if playing else self.player.play()
-        elif job is not None:
-            self.sheet.open_for(job)
-
-    def _lcd_seek(self, where):
-        job = self.jobs.current
-        if self.queue and not (job and job.running) and self.player.duration() > 0:
-            self.player.setPosition(int(where * self.player.duration()))
-        else:
-            self._lcd_clicked()
-
-    # --- playing tracks: an album from the chosen track to its end
-
     def play(self, queue, at, position=0):
+        """queue: [{path, title, artist, album, dir}] — an album from the chosen track on."""
         self.queue, self.queue_at, self.resume_at = queue, at, position
         self.player.setSource(QUrl.fromLocalFile(queue[at]["path"]))
         self.player.play()
+        self._show_track()
+
+    def toggle_play(self):
+        if not self.queue:
+            return
+        playing = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        self.player.pause() if playing else self.player.play()
+
+    def stop_playing(self):
+        """The player goes away: nothing is loaded any more."""
+        self.player.stop()
+        self.queue = []
+        self.player_bar.hide()
+        self.library_page.detail.set_playing(None)
 
     def skip(self, step):
         """Next / previous track; 'previous' a few seconds into a track starts it over."""
+        if not self.queue:
+            return
         if step < 0 and self.player.position() > UI["restart_ms"]:
             self.player.setPosition(0)
             return
@@ -1016,8 +992,7 @@ class MainWindow(QMainWindow):
         if 0 <= at < len(self.queue):
             self.play(self.queue, at)
         elif step > 0:
-            self.player.stop()
-            self.queue = []
+            self.stop_playing()              # the album is over
         else:
             self.player.setPosition(0)
 
@@ -1028,40 +1003,58 @@ class MainWindow(QMainWindow):
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
             self.skip(1)
 
-    def update_lcd(self):
-        for b in (self.tb_prev, self.tb_next):
-            b.setVisible(bool(self.queue))
+    def _show_track(self):
+        t = self.queue[self.queue_at]
+        folder = t.get("dir") or os.path.dirname(t["path"])
+        pm = covers().get(folder) or placeholder(f"{t['artist']} {t.get('album', '')}", UI["player_cover"])
+        self.player_bar.show_track(t["title"], " · ".join(x for x in (t["artist"], t.get("album")) if x), pm)
+        self.player_bar.show()
+        self.library_page.detail.set_playing(t["path"])
+
+    def _player_cover(self, path):
+        if self.queue and path == (self.queue[self.queue_at].get("dir")
+                                   or os.path.dirname(self.queue[self.queue_at]["path"])):
+            self._show_track()
+
+    def _show_playing_album(self):
+        if self.queue and self.navigate("albums"):
+            t = self.queue[self.queue_at]
+            self.library_page.open_path(t.get("dir") or os.path.dirname(t["path"]))
+
+    def update_player(self):
+        """The player while something is loaded; what's running, in the sidebar."""
+        if self.queue:
+            p = self.player
+            self.player_bar.set_position(p.position(), p.duration(),
+                                         p.playbackState() == QMediaPlayer.PlaybackState.PlayingState)
+        self.player_bar.setVisible(bool(self.queue))
         job = self.jobs.current
         if job is not None and job.running:
             status, progress = job.status()
-            self.lcd.show_progress(job.title, status, progress)
-            return
-        if self.lcd_note and time.time() < self.lcd_note_until:
-            self.lcd.show_idle(*self.lcd_note)
-            return
-        self.lcd_note = None
-        if self.queue:
-            t, p = self.queue[self.queue_at], self.player
-            paused = p.playbackState() != QMediaPlayer.PlaybackState.PlayingState
-            self.lcd.show_progress((GLYPHS["pause"] if paused else GLYPHS["play"]) + "  " + t["title"],
-                                   f"{t['artist']} · {fmt_time(p.position() / 1000)} / "
-                                   f"{fmt_time(p.duration() / 1000)}",
-                                   p.position() / p.duration() if p.duration() > 0 else 0)
-            return
-        if self.scanning:
+            self._activity(job.title, status, progress, True)
+        elif self.lcd_note and time.time() < self.lcd_note_until:
+            self._activity(*self.lcd_note)
+        elif self.scanning:
             text, frac = self.scan_text()
-            self.lcd.show_progress(_("Reading the library…"), text, frac)
+            self._activity(_("Reading the library…"), text, frac, True)
             if self.albums is None:
                 self.library_page.loading.setText(_("Reading the library…") + "\n" + text)
-            return
-        info = self.ipod_info if self.ipods else None
-        if info:
-            self.lcd.show_idle(info["name"], f"{info['model']} · "
-                               + _("{free} free").format(free=fmt_gb(info['free_gb'])))
-        elif self.ipods:
-            self.lcd.show_idle(_("PodVault"), _("iPod connected — reading it…"))
         else:
-            self.lcd.show_idle(_("PodVault"), _("No iPod — connect one to sync"))
+            self.lcd_note = None
+            self.activity.hide()
+
+    def _activity(self, title, sub, progress=None, bar=False):
+        self.act_title.setText(title)
+        self.act_sub.setText(sub or "")
+        self.act_sub.setVisible(bool(sub))
+        self.act_bar.setVisible(bar)
+        if bar:
+            if progress is None:
+                self.act_bar.setRange(0, 0)
+            else:
+                self.act_bar.setRange(0, 1000)
+                self.act_bar.setValue(int(progress * 1000))
+        self.activity.show()
 
     def scan_text(self):
         """What the scan is doing, and how far it is (0..1 or None)."""
@@ -1080,6 +1073,7 @@ class MainWindow(QMainWindow):
 
     def update_status(self):
         """The one number that matters: how much Active is, and whether it fits the iPod."""
+        self.build_sidebar()        # the counts of albums, artists and genres
         if self.albums is None:
             self.summary.setText(self.albums_error or _("Reading the library…"))
             return
@@ -1158,7 +1152,7 @@ class MainWindow(QMainWindow):
         self.replaced = True
         # hidden, not deleted: background reads started by this window may still call back into it
         self.poll.stop()
-        self.lcd_timer.stop()
+        self.player_timer.stop()
         self.close()
 
     # --- toasts
@@ -1174,8 +1168,9 @@ class MainWindow(QMainWindow):
         t.style().polish(t)
         t.adjustSize()
         gap = UI["toast_gap"]
-        y = self.height() - UI["status_h"] - gap - t.height() - sum(w.height() + gap for w in stack)
-        t.move(self.width() - t.width() - gap, max(UI["toolbar_h"] + gap, y))
+        bottom = self.player_bar.height() if self.player_bar.isVisible() else 0
+        y = self.height() - bottom - gap - t.height() - sum(w.height() + gap for w in stack)
+        t.move(self.width() - t.width() - gap, max(gap, y))
         if action:
             t.setCursor(Qt.CursorShape.PointingHandCursor)
             t.mousePressEvent = lambda e: (action(), t.deleteLater())

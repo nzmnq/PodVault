@@ -133,22 +133,6 @@ FIELDS = [
     Field("anthropic_model", "claude-opus-5", "text", "Anthropic API model",
           "Model for the Anthropic API mode.", "AI"),
 
-    # -------------------------------------------------------------- Spotify
-    Field("spotify_client_id", "", "text", "Spotify client ID",
-          "For cover art from Spotify, which has nearly every release. Create an app (any name, any "
-          "redirect URI) at developer.spotify.com/dashboard and copy its client ID and secret. "
-          "Without them covers come from Deezer and MusicBrainz.", "Covers", optional=True),
-    Field("spotify_client_secret", "", "text", "Spotify client secret",
-          "Shown under the client ID on the app's page (View client secret).", "Covers", optional=True),
-
-    # -------------------------------------------------------------- Last.fm
-    Field("lastfm_api_key", "", "text", "Last.fm API key",
-          "From last.fm/api/account/create (any name and description will do). With it and the "
-          "secret, \"Connect Last.fm\" in the menu lets every iPod sync scrobble what was played.",
-          "Last.fm", optional=True),
-    Field("lastfm_api_secret", "", "text", "Last.fm shared secret",
-          "Shown next to the API key on the same Last.fm page.", "Last.fm", optional=True),
-
     # ---------------------------------------------------------- audio tools
     Field("ffmpeg_path", "auto", "file", "ffmpeg",
           "'auto' looks in PATH, then in bin/. Needed by the FLAC to ALAC converter; "

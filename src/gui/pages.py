@@ -19,7 +19,8 @@ from PyQt6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QButtonGroup, 
 
 from gui import backend
 from gui.theme import C, COLUMNS, GLYPHS, UI
-from gui.widgets import (AlbumDelegate, AlbumModel, CapacityBar, Card, ElidedLabel, IpodPicture, ask,
+from musiclib import first_artist, norm
+from gui.widgets import (AlbumDelegate, AlbumModel, CapacityBar, Card, ElidedLabel, ask,
                          button, covers, fmt_gb, fmt_time, fmt_total, inform, muted, placeholder,
                          plural, run_async)
 
@@ -44,9 +45,11 @@ class Page(QWidget):
         outer.setSpacing(0)
         head = QFrame()
         head.setObjectName("viewHead")
+        head.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        head.setMinimumHeight(UI["head_h"])
         self.head = QHBoxLayout(head)
-        self.head.setContentsMargins(20, 10, 20, 10)
-        self.head.setSpacing(10)
+        self.head.setContentsMargins(20, 8, 20, 8)
+        self.head.setSpacing(12)
         self.title = QLabel(title)
         self.title.setObjectName("viewTitle")
         self.sub = ElidedLabel()
@@ -206,64 +209,76 @@ class Grid(QListView):
 
 
 class AlbumDetail(QFrame):
-    """An opened album: big cover, facts, tracks, and the Active/Archive switch."""
+    """An opened album, as the inspector on the right: cover, facts, where it lives,
+    the tracks (the playing one marked), Play and the Active / Archive switch."""
 
     closed = pyqtSignal()
     mark = pyqtSignal(str, str)
-    play = pyqtSignal(list, int)     # [{path, title, artist}], the index to start from
+    play = pyqtSignal(list, int)     # [{path, title, artist, album, dir}], the index to start from
 
     def __init__(self):
         super().__init__()
         self.setObjectName("detail")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.album, self.rows = None, []
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(20, 18, 20, 18)
-        lay.setSpacing(22)
-        self.cover = QLabel()
-        self.cover.setFixedSize(UI["detail_cover"], UI["detail_cover"])
-        self.cover.setScaledContents(True)
-        lay.addWidget(self.cover, 0, Qt.AlignmentFlag.AlignTop)
-        right = QVBoxLayout()
-        right.setSpacing(3)
+        self.setFixedWidth(UI["inspector_w"])
+        self.album, self.rows, self.state, self.playing = None, [], "A", None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 14, 14, 14)
+        lay.setSpacing(12)
         top = QHBoxLayout()
         self.name = QLabel()
         self.name.setObjectName("albumName")
         self.name.setWordWrap(True)
-        close = button(GLYPHS["close"], tip=_("Close (Esc)"))
+        close = QPushButton(GLYPHS["close"])
+        close.setProperty("flat", True)
+        close.setToolTip(_("Close (Esc)"))
         close.setFixedWidth(UI["close_button_w"])
         close.clicked.connect(self.closed)
         top.addWidget(self.name, 1)
         top.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
-        right.addLayout(top)
+        lay.addLayout(top)
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        self.cover = QLabel()
+        self.cover.setFixedSize(UI["detail_cover"], UI["detail_cover"])
+        self.cover.setScaledContents(True)
+        row.addWidget(self.cover, 0, Qt.AlignmentFlag.AlignTop)
+        facts = QVBoxLayout()
+        facts.setSpacing(6)
         self.who = QLabel()
         self.who.setObjectName("albumArtist")
+        self.who.setWordWrap(True)
         self.meta = muted("", wrap=True)
-        right.addWidget(self.who)
-        right.addWidget(self.meta)
+        self.pill = QLabel()
+        self.pill.setObjectName("statePill")
+        facts.addWidget(self.who)
+        facts.addWidget(self.meta)
+        facts.addWidget(self.pill, 0, Qt.AlignmentFlag.AlignLeft)
+        facts.addStretch(1)
+        row.addLayout(facts, 1)
+        lay.addLayout(row)
         acts = QHBoxLayout()
+        acts.setSpacing(6)
+        self.play_btn = button(GLYPHS["play"] + "  " + _("Play"), primary=True,
+                               tip=_("Or double-click a track"))
+        self.play_btn.clicked.connect(lambda: self._play(0))
         self.move = button("")
         self.move.clicked.connect(self._toggle)
         self.folder_btn = button(_("Show in folder"))
         self.folder_btn.clicked.connect(lambda: self.album and self._open())
-        self.play_btn = button(GLYPHS["play"] + "  " + _("Play"), tip=_("Or double-click a track. "
-                                                                        "Click the display to pause."))
-        self.play_btn.clicked.connect(lambda: self._play(0))
-        acts.addWidget(self.play_btn)
-        acts.addWidget(self.move)
-        acts.addWidget(self.folder_btn)
+        for b in (self.play_btn, self.move, self.folder_btn):
+            acts.addWidget(b)
         acts.addStretch(1)
-        right.addSpacing(6)
-        right.addLayout(acts)
-        right.addSpacing(6)
-        self.tracks = table(["#", N_("Title"), N_("Artist"), N_("Genre / style"), N_("Time"), N_("kbps"),
-                             N_("Cover")])
+        lay.addLayout(acts)
+        self.tracks = table(["#", N_("Title"), N_("Time")])
+        self.tracks.horizontalHeader().hide()
+        self.tracks.verticalHeader().setDefaultSectionSize(UI["side_row"] + 4)
+        self.tracks.setAlternatingRowColors(False)
         self.tracks.setSortingEnabled(False)
         self.tracks.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.tracks.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.tracks.cellDoubleClicked.connect(lambda row, col: self._play(row))
-        right.addWidget(self.tracks, 1)
-        lay.addLayout(right, 1)
+        lay.addWidget(self.tracks, 1)
         covers().ready.connect(self._cover_ready)
 
     def show_album(self, a, state):
@@ -273,9 +288,9 @@ class AlbumDetail(QFrame):
         facts = [plural(a["tracks"], "{n} track", "{n} tracks"),
                  _("{mb} MB").format(mb=f"{a['bytes'] / 1024 / 1024:.0f}")]
         if a["year"]:
-            facts.append(str(a["year"]))
+            facts.insert(0, str(a["year"]))
         if a["genre"]:
-            facts.append(a["genre"])
+            facts.insert(1 if a["year"] else 0, a["genre"])
         self.meta.setText(" · ".join(facts))
         self.folder_btn.setToolTip(a["path"])
         self.set_state(state, a["path"])
@@ -290,7 +305,20 @@ class AlbumDetail(QFrame):
     def set_state(self, state, path):
         if self.album and self.album["path"] == path:
             self.state = state
+            moved = state != self.album["state"]
             self.move.setText(_("Move to Archive") if state == "A" else _("Move to Active"))
+            self.pill.setText((_("→ Active, not moved yet") if state == "A" else _("→ Archive, not moved yet"))
+                              if moved else _("Active · goes to the iPod") if state == "A" else
+                              _("Archive · stays on disk"))
+            self.pill.setProperty("state", "moved" if moved else state)
+            self.pill.style().unpolish(self.pill)
+            self.pill.style().polish(self.pill)
+
+    def set_playing(self, path):
+        """Mark the track that's playing, if it's one of this album's."""
+        self.playing = path
+        if self.album:
+            self._paint_rows()
 
     def _toggle(self):
         if self.album:
@@ -314,31 +342,48 @@ class AlbumDetail(QFrame):
     def _play(self, at):
         if at < len(self.rows):
             self.play.emit([{"path": os.path.join(self.album["path"], r["file"]), "title": r["title"],
-                             "artist": r["artist"] or self.album["artist"]} for r in self.rows], at)
+                             "artist": r["artist"] or self.album["artist"], "album": self.album["album"],
+                             "dir": self.album["path"]} for r in self.rows], at)
 
     def _tracks(self, path, rows):
         if not self.album or self.album["path"] != path:
             return
         self.rows = rows
         fill(self.tracks, [[
-            (r["track"], int(r["track"]) if r["track"].isdigit() else 999, "r"),
-            r["title"], r["artist"],
-            " / ".join(x for x in (r["genre"], r["style"]) if x),
-            (fmt_time(r["length"]), r["length"], "r"),
-            (r["bitrate"] or "", r["bitrate"], "r"),
-            (GLYPHS["yes"] if r["art"] else _("none"), None, "c", None if r["art"] else C["detail_warn"]),
+            (r["track"], int(r["track"]) if r["track"].isdigit() else 999, "r", C["faint"]),
+            r["title"] if not r["artist"] or r["artist"] == self.album["artist"]
+            else f"{r['title']}  ·  {r['artist']}",
+            (fmt_time(r["length"]), r["length"], "r", C["muted"]),
         ] for r in rows], sortable=False)
-        widths(self.tracks, {0: "num", 2: "artist", 3: "genre", 4: "time", 5: "kbps", 6: "cover"})
+        widths(self.tracks, {0: "num", 2: "time"})
+        self._paint_rows()
+
+    def _paint_rows(self):
+        playing = os.path.basename(self.playing or "") if self.playing and self.album and \
+            os.path.dirname(self.playing) == self.album["path"] else None
+        for r, row in enumerate(self.rows):
+            on = row["file"] == playing
+            for c in range(self.tracks.columnCount()):
+                it = self.tracks.item(r, c)
+                if it is None:
+                    continue
+                it.setBackground(QColor(C["accent_soft"]) if on else QColor(0, 0, 0, 0))
+                if c == 1:
+                    it.setForeground(QColor(C["accent_text"] if on else C["text"]))
 
 
 STATES = [("all", N_("All"), None), ("A", N_("Active"), N_("Goes to the iPod on the next sync")),
           ("R", N_("Archive"), N_("Stays on disk"))]
+# with an iPod connected: what's on it, too
+STATES_IPOD = [STATES[0], ("ipod", N_("On iPod"), N_("Albums that are on the connected iPod")), *STATES[1:]]
 VIEWS = [("albums", N_("Albums")), ("artists", N_("Artists")), ("genres", N_("Genres"))]
 
 
 def segmented(items, on_pick, checked=0):
     """A row of joined toggle buttons; exactly one is on. items: [(key, text, tip)], texts marked N_()."""
     box = QWidget()
+    box.setObjectName("segments")
+    box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     lay = QHBoxLayout(box)
     lay.setContentsMargins(0, 0, 0, 0)
     lay.setSpacing(0)
@@ -369,23 +414,14 @@ def chip(text, tip, on_toggle):
     return b
 
 
-class Attention(QFrame):
-    """What needs doing, each with the button that does it. Hidden when nothing does."""
+class Attention(QWidget):
+    """What needs doing, as chips at the end of the filter row: click one to do it."""
 
     def __init__(self):
         super().__init__()
-        self.setObjectName("attention")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.lay = QHBoxLayout(self)
-        self.lay.setContentsMargins(20, 6, 20, 6)
-        self.lay.setSpacing(10)
-        self.shown_texts, self.dismissed = (), None
-        self.hide()
-
-    def _dismiss(self):
-        """Hidden until what it says changes."""
-        self.dismissed = self.shown_texts
-        self.hide()
+        self.lay.setContentsMargins(0, 0, 0, 0)
+        self.lay.setSpacing(8)
 
     def set_items(self, items):
         """items: [(text, button text, callback)]."""
@@ -393,52 +429,35 @@ class Attention(QFrame):
             w = self.lay.takeAt(0).widget()
             if w:
                 w.deleteLater()
-        for n, (text, action, fn) in enumerate(items):
-            if n:
-                sep = QLabel(GLYPHS["dot"])
-                sep.setProperty("muted", True)
-                self.lay.addWidget(sep)
-            lab = QLabel(f"{GLYPHS['warn']}  {text}")
-            b = button(action)
+        for text, action, fn in items:
+            b = QPushButton(f"{GLYPHS['dot']}  {text}")
+            b.setProperty("chip", "warn")
+            b.setToolTip(action)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(fn)
-            self.lay.addWidget(lab)
             self.lay.addWidget(b)
-        self.lay.addStretch(1)
-        close = button(GLYPHS["close"], tip=_("Hide until something changes"))
-        close.setObjectName("attentionClose")
-        close.clicked.connect(self._dismiss)
-        self.lay.addWidget(close)
-        self.shown_texts = tuple(text for text, _a, _f in items)
-        self.setVisible(bool(items) and self.shown_texts != self.dismissed)
+        self.setVisible(bool(items))
 
 
 class LibraryPage(Page):
     """The library in three views — albums, artists, genres — and the Active / Archive markup."""
 
     marks_changed = pyqtSignal()
+    view_changed = pyqtSignal(str)
 
     def __init__(self, win):
-        super().__init__(win, N_("Library"))
+        super().__init__(win, N_("Albums"))
         self.albums, self.view, self.state, self.search, self.sort = None, "albums", "all", "", 0
         self.genre, self.only_noart = None, False
-        self.artist = None
+        self.artist, self.ipod_albums = None, None
         self.model = AlbumModel()
         self.marks = self.model.marks
 
-        self.views = segmented([(k, t, None) for k, t in VIEWS], self.set_view)
-        self.head.addWidget(self.views)
-
-        # second row: the tools of the current view
-        self.bars = QStackedWidget()
-        bar = QWidget()
-        row = QHBoxLayout(bar)
-        row.setContentsMargins(20, 6, 20, 6)
-        row.setSpacing(8)
+        # the header: what's shown, the filter by place, sort and size, then the actions
+        self.head.removeWidget(self.sub)
+        self.head.insertWidget(1, self.sub)
         self.states = segmented(STATES, self._state)
-        self.genre_box = QComboBox()
-        self.genre_box.setToolTip(_("Only albums of this genre"))
-        self.genre_box.currentIndexChanged.connect(self._genre)
-        self.noart_chip = chip(_("No cover"), _("Albums with tracks that have no cover art"), self._noart)
+        self.head.insertWidget(2, self.states)
         self.sort_box = QComboBox()
         self.sort_box.addItems([_(n) for n, _key in SORTS])
         self.sort_box.currentIndexChanged.connect(self._sort)
@@ -448,17 +467,30 @@ class LibraryPage(Page):
         self.size.setFixedWidth(UI["slider_w"])
         self.size.setToolTip(_("Cover size"))
         self.size.valueChanged.connect(self._resize)
-        small, large = QLabel(GLYPHS["small"]), QLabel(GLYPHS["large"])
-        for lab in (small, large):
-            lab.setProperty("muted", True)
-            lab.setToolTip(_("Cover size"))
-        for w in (self.states, self.genre_box, self.noart_chip):
-            row.addWidget(w)
+        self.add_btn = button("+  " + _("Add tracks"), tip=_("Add new tracks — or drop a folder onto the "
+                                                            "window (Ctrl+N)"))
+        self.sync_btn = button(GLYPHS["sync"] + "  " + _("Sync"), primary=True,
+                               tip=_("Sync the iPod with Active (Ctrl+S)"))
+        for w in (self.sort_box, self.size, self.add_btn, self.sync_btn):
+            self.head.addWidget(w)
+
+        # second row: filter chips and what needs doing (the genres view has its own tools)
+        self.bars = QStackedWidget()
+        bar = QWidget()
+        bar.setObjectName("chips")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(20, 10, 20, 4)
+        row.setSpacing(8)
+        self.genre_box = QComboBox()
+        self.genre_box.setProperty("chip", True)
+        self.genre_box.setToolTip(_("Only albums of this genre"))
+        self.genre_box.currentIndexChanged.connect(self._genre)
+        self.noart_chip = chip(_("No cover"), _("Albums with tracks that have no cover art"), self._noart)
+        self.attention = Attention()
+        row.addWidget(self.genre_box)
+        row.addWidget(self.noart_chip)
+        row.addWidget(self.attention)
         row.addStretch(1)
-        row.addWidget(self.sort_box)
-        row.addSpacing(8)
-        for w in (small, self.size, large):
-            row.addWidget(w)
         for w in (self.states, self.noart_chip, self.sort_box):
             w.setMinimumWidth(w.sizeHint().width())     # never squeezed into "Al | ti | h"
         self.bars.addWidget(bar)
@@ -466,9 +498,6 @@ class LibraryPage(Page):
         self.bars.addWidget(self.genres.bar)
         self.bars.setFixedHeight(bar.sizeHint().height())
         self.body.addWidget(self.bars)
-
-        self.attention = Attention()
-        self.body.addWidget(self.attention)
 
         # the selection's actions and the marks not moved yet; hidden when there are neither
         self.marks_bar = QFrame()
@@ -526,10 +555,12 @@ class LibraryPage(Page):
         self.detail.closed.connect(self.close_album)
         self.detail.mark.connect(lambda p, s: self.set_marks({p: s}))
         self.detail.hide()
-        self.split = QSplitter(Qt.Orientation.Vertical)
-        self.split.addWidget(self.grid)
-        self.split.addWidget(self.detail)
-        self.split.setChildrenCollapsible(False)
+        self.split = QWidget()
+        sl = QHBoxLayout(self.split)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(0)
+        sl.addWidget(self.grid, 1)
+        sl.addWidget(self.detail)
         albums_area = QWidget()
         h = QHBoxLayout(albums_area)
         h.setContentsMargins(0, 0, 0, 0)
@@ -573,13 +604,16 @@ class LibraryPage(Page):
     # --- views
 
     def set_view(self, view):
+        """Albums, artists or genres; False if the genres view has edits that weren't let go."""
         if view == self.view:
-            return
+            return True
         if self.view == "genres" and not self.genres.can_leave():
-            self.views.buttons["genres"].setChecked(True)
-            return
+            return False
         self.view = view
-        self.views.buttons[view].setChecked(True)
+        self.title.setText(_(dict(VIEWS)[view]))
+        self.view_changed.emit(view)
+        for w in (self.states, self.sort_box, self.size):
+            w.setVisible(view != "genres")
         self.artists.setVisible(view == "artists")
         self.bars.setCurrentIndex(1 if view == "genres" else 0)
         self._show_body()
@@ -588,6 +622,33 @@ class LibraryPage(Page):
             self.genres.shown()
         else:
             self.refresh()
+        return True
+
+    def set_ipod(self, info):
+        """The connected iPod (or None): the place filter offers "On iPod" while there's one.
+        An album is on it when one of the iPod's tracks has its artist (or, under old glued
+        tags, its first artist) and album."""
+        self.ipod_albums = None if info is None else {
+            (norm(name), norm(t["album"])) for t in info["tracks"]
+            for name in (t["artist"], first_artist(t["artist"]))}
+        items = STATES_IPOD if info is not None else STATES
+        keys = [k for k, _t, _tip in items]
+        if self.state not in keys:
+            self.state = "all"
+        new = segmented(items, self._state, keys.index(self.state))
+        new.setVisible(self.view != "genres")
+        self.head.replaceWidget(self.states, new)
+        self.states.deleteLater()
+        self.states = new
+        self.refresh()
+
+    def open_path(self, path):
+        """Open the album in this folder, if it's in the grid."""
+        row = self.model.row_of.get(path)
+        if row is not None:
+            index = self.model.index(row)
+            self.grid.setCurrentIndex(index)
+            self.open_album(index)
 
     def _show_body(self):
         if self.view == "genres":
@@ -690,7 +751,10 @@ class LibraryPage(Page):
         out = []
         for a in self.albums or []:
             s = self.model.state(a)
-            if self.state != "all" and s != self.state:
+            if self.state == "ipod":
+                if not self.ipod_albums or (norm(a["artist"]), norm(a["album"])) not in self.ipod_albums:
+                    continue
+            elif self.state != "all" and s != self.state:
                 continue
             if self.genre is not None and a["genre"] != self.genre:
                 continue
@@ -865,9 +929,8 @@ class LibraryPage(Page):
             return
         a = self.model.album(index)
         self.detail.show_album(a, self.model.state(a))
+        self.detail.set_playing(self.win.queue[self.win.queue_at]["path"] if self.win.queue else None)
         self.detail.show()
-        h = self.split.height()
-        self.split.setSizes([h - h // 2, h // 2])
         self.grid.scrollTo(index, QAbstractItemView.ScrollHint.EnsureVisible)
 
     def close_album(self):
@@ -895,9 +958,23 @@ class IpodPage(Page):
     def __init__(self, win):
         super().__init__(win, N_("iPod"))
         self.data, self.search, self.flt = None, "", 0
-        self.refresh_btn = button(_("Refresh"), tip=_("Read the iPod again"))
-        self.refresh_btn.clicked.connect(lambda: self.load(force=True))
-        self.head.addWidget(self.refresh_btn)
+        # the header: the iPod's own actions; the rare ones under ⋯
+        self.refresh_btn = button("⋯", tip=_("More"))
+        more = QMenu(self)
+        more.addAction(_("Read it again"), lambda: self.load(force=True))
+        more.addSeparator()
+        more.addAction(_("Save tracks only on the iPod…"), lambda: self.win.run_tool("rescue"))
+        more.addAction(_("Mirror to disk…"), self._disk)
+        more.addSeparator()
+        more.addAction(_("Restore last backup…"), self._restore)
+        self.refresh_btn.setMenu(more)
+        eject = button(_("Eject"))
+        eject.clicked.connect(self.win.eject)
+        self.sync = button(GLYPHS["sync"] + "  " + _("Sync now"), primary=True,
+                           tip=_("Make the iPod hold exactly what's in Active"))
+        self.sync.clicked.connect(lambda: self.win.run_tool("sync"))
+        for b in (self.refresh_btn, eject, self.sync):
+            self.head.addWidget(b)
 
         self.stack = QStackedWidget()
         say = QWidget()
@@ -917,45 +994,49 @@ class IpodPage(Page):
         content = QWidget()
         content.setObjectName("page")
         col = QVBoxLayout(content)
-        col.setContentsMargins(20, 16, 20, 12)
-        col.setSpacing(10)
+        col.setContentsMargins(24, 20, 24, 12)
+        col.setSpacing(16)
+        # how full it is
+        space = QFrame()
+        space.setObjectName("card")
+        space.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        sl0 = QVBoxLayout(space)
+        sl0.setContentsMargins(18, 14, 18, 14)
+        sl0.setSpacing(8)
         top = QHBoxLayout()
-        top.setSpacing(26)
-        self.pic = IpodPicture()
-        top.addWidget(self.pic, 0, Qt.AlignmentFlag.AlignTop)
-        info = QVBoxLayout()
-        info.setSpacing(4)
-        self.name = QLabel()
-        self.name.setObjectName("ipodName")
-        self.facts = QGridLayout()
-        self.facts.setHorizontalSpacing(16)
-        self.facts.setVerticalSpacing(2)
+        head = QLabel(_("Space"))
+        head.setObjectName("h2")
+        self.space_text = muted("", wrap=False)
+        top.addWidget(head)
+        top.addWidget(self.space_text)
+        top.addStretch(1)
+        sl0.addLayout(top)
         self.cap = CapacityBar()
-        info.addWidget(self.name)
-        info.addLayout(self.facts)
-        info.addSpacing(6)
-        info.addWidget(self.cap)
-        acts = QHBoxLayout()
-        acts.setSpacing(8)
-        self.sync = button(_("Sync…"), primary=True, tip=_("Make the iPod hold exactly what's in Active"))
-        self.sync.clicked.connect(lambda: self.win.run_tool("sync"))
-        eject = button(_("Eject"))
-        eject.clicked.connect(self.win.eject)
-        rescue = button(_("Save tracks only on the iPod…"),
-                        tip=_("Copy tracks that are in neither Active nor Archive into the incoming folder"))
-        rescue.clicked.connect(lambda: self.win.run_tool("rescue"))
-        restore = button(_("Restore last backup…"), danger=True,
-                         tip=_("Put the iPod's database back as it was before the last sync"))
-        restore.clicked.connect(self._restore)
-        disk = button(_("Mirror to disk…"), tip=_("Plain folder copy for Rockbox or disk mode"))
-        disk.clicked.connect(self._disk)
-        for b in (self.sync, eject, rescue, disk, restore):
-            acts.addWidget(b)
-        acts.addStretch(1)
-        info.addSpacing(4)
-        info.addLayout(acts)
-        top.addLayout(info, 1)
-        col.addLayout(top)
+        sl0.addWidget(self.cap)
+        col.addWidget(space)
+        # the numbers that matter, each a tile
+        tiles = QHBoxLayout()
+        tiles.setSpacing(16)
+        self.tiles = {}
+        for key, text in (("tracks", _("tracks on the iPod")), ("nocover", _("without a cover")),
+                          ("missing", _("not in the library")), ("archive", _("from Archive, to leave"))):
+            t = QFrame()
+            t.setObjectName("card")
+            t.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            tl = QVBoxLayout(t)
+            tl.setContentsMargins(18, 12, 18, 12)
+            tl.setSpacing(2)
+            n = QLabel("—")
+            n.setObjectName("metric")
+            tl.addWidget(n)
+            tl.addWidget(muted(text, wrap=False))
+            tiles.addWidget(t, 1)
+            self.tiles[key] = n
+        col.addLayout(tiles)
+        self.name = QLabel()            # model, serial, software: one quiet line
+        self.name.setProperty("muted", True)
+        self.name.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        col.addWidget(self.name)
 
         self.tabs = QTabWidget()
         songs = QWidget()
@@ -1057,25 +1138,20 @@ class IpodPage(Page):
         self.data = d
         self.win.ipod_read(d)
         self.title.setText(d["name"])
-        self.sub.setText(d["path"])
-        self.name.setText(d["model"] or "iPod")
-        self.pic.set_white("white" in d["color"])
-        while self.facts.count():
-            w = self.facts.takeAt(0).widget()
-            if w:
-                w.deleteLater()
+        self.sub.setText(f"{d['model'] or 'iPod'} · {fmt_gb(d['capacity_gb'])} · {d['path']}")
         tracks = d["tracks"]
-        facts = [(_("Capacity"), fmt_gb(d["capacity_gb"])), (_("Model"), d["model_number"] or "—"),
-                 (_("Serial number"), d["serial"] or "—"), (_("Software"), d["firmware"] or "—"),
-                 (_("Tracks"), f"{len(tracks)} · {fmt_total(sum(t['length'] for t in tracks))}"),
-                 (_("Without a cover"), str(sum(1 for t in tracks if not t["cover"]))),
-                 (_("Not in the library"), "…" if any(t["state"] == "?" for t in tracks)
-                  else str(sum(1 for t in tracks if t["state"] == "")))]
-        for r, (k, v) in enumerate(facts):
-            self.facts.addWidget(muted(k, wrap=False), r, 0)
-            val = QLabel(v)
-            val.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            self.facts.addWidget(val, r, 1)
+        self.name.setText("   ·   ".join(f"{k} {v}" for k, v in (
+            (_("Model"), d["model_number"] or "—"), (_("Serial number"), d["serial"] or "—"),
+            (_("Software"), d["firmware"] or "—"))))
+        comparing = any(t["state"] == "?" for t in tracks)
+        self.tiles["tracks"].setText(str(len(tracks)))
+        self.tiles["tracks"].setToolTip(fmt_total(sum(t["length"] for t in tracks)))
+        self.tiles["nocover"].setText(str(sum(1 for t in tracks if not t["cover"])))
+        self.tiles["missing"].setText("…" if comparing else str(sum(1 for t in tracks if t["state"] == "")))
+        self.tiles["archive"].setText("…" if comparing else str(sum(1 for t in tracks if t["state"] == "R")))
+        self.space_text.setText(_("{used} of {total} used · {free} free").format(
+            used=fmt_gb(d["capacity_gb"] - d["free_gb"]), total=fmt_gb(d["capacity_gb"]),
+            free=fmt_gb(d["free_gb"])))
         self.cap.set_values(d["capacity_gb"], d["music_gb"], d["free_gb"])
         fill(self.lists, [[p["title"] + (_("  (folder)") if p["folder"] else ""),
                            (p["count"], p["count"], "r")] for p in d["playlists"]])

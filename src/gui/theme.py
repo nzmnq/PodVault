@@ -1,13 +1,14 @@
 """How the window looks: palettes, the symbols used as icons, fonts, sizes, timings.
 
-The layout follows iTunes (a source list, an LCD in the toolbar, views of one
-library) but the look is our own: flat light chrome, an indigo accent. Light by
-default; dark when the system is dark. Nothing visual is hard-coded elsewhere.
+The look is b1air's "Air": a sidebar with sections, a page with its own header,
+an inspector on the right, a full-width player at the bottom; flat surfaces,
+one accent for what is chosen or the main action, rounded corners (8 for
+controls, 12 for cards, 16 for panels). Dark by default, light when the system
+is light. Nothing visual is hard-coded elsewhere.
 
 On the b1air desktop the colours come from its theme instead
 (~/.config/b1air/theme.json, written by its Settings → Appearance): the
-surfaces, text, lines and the accent follow the desktop, the layout and
-PodVault's own pictures (the album panel, the iPod, the badges) stay.
+surfaces, text, lines and the accent follow the desktop.
 """
 
 import functools
@@ -21,53 +22,61 @@ from PyQt6.QtGui import (QColor, QFont, QFontDatabase, QGuiApplication, QIcon, Q
 from PyQt6.QtWidgets import QComboBox, QStyledItemDelegate
 
 # Colours are "#RRGGBB" or "#AARRGGBB"; the ones only the stylesheet uses may be rgba().
-LIGHT = dict(
-    bg="#ffffff", text="#1c1c21", muted="#6b6b76", faint="#a3a3ad", line="#e3e3e8",
-    alt="#f6f6f9", hover="#efeff4",
-    tb_top="#fbfbfc", tb_bottom="#f1f1f4", tb_line="#d9d9df",
-    btn_top="#ffffff", btn_bottom="#f3f3f6", btn_line="#cfcfd7",
-    lcd_top="#f4f5f9", lcd_bottom="#eceef5", lcd_line="#d5d8e2", lcd_text="#2b2d3a",
-    lcd_track="#1e000000",
-    side="#f4f4f7", side_text="#26262e", side_head="#8b8b96", side_hover="#e9e9ef",
-    accent="#5b5bd6", accent_soft="#e8e8fb", on_accent="#ffffff",
-    active="#2f9e5a", archive="#d9861c", danger="#d0453c", pending="#c2448a",
-    sheet="#fafafc",
-    attention_bg="#fff8ea", attention_line="#f1dfb8", attention_text="#6b4a10",
-    # an opened album
-    detail_top="#34374a", detail_bottom="#1f2130", detail_text="#f2f2f6", detail_muted="#b9bccb",
-    detail_warn="#ffb0a8", detail_btn="rgba(255,255,255,30)", detail_btn_line="rgba(255,255,255,70)",
-    detail_alt="rgba(255,255,255,10)", detail_line="rgba(255,255,255,40)",
+DARK = dict(
+    ground="#231c33", bg="#2b2340", text="#ebe8f2", muted="#a39fb6", faint="#8a85a0", line="#3a3150",
+    alt="#2f2745", hover="#372e4f", fill="#3a3150", fill_hover="#433a5a",
+    side="#241d36", side_text="#ebe8f2", side_head="#8a85a0", side_hover="#2f2745", side_line="#30283f",
+    inspector="#271f3a", player="#1f1930", player_line="#3a3150",
+    accent="#5aa9e6", accent_soft="#2f4565", accent_text="#9fd2f7", on_accent="#0d1b29",
+    active="#5cc98a", archive="#e8b35a", danger="#ef7a6f", pending="#e07fb5",
+    ok_soft="#2c4a3f", warn_soft="#4a3d2c", warn_text="#f0c77e", ok_text="#7fd9a5",
+    sheet="#2f2745",
+    # kept for pieces that still read them
+    tb_top="#2b2340", tb_bottom="#2b2340", tb_line="#3a3150",
+    btn_top="#3a3150", btn_bottom="#3a3150", btn_line="#3a3150",
+    lcd_track="#32ffffff",
+    attention_bg="#4a3d2c", attention_line="#4a3d2c", attention_text="#f0c77e",
+    detail_top="#271f3a", detail_bottom="#271f3a", detail_text="#ebe8f2", detail_muted="#a39fb6",
+    detail_warn="#ef7a6f", detail_btn="#3a3150", detail_btn_line="#3a3150",
+    detail_alt="rgba(255,255,255,6)", detail_line="#3a3150",
     # album tiles
-    flag_text="#ffffff", art_initials="#e6ffffff", art_shadow="#2d000000",
-    art_dim="#6effffff", selection_fill="#28000000",
+    flag_text="#ffffff", art_initials="#e6ffffff", art_shadow="#40000000",
+    art_dim="#80231c33", selection_fill="#38000000",
     # the iPod picture
     ipod_black_top="#48484b", ipod_black_bottom="#0e0e10",
     ipod_white_top="#ffffff", ipod_white_bottom="#d6d6d6", ipod_outline="#3c000000",
-    ipod_screen_top="#b6c3f2", ipod_screen_bottom="#5b66c9", ipod_screen_frame="#96000000",
+    ipod_screen_top="#b6d6f2", ipod_screen_bottom="#4f8fc9", ipod_screen_frame="#96000000",
     ipod_screen_text="#ffffff",
     wheel_black_top="#3f3f42", wheel_black_bottom="#1b1b1d", wheel_black_text="#9a9a9a",
     wheel_white_top="#f0f0f0", wheel_white_bottom="#bdbdbd", wheel_white_text="#7a7a7a",
     wheel_line="#32000000",
     # the capacity bars
-    cap_audio_top="#8c8cf0", cap_audio="#5b5bd6", cap_other_top="#ffd27a", cap_other="#e5a53a",
+    cap_audio_top="#7cc0f0", cap_audio="#5aa9e6", cap_other_top="#f0c77e", cap_other="#e8b35a",
     # notifications
-    toast="rgba(38,38,46,235)", toast_good="rgba(40,135,80,240)", toast_bad="rgba(190,55,48,240)",
+    toast="rgba(31,25,48,240)", toast_good="rgba(44,110,80,245)", toast_bad="rgba(170,60,55,245)",
     toast_text="#ffffff",
-    drop_bg="rgba(255,255,255,225)",
+    drop_bg="rgba(35,28,51,225)",
 )
 
-DARK = dict(
-    LIGHT,
-    bg="#1b1b1f", text="#e7e7ec", muted="#a2a2ad", faint="#6d6d78", line="#2f2f36",
-    alt="#222228", hover="#2a2a31",
-    tb_top="#26262c", tb_bottom="#212126", tb_line="#111114",
-    btn_top="#34343c", btn_bottom="#2d2d34", btn_line="#41414b",
-    lcd_top="#26272f", lcd_bottom="#212229", lcd_line="#3a3b46", lcd_text="#d9dbf0",
-    lcd_track="#32ffffff",
-    side="#1f1f24", side_text="#dcdce3", side_head="#7c7c88", side_hover="#2a2a31",
-    accent="#7b7bf0", accent_soft="#33335a", sheet="#25252b", art_dim="#6e000000",
-    attention_bg="#2c2618", attention_line="#4a3d1e", attention_text="#f0d49a",
-    drop_bg="rgba(27,27,31,225)",
+LIGHT = dict(
+    DARK,
+    ground="#e9e6f1", bg="#f7f6fb", text="#1d1a26", muted="#615c72", faint="#8e89a0", line="#e2dfea",
+    alt="#f1eff7", hover="#e9e6f1", fill="#e9e6f1", fill_hover="#dfdbea",
+    side="#efedf5", side_text="#1d1a26", side_head="#7b768c", side_hover="#e4e1ec", side_line="#e2dfea",
+    inspector="#f1eff7", player="#ebe9f2", player_line="#dcd8e6",
+    accent="#2f80c9", accent_soft="#d6e7f6", accent_text="#1f63a3", on_accent="#ffffff",
+    active="#2f9e5a", archive="#c27a14", danger="#c9443b", pending="#c2448a",
+    ok_soft="#dcf1e4", warn_soft="#f8ecd3", warn_text="#7a5310", ok_text="#22764a",
+    sheet="#ffffff",
+    tb_top="#f7f6fb", tb_bottom="#f7f6fb", tb_line="#e2dfea",
+    btn_top="#e9e6f1", btn_bottom="#e9e6f1", btn_line="#e2dfea",
+    lcd_track="#1e000000",
+    attention_bg="#f8ecd3", attention_line="#f8ecd3", attention_text="#7a5310",
+    detail_top="#f1eff7", detail_bottom="#f1eff7", detail_text="#1d1a26", detail_muted="#615c72",
+    detail_warn="#c9443b", detail_btn="#e9e6f1", detail_btn_line="#e2dfea",
+    detail_alt="rgba(0,0,0,6)", detail_line="#e2dfea",
+    art_dim="#80f7f6fb", art_shadow="#26000000", selection_fill="#24000000",
+    toast="rgba(29,26,38,235)", drop_bg="rgba(247,246,251,225)",
 )
 
 FONTS = dict(
@@ -100,18 +109,22 @@ GLYPHS = dict(
     pause="❚❚",            # two heavy vertical bars
     prev="⏮",              # black left-pointing double triangle with vertical bar
     next="⏭",              # black right-pointing double triangle with vertical bar
+    volume="🔈︎",            # speaker, the text form (U+FE0E), not the emoji
+    albums="▦",            # square with orthogonal crosshatch
+    artists="◉",           # fisheye
+    genres="≣",            # strictly equivalent to
+    tools="⚙︎",             # gear, text form
+    settings="☼",          # white sun with rays
 )
 
 UI = dict(
-    window=(1320, 840), window_min=(1040, 640), sheet=(900, 600), dialog_w=560,
-    toolbar_h=64, status_h=28, status_button_h=20,
-    lcd_h=50, lcd_w=(260, 440), lcd_bar_w=340, lcd_seek_zone=8,
-    side_w=220, side_min=180, side_row=26, side_device_row=44, side_head=28, icon=16,
-    side_capacity_h=4, side_eject=22, side_pad=6, side_gap=10,
-    tile=150, tile_range=(100, 240), thumb=256, cover_large=640, detail_cover=220,
+    window=(1360, 860), window_min=(1040, 640), sheet=(900, 600), dialog_w=560,
+    side_w=224, side_row=36, head_h=56, player_h=72, player_cover=44, inspector_w=420,
+    icon=16, gap=8,
+    tile=150, tile_range=(100, 240), thumb=256, cover_large=640, detail_cover=148,
     artists_w=190, ipod_picture=(112, 184), capacity_h=40, vibe_text_h=80,
     close_button_w=30, form_w=760, form_label_w=190, form_number_w=120, slider_w=110, combo_extra_w=44, genre_box_max_w=260,
-    poll_ms=3000, sheet_refresh_ms=150, lcd_refresh_ms=250, restart_ms=3000, eject_repoll_ms=1500,
+    poll_ms=3000, sheet_refresh_ms=150, player_refresh_ms=250, restart_ms=3000, eject_repoll_ms=1500,
     note_s=6, toast_ms=5000, toast_bad_ms=8000, toast_w=420, toast_gap=14, list_preview=12,
     cover_threads=3, cache_max=3000, log_lines=10000,
 )
@@ -127,13 +140,12 @@ B1AIR_THEME = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expandus
 
 # our key <- the b1air palette's key (src/shell/qml/Services/Theme.qml in b1air)
 B1AIR = dict(
-    bg="ground", sheet="mid", alt="low", hover="high",
-    text="text", muted="textDim", faint="outline", line="outlineVariant",
-    tb_top="mid", tb_bottom="mid", tb_line="outlineVariant",
-    btn_top="high", btn_bottom="high", btn_line="outlineVariant",
-    lcd_top="lowest", lcd_bottom="lowest", lcd_line="outlineVariant", lcd_text="text",
+    ground="lowest", bg="ground", sheet="mid", alt="low", hover="high", fill="high", fill_hover="highest",
+    inspector="low", player="lowest",
+    text="text", muted="textDim", faint="outline", line="outlineVariant", side_line="outlineVariant",
+    player_line="outlineVariant",
     side="low", side_text="text", side_head="textDim", side_hover="high",
-    accent="primary", on_accent="primaryText", accent_soft="primaryBox",
+    accent="primary", on_accent="primaryText", accent_soft="primaryBox", accent_text="primary",
     cap_audio_top="primary", cap_audio="primary",
     active="green", archive="peach", danger="error", pending="pink",
 )
@@ -164,9 +176,10 @@ def b1air_palette():
     return out
 
 
-def is_dark():
+def is_light():
+    """Light only when the system says so: the Air look is dark by default."""
     try:
-        return QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark
+        return QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Light
     except AttributeError:
         return False
 
@@ -174,163 +187,177 @@ def is_dark():
 QSS = """
 QWidget {{ color: {text}; font-size: 10pt; }}
 QMainWindow, QStackedWidget, #page {{ background: {bg}; }}
+#shell {{ background: {bg}; }}
 
-#toolbar {{
-  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {tb_top}, stop:1 {tb_bottom});
-  border-bottom: 1px solid {tb_line};
-}}
-#statusbar {{ background: {tb_bottom}; border-top: 1px solid {tb_line}; }}
-#statusbar QLabel {{ color: {muted}; font-size: 8.5pt; }}
-#statusbar QLabel#summary {{ color: {text}; }}
-#statusbar QLabel#pending {{ color: {pending}; font-weight: 600; }}
+/* the sidebar */
+#side {{ background: {side}; border-right: 1px solid {side_line}; }}
+QLineEdit#search {{ border: 0; border-radius: 8px; padding: 6px 12px; background: {fill}; min-height: 20px; }}
+QLineEdit#search:focus {{ background: {fill_hover}; }}
+QLabel#sideHead {{ color: {side_head}; font-size: 8pt; font-weight: 700; letter-spacing: 1px; padding: 0 12px; }}
+QPushButton#sideAdd {{ border: 0; background: transparent; color: {side_head}; font-size: 13pt;
+  min-height: 18px; max-width: 22px; padding: 0; }}
+QPushButton#sideAdd:hover {{ color: {text}; }}
+QPushButton#sideRow {{ text-align: left; border: 0; border-radius: 8px; padding: 0 12px; min-height: 36px;
+  background: transparent; color: {side_text}; }}
+QPushButton#sideRow:hover {{ background: {side_hover}; }}
+QPushButton#sideRow:checked {{ background: {accent_soft}; color: {text}; font-weight: 600; }}
+QLabel#sideCount {{ color: {muted}; font-size: 8.5pt; background: transparent; }}
+#deviceCard {{ background: {alt}; border: 1px solid {side_line}; border-radius: 12px; }}
+#deviceCard[current="true"] {{ border-color: {accent}; }}
+#deviceCard QLabel {{ background: transparent; }}
+QLabel#deviceName {{ font-weight: 600; }}
+#deviceCard QProgressBar {{ max-height: 6px; min-height: 6px; border-radius: 3px; background: {fill}; }}
+#deviceCard QProgressBar::chunk {{ background: {accent}; border-radius: 3px; }}
+#activity {{ background: {alt}; border-radius: 10px; }}
+#activity QLabel {{ background: transparent; }}
+#activity QProgressBar {{ max-height: 4px; min-height: 4px; border-radius: 2px; background: {fill}; }}
+QLabel#summary {{ color: {muted}; font-size: 8.5pt; padding: 0 12px; }}
 
-QPushButton#tb {{
-  min-height: 28px; padding: 0 14px; border-radius: 7px;
-  border: 1px solid {btn_line};
-  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {btn_top}, stop:1 {btn_bottom});
-}}
-QPushButton#tb:hover {{ border-color: {accent}; }}
-QPushButton#tb:pressed {{ background: {hover}; }}
-QPushButton#tb:disabled {{ color: {faint}; }}
-QPushButton#tb::menu-indicator {{ image: none; width: 0; }}
-
-#lcd {{
-  border: 1px solid {lcd_line}; border-radius: 9px;
-  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {lcd_top}, stop:1 {lcd_bottom});
-}}
-#lcd QLabel {{ color: {lcd_text}; background: transparent; }}
-#lcdTitle {{ font-weight: 600; }}
-#lcdSub {{ font-size: 8.5pt; }}
-#lcd QProgressBar {{ border: 0; border-radius: 2px; background: {lcd_track}; max-height: 4px; min-height: 4px; }}
-#lcd QProgressBar::chunk {{ background: {accent}; border-radius: 2px; }}
-
-QLineEdit#search {{
-  border: 1px solid {btn_line}; border-radius: 8px; padding: 4px 10px; background: {bg}; min-width: 200px;
-}}
-QLineEdit#search:focus {{ border-color: {accent}; }}
-
-#sidebar {{ background: {side}; border: 0; border-right: 1px solid {tb_line}; outline: 0; color: {side_text}; }}
-#sidebar::item {{ border: 0; margin: 1px 8px; border-radius: 6px; padding: 2px 4px; }}
-#sidebar::item:hover {{ background: {side_hover}; }}
-#sidebar::item:selected {{ color: {on_accent}; background: {accent}; }}
-#sidebar::branch {{ background: {side}; image: none; border: 0; }}
-#sideBox {{ background: {side}; }}
-#sideBox #sidebar {{ border-right: 0; }}
-QPushButton#sideSettings {{ text-align: left; margin: 6px 8px 10px 8px; padding: 4px 10px; border: 0;
-  border-radius: 6px; background: transparent; color: {side_text}; }}
-QPushButton#sideSettings:hover {{ background: {side_hover}; }}
-QPushButton#sideSettings:checked {{ background: {accent}; color: {on_accent}; }}
-
+/* a page */
 #viewHead {{ background: {bg}; border-bottom: 1px solid {line}; }}
-#viewTitle {{ font-size: 16pt; font-weight: 600; }}
-#attention {{ background: {attention_bg}; border-bottom: 1px solid {attention_line}; }}
-#attention QLabel {{ color: {attention_text}; }}
-#attention QPushButton {{ min-height: 20px; padding: 0 10px; }}
-#attention QPushButton#attentionClose {{ border: 0; background: transparent; color: {attention_text}; padding: 0 4px; }}
-QLabel#dropHint {{ background: {drop_bg}; border: 2px dashed {accent}; border-radius: 12px;
+#viewTitle {{ font-size: 15pt; font-weight: 600; }}
+#chips {{ background: {bg}; }}
+QPushButton[chip="warn"] {{ border: 0; border-radius: 12px; padding: 0 12px; min-height: 24px;
+  background: {warn_soft}; color: {warn_text}; font-size: 9pt; }}
+QPushButton[chip="warn"]:hover {{ background: {attention_line}; }}
+QPushButton[chip="true"] {{ border: 0; border-radius: 12px; padding: 0 12px; min-height: 24px;
+  background: {fill}; color: {muted}; font-size: 9pt; }}
+QPushButton[chip="true"]:hover {{ background: {fill_hover}; color: {text}; }}
+QPushButton[chip="true"]:checked {{ background: {accent_soft}; color: {accent_text}; }}
+QComboBox[chip="true"] {{ border: 0; border-radius: 12px; min-height: 24px; background: {fill}; color: {muted};
+  font-size: 9pt; padding: 0 26px 0 12px; }}
+QLabel#dropHint {{ background: {drop_bg}; border: 2px dashed {accent}; border-radius: 16px;
   color: {accent}; font-size: 15pt; font-weight: 600; }}
-#marksBar {{ background: {accent_soft}; border-bottom: 1px solid {accent}; }}
+#marksBar {{ background: {accent_soft}; }}
 #marksBar QLabel {{ color: {text}; font-weight: 600; }}
-#marksBar QPushButton {{ min-height: 20px; padding: 0 10px; }}
 #empty QLabel#emptyTitle {{ font-size: 13pt; font-weight: 600; }}
 QLabel[muted="true"] {{ color: {muted}; }}
 QLabel[warn="true"] {{ color: {danger}; }}
 QLabel#h2 {{ font-size: 12pt; font-weight: 600; }}
-QLabel#section {{ color: {muted}; font-size: 8pt; font-weight: 700; letter-spacing: 1px; margin-top: 14px; }}
+QLabel#section {{ color: {side_head}; font-size: 8pt; font-weight: 700; letter-spacing: 1px; margin-top: 14px; }}
 
+/* buttons: flat fills, one accent */
 QPushButton {{
-  min-height: 22px; padding: 1px 12px; border-radius: 6px;
-  border: 1px solid {btn_line};
-  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {btn_top}, stop:1 {btn_bottom});
+  min-height: 24px; padding: 2px 14px; border-radius: 8px; border: 0; background: {fill}; color: {text};
 }}
-QPushButton:hover {{ border-color: {accent}; }}
-QPushButton:disabled {{ color: {faint}; border-color: {line}; }}
-QPushButton[primary="true"] {{ background: {accent}; color: {on_accent}; border-color: {accent}; }}
-QPushButton[primary="true"]:disabled {{ background: {line}; color: {faint}; border-color: {line}; }}
+QPushButton:hover {{ background: {fill_hover}; }}
+QPushButton:pressed {{ background: {hover}; }}
+QPushButton:disabled {{ color: {faint}; background: {alt}; }}
+QPushButton::menu-indicator {{ image: none; width: 0; }}
+QPushButton[primary="true"] {{ background: {accent}; color: {on_accent}; font-weight: 600; }}
+QPushButton[primary="true"]:hover {{ background: {accent_text}; }}
+QPushButton[primary="true"]:disabled {{ background: {fill}; color: {faint}; }}
 QPushButton[danger="true"] {{ color: {danger}; }}
-QPushButton[seg="true"] {{ border-radius: 0; padding: 1px 12px; margin: 0; }}
-QPushButton[seg="first"] {{ border-top-right-radius: 0; border-bottom-right-radius: 0; margin: 0; }}
-QPushButton[seg="last"] {{ border-top-left-radius: 0; border-bottom-left-radius: 0; margin: 0; }}
-QPushButton[seg]:checked {{ background: {accent}; color: {on_accent}; border-color: {accent}; }}
-QPushButton[chip="true"] {{ border-radius: 11px; padding: 1px 11px; }}
-QPushButton[chip="true"]:checked {{ background: {accent_soft}; color: {accent}; border-color: {accent}; }}
+QPushButton[flat="true"] {{ background: transparent; padding: 0 6px; font-size: 11pt; color: {muted}; }}
+QPushButton[flat="true"]:hover {{ background: {fill}; }}
+#segments {{ background: {fill}; border-radius: 8px; }}
+QPushButton[seg] {{ border-radius: 6px; padding: 0 14px; margin: 2px; min-height: 24px; background: transparent;
+  color: {muted}; }}
+QPushButton[seg]:hover {{ color: {text}; }}
+QPushButton[seg]:checked {{ background: {fill_hover}; color: {text}; font-weight: 600; }}
 
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox {{
-  border: 1px solid {line}; border-radius: 6px; padding: 3px 6px; background: {bg};
-  selection-background-color: {accent};
+  border: 1px solid {line}; border-radius: 8px; padding: 4px 8px; background: {alt};
+  selection-background-color: {accent}; selection-color: {on_accent};
 }}
 QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus {{ border-color: {accent}; }}
 
-/* drop-down lists: our chevron, and a popup that looks like the ☰ menu */
-QComboBox {{ padding: 3px 26px 3px 8px; combobox-popup: 0; }}
-QComboBox:hover {{ border-color: {btn_line}; }}
+/* drop-down lists: our chevron, and a popup that looks like the menus */
+QComboBox {{ padding: 4px 26px 4px 10px; combobox-popup: 0; }}
 QComboBox:disabled {{ color: {faint}; }}
 QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right; width: 24px; border: 0; }}
 QComboBox::down-arrow {{ image: url("{chevron}"); width: 10px; height: 6px; }}
 QComboBox::down-arrow:disabled {{ image: url("{chevron_faint}"); }}
 QComboBox QAbstractItemView {{
-  background: {sheet}; border: 1px solid {line}; border-radius: 6px; padding: 4px; outline: 0;
-  selection-background-color: {accent}; selection-color: {on_accent};
+  background: {sheet}; border: 1px solid {line}; border-radius: 8px; padding: 4px; outline: 0;
+  selection-background-color: {accent_soft}; selection-color: {text};
 }}
-QComboBox QAbstractItemView::item {{ min-height: 24px; padding: 0 10px; border-radius: 5px; }}
+QComboBox QAbstractItemView::item {{ min-height: 28px; padding: 0 10px; border-radius: 6px; }}
 QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
-  background: {accent}; color: {on_accent};
+  background: {accent_soft}; color: {text};
 }}
 
 QTableView, QTreeView, QListView {{
-  background: {bg}; alternate-background-color: {alt}; border: 0;
-  selection-background-color: {accent}; selection-color: {on_accent}; gridline-color: {line};
+  background: {bg}; alternate-background-color: {alt}; border: 0; outline: 0;
+  selection-background-color: {accent_soft}; selection-color: {text}; gridline-color: {line};
 }}
-QListWidget#artists {{ background: {alt}; border-right: 1px solid {line}; outline: 0; }}
-QListWidget#artists {{ padding-top: 6px; }}
-QListWidget#artists::item {{ padding: 4px 8px; margin: 1px 8px; border: 0; border-radius: 6px; }}
-QListWidget#artists::item:hover {{ background: {side_hover}; }}
-QListWidget#artists::item:selected {{ background: {accent}; color: {on_accent}; }}
-#settingsNav {{ background: {alt}; border-right: 1px solid {line}; }}
-#settingsNav QListWidget#artists {{ border: 0; }}
+QTableView::item {{ padding: 0 6px; }}
+QListWidget#artists {{ background: {bg}; border-right: 1px solid {line}; outline: 0; padding-top: 6px; }}
+QListWidget#artists::item {{ padding: 6px 10px; margin: 1px 8px; border: 0; border-radius: 8px; }}
+QListWidget#artists::item:hover {{ background: {hover}; }}
+QListWidget#artists::item:selected {{ background: {accent_soft}; color: {text}; }}
+#settingsNav {{ background: {side}; border-right: 1px solid {line}; }}
+#settingsNav QListWidget#artists {{ border: 0; background: {side}; }}
 QPushButton#fileLink {{ border: 0; background: transparent; color: {muted}; text-align: left;
   padding: 2px 12px; font-size: 8.5pt; }}
 QPushButton#fileLink:hover {{ color: {accent}; }}
 QHeaderView::section {{
-  background: {bg}; color: {muted}; border: 0; border-bottom: 1px solid {line};
-  padding: 4px 6px; font-weight: 600; font-size: 8.5pt;
+  background: {bg}; color: {faint}; border: 0; border-bottom: 1px solid {line};
+  padding: 6px 6px; font-weight: 700; font-size: 8pt;
 }}
 QTabWidget::pane {{ border: 0; }}
-QTabBar::tab {{ padding: 4px 14px; border: 1px solid {btn_line}; border-bottom: 0; background: {btn_bottom}; }}
-QTabBar::tab:selected {{ background: {accent}; color: {on_accent}; border-color: {accent}; }}
-QMenu {{ background: {sheet}; border: 1px solid {line}; padding: 4px; }}
-QMenu::item {{ padding: 5px 22px 5px 12px; border-radius: 5px; }}
-QMenu::item:selected {{ background: {accent}; color: {on_accent}; }}
-QMenu::item:disabled {{ color: {faint}; }}
-QMenu::separator {{ height: 1px; background: {line}; margin: 4px 8px; }}
+QTabBar::tab {{ padding: 5px 16px; margin-right: 4px; border: 0; border-radius: 8px; background: transparent;
+  color: {muted}; }}
+QTabBar::tab:selected {{ background: {fill}; color: {text}; font-weight: 600; }}
+QMenu {{ background: {sheet}; border: 1px solid {line}; border-radius: 10px; padding: 6px; }}
+QMenu::item {{ padding: 6px 24px 6px 12px; border-radius: 6px; }}
+QMenu::item:selected {{ background: {accent_soft}; color: {text}; }}
+QMenu::item:disabled {{ color: {faint}; font-size: 8pt; font-weight: 700; }}
+QMenu::separator {{ height: 1px; background: {line}; margin: 5px 8px; }}
 
-#card {{ background: {alt}; border: 1px solid {line}; border-radius: 10px; }}
-#detail {{
-  background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {detail_top}, stop:1 {detail_bottom});
-}}
-#detail QLabel {{ color: {detail_text}; background: transparent; }}
-#detail QLabel[muted="true"] {{ color: {detail_muted}; }}
-#detail QLabel#albumName {{ font-size: 16pt; font-weight: 600; }}
-#detail QLabel#albumArtist {{ font-size: 12pt; }}
-#detail QPushButton {{ background: {detail_btn}; border: 1px solid {detail_btn_line}; color: {detail_text}; }}
-#detail QTableWidget {{ background: transparent; color: {detail_text}; alternate-background-color: {detail_alt}; }}
+#card {{ background: {alt}; border: 1px solid {line}; border-radius: 12px; }}
+
+/* an opened album: the inspector on the right */
+#detail {{ background: {inspector}; border-left: 1px solid {line}; }}
+#detail QLabel {{ background: transparent; }}
+#detail QLabel#albumName {{ font-size: 14pt; font-weight: 600; }}
+#detail QLabel#albumArtist {{ color: {muted}; }}
+#detail QTableWidget {{ background: transparent; alternate-background-color: transparent; }}
 #detail QHeaderView, #detail QTableCornerButton::section {{ background: transparent; border: 0; }}
-#detail QHeaderView::section {{ background: transparent; color: {detail_muted}; border-bottom: 1px solid {detail_line}; }}
+#detail QHeaderView::section {{ background: transparent; }}
+QLabel#statePill {{ border-radius: 9px; padding: 2px 10px; font-size: 9pt; }}
+QLabel#statePill[state="A"] {{ background: {ok_soft}; color: {ok_text}; }}
+QLabel#statePill[state="R"] {{ background: {warn_soft}; color: {warn_text}; }}
+QLabel#statePill[state="moved"] {{ background: {accent_soft}; color: {accent_text}; }}
+
+/* the player, along the whole bottom */
+#player {{ background: {player}; border-top: 1px solid {player_line}; }}
+#player QLabel {{ background: transparent; }}
+QLabel#playerTitle {{ font-weight: 600; }}
+QLabel#playerSub, QLabel#playerTime {{ color: {muted}; font-size: 8.5pt; }}
+QPushButton#playerBtn {{ border: 0; border-radius: 8px; background: transparent; min-width: 32px; max-width: 32px;
+  min-height: 32px; max-height: 32px; padding: 0; font-size: 12pt; color: {text}; }}
+QPushButton#playerBtn:hover {{ background: {fill}; }}
+QPushButton#playerPlay {{ border: 0; border-radius: 18px; background: {text}; color: {player};
+  min-width: 36px; max-width: 36px; min-height: 36px; max-height: 36px; padding: 0; font-size: 12pt; }}
+QSlider::groove:horizontal {{ height: 4px; border-radius: 2px; background: {fill}; }}
+QSlider::sub-page:horizontal {{ height: 4px; border-radius: 2px; background: {accent}; }}
+QSlider::handle:horizontal {{ width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; background: {text}; }}
+QSlider#volume::sub-page:horizontal {{ background: {muted}; }}
+
 QLabel#confirm, QLabel#bold {{ font-weight: 600; }}
 QLabel#small {{ font-size: 8pt; }}
 QLabel#ipodName {{ font-size: 15pt; font-weight: 600; }}
-QLabel#toast {{ color: {toast_text}; background: {toast}; padding: 9px 14px; border-radius: 8px; }}
+QLabel#metric {{ font-size: 20pt; font-weight: 600; }}
+QLabel#toast {{ color: {toast_text}; background: {toast}; padding: 10px 14px; border-radius: 10px; }}
 QLabel#toast[kind="good"] {{ background: {toast_good}; }}
 QLabel#toast[kind="bad"] {{ background: {toast_bad}; }}
 
-QPlainTextEdit#log {{ font-family: {mono}; font-size: 9pt; background: {bg}; }}
-QProgressBar {{ border: 0; border-radius: 3px; background: {line}; max-height: 6px; min-height: 6px; text-align: center; }}
+QPlainTextEdit#log {{ font-family: {mono}; font-size: 9pt; background: {alt}; }}
+QProgressBar {{ border: 0; border-radius: 3px; background: {fill}; max-height: 6px; min-height: 6px; text-align: center; }}
 QProgressBar::chunk {{ background: {accent}; border-radius: 3px; }}
 QProgressBar[state="ok"]::chunk {{ background: {active}; }}
 QProgressBar[state="bad"]::chunk {{ background: {danger}; }}
 QScrollArea {{ border: 0; background: {bg}; }}
+QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
+QScrollBar::handle:vertical {{ background: {fill_hover}; border-radius: 3px; min-height: 30px; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
+QScrollBar::handle:horizontal {{ background: {fill_hover}; border-radius: 3px; min-width: 30px; }}
 QSplitter::handle {{ background: {line}; }}
-QToolTip {{ color: {text}; background: {sheet}; border: 1px solid {line}; }}
+QToolTip {{ color: {text}; background: {sheet}; border: 1px solid {line}; border-radius: 6px; padding: 4px 6px; }}
+QDialog {{ background: {bg}; }}
 """
 
 
@@ -396,8 +423,8 @@ class _ComboItems(QObject):
 def apply(app):
     b1air = b1air_palette()
     C.clear()
-    C.update(b1air or (DARK if is_dark() else LIGHT))
-    if b1air and "Inter" in QFontDatabase.families():    # the desktop's face, as its own apps use
+    C.update(b1air or (LIGHT if is_light() else DARK))
+    if "Inter" in QFontDatabase.families():    # b1air's face, where it's installed
         f = app.font()
         f.setFamily("Inter")
         app.setFont(f)
@@ -408,7 +435,7 @@ def apply(app):
     pal = QPalette()
     for role, key in ((QPalette.ColorRole.Window, "bg"), (QPalette.ColorRole.WindowText, "text"),
                       (QPalette.ColorRole.Base, "bg"), (QPalette.ColorRole.AlternateBase, "alt"),
-                      (QPalette.ColorRole.Text, "text"), (QPalette.ColorRole.Button, "btn_bottom"),
+                      (QPalette.ColorRole.Text, "text"), (QPalette.ColorRole.Button, "fill"),
                       (QPalette.ColorRole.ButtonText, "text"), (QPalette.ColorRole.Highlight, "accent"),
                       (QPalette.ColorRole.HighlightedText, "on_accent"),
                       (QPalette.ColorRole.PlaceholderText, "faint"),

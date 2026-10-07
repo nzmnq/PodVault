@@ -1,4 +1,4 @@
-"""Building blocks: background work, covers, the album grid, the LCD, the iPod picture."""
+"""Building blocks: background work, covers, the album grid, the player, the iPod picture."""
 
 import hashlib
 import traceback
@@ -8,7 +8,7 @@ from PyQt6.QtCore import (QAbstractListModel, QEvent, QModelIndex, QObject, QPoi
 from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QImage, QLinearGradient,
                          QPainter, QPainterPath, QPen, QPixmap)
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMessageBox, QProgressBar,
-                             QPushButton, QSizePolicy, QStyle, QStyledItemDelegate, QVBoxLayout,
+                             QPushButton, QSizePolicy, QSlider, QStyle, QStyledItemDelegate, QVBoxLayout,
                              QWidget)
 
 from gui import backend
@@ -349,13 +349,13 @@ class AlbumDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index):
         fm = QFontMetrics(option.font)
-        return QSize(self.tile + 16, self.tile + 16 + fm.height() * 2 + 8)
+        return QSize(self.tile + 16, self.tile + 16 + fm.height() * 2 + 12)
 
     def _art_rect(self, rect):
         return QRect(rect.x() + 8, rect.y() + 8, self.tile, self.tile)
 
     def _badge_rect(self, art):
-        return QRect(art.right() - 30, art.bottom() - 24, 26, 19)
+        return QRect(art.right() - 34, art.bottom() - 28, 26, 20)
 
     def paint(self, p, option, index):
         a = self.model.album(index)
@@ -368,19 +368,17 @@ class AlbumDelegate(QStyledItemDelegate):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         if selected:
-            bg = QColor(C["accent"])
-            bg.setAlpha(QColor(C["selection_fill"]).alpha())
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(bg)
-            p.drawRoundedRect(QRectF(rect.adjusted(2, 2, -2, -2)), 7, 7)
+            p.setBrush(QColor(C["accent_soft"]))
+            p.drawRoundedRect(QRectF(rect.adjusted(2, 2, -2, -2)), 14, 14)
 
         scaled = self._scaled(a)
         # shadow
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(C["art_shadow"]))
-        p.drawRoundedRect(QRectF(art.adjusted(1, 2, 1, 2)), 3, 3)
+        p.drawRoundedRect(QRectF(art.adjusted(0, 2, 0, 2)), 12, 12)
         clip = QPainterPath()
-        clip.addRoundedRect(QRectF(art), 3, 3)
+        clip.addRoundedRect(QRectF(art), 12, 12)
         p.setClipPath(clip)
         sx = (scaled.width() - art.width()) // 2
         sy = (scaled.height() - art.height()) // 2
@@ -389,9 +387,9 @@ class AlbumDelegate(QStyledItemDelegate):
             p.fillRect(art, QColor(C["art_dim"]))
         p.setClipping(False)
         if selected:
-            p.setPen(QPen(QColor(C["accent"]), 3))
+            p.setPen(QPen(QColor(C["accent"]), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(QRectF(art.adjusted(-1, -1, 1, 1)), 4, 4)
+            p.drawRoundedRect(QRectF(art.adjusted(-1, -1, 1, 1)), 13, 13)
 
         # flags
         x = art.x() + 5
@@ -403,10 +401,10 @@ class AlbumDelegate(QStyledItemDelegate):
             if not on:
                 continue
             w = QFontMetrics(f).horizontalAdvance(text) + 10
-            r = QRect(x, art.y() + 5, w, 16)
+            r = QRect(x + 3, art.y() + 8, w, 18)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(color))
-            p.drawRoundedRect(QRectF(r), 3, 3)
+            p.drawRoundedRect(QRectF(r), 9, 9)
             p.setPen(QColor(C["flag_text"]))
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
             x += w + 4
@@ -416,13 +414,13 @@ class AlbumDelegate(QStyledItemDelegate):
         color = C["pending"] if moved else (C["active"] if state == "A" else C["archive"])
         p.setPen(QPen(QColor(C["flag_text"]), 1.5) if moved else Qt.PenStyle.NoPen)
         p.setBrush(QColor(color))
-        p.drawRoundedRect(QRectF(b), 9, 9)
+        p.drawRoundedRect(QRectF(b), 10, 10)
         p.setPen(QColor(C["flag_text"]))
         p.drawText(b, Qt.AlignmentFlag.AlignCenter, GLYPHS["on_ipod" if state == "A" else "on_disk"])
 
         # text
         fm = QFontMetrics(option.font)
-        t1 = QRect(art.x(), art.bottom() + 5, self.tile, fm.height())
+        t1 = QRect(art.x(), art.bottom() + 8, self.tile, fm.height())
         t2 = QRect(art.x(), t1.bottom() + 1, self.tile, fm.height())
         bold = QFont(option.font)
         bold.setBold(True)
@@ -448,60 +446,119 @@ class AlbumDelegate(QStyledItemDelegate):
 # ------------------------------------------------------------ the LCD
 
 
-class Lcd(QFrame):
-    """The display in the middle of the toolbar: what's going on right now."""
+class PlayerBar(QFrame):
+    """The player along the whole bottom of the window, on every page. Shown while a
+    queue is loaded (playing or paused); the stop button ends it and it goes away."""
 
-    clicked = pyqtSignal()
-    seek = pyqtSignal(float)    # a click on (or just above) the bar: where, 0..1
+    toggle = pyqtSignal()
+    step = pyqtSignal(int)       # -1 previous, +1 next
+    seek = pyqtSignal(float)     # 0..1
+    volume = pyqtSignal(float)   # 0..1
+    stop = pyqtSignal()
+    opened = pyqtSignal()        # a click on the cover or the title: show the album
 
     def __init__(self):
         super().__init__()
-        self.setObjectName("lcd")
+        self.setObjectName("player")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(UI["player_h"])
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 0, 20, 0)
+        lay.setSpacing(14)
+        self.cover = QLabel()
+        self.cover.setFixedSize(UI["player_cover"], UI["player_cover"])
+        self.cover.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cover.mousePressEvent = lambda e: self.opened.emit()
+        lay.addWidget(self.cover)
+        text = QVBoxLayout()
+        text.setSpacing(1)
+        self.title = ElidedLabel()
+        self.title.setObjectName("playerTitle")
+        self.sub = ElidedLabel()
+        self.sub.setObjectName("playerSub")
+        text.addStretch(1)
+        text.addWidget(self.title)
+        text.addWidget(self.sub)
+        text.addStretch(1)
+        box = QWidget()
+        box.setFixedWidth(220)
+        box.setLayout(text)
+        lay.addWidget(box)
+
+        def btn(glyph, tip, name="playerBtn"):
+            b = QPushButton(glyph)
+            b.setObjectName(name)
+            b.setToolTip(tip)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            return b
+        self.prev = btn(GLYPHS["prev"], _("Previous track"))
+        self.play = btn(GLYPHS["pause"], _("Play / pause"), "playerPlay")
+        self.next = btn(GLYPHS["next"], _("Next track"))
+        self.prev.clicked.connect(lambda: self.step.emit(-1))
+        self.next.clicked.connect(lambda: self.step.emit(1))
+        self.play.clicked.connect(self.toggle)
+        for b in (self.prev, self.play, self.next):
+            lay.addWidget(b)
+        lay.addSpacing(6)
+        self.pos = QLabel("0:00")
+        self.pos.setObjectName("playerTime")
+        self.bar = _Slider()
+        self.bar.setObjectName("seek")
+        self.bar.setRange(0, 1000)
+        self.bar.moved_to.connect(lambda v: self.seek.emit(v / 1000))
+        self.dur = QLabel("0:00")
+        self.dur.setObjectName("playerTime")
+        lay.addWidget(self.pos)
+        lay.addWidget(self.bar, 1)
+        lay.addWidget(self.dur)
+        lay.addSpacing(10)
+        vol = QLabel(GLYPHS["volume"])
+        vol.setObjectName("playerSub")
+        self.vol = _Slider()
+        self.vol.setObjectName("volume")
+        self.vol.setRange(0, 100)
+        self.vol.setValue(80)
+        self.vol.setFixedWidth(90)
+        self.vol.moved_to.connect(lambda v: self.volume.emit(v / 100))
+        lay.addWidget(vol)
+        lay.addWidget(self.vol)
+        self.close_btn = btn(GLYPHS["close"], _("Stop"))
+        self.close_btn.clicked.connect(self.stop)
+        lay.addWidget(self.close_btn)
+        self.hide()
+
+    def show_track(self, title, sub, cover):
+        self.title.setText(title)
+        self.sub.setText(sub)
+        self.cover.setPixmap(cover.scaled(QSize(UI["player_cover"], UI["player_cover"]),
+                                          Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                          Qt.TransformationMode.SmoothTransformation))
+
+    def set_position(self, position_ms, duration_ms, playing):
+        self.play.setText(GLYPHS["pause"] if playing else GLYPHS["play"])
+        self.pos.setText(fmt_time(position_ms / 1000))
+        self.dur.setText(fmt_time(duration_ms / 1000))
+        if not self.bar.isSliderDown():
+            self.bar.setValue(int(1000 * position_ms / duration_ms) if duration_ms > 0 else 0)
+
+
+class _Slider(QSlider):
+    """A slider that jumps to where it's clicked (Qt's own steps a page at a time)
+    and says where it was let go."""
+
+    moved_to = pyqtSignal(int)
+
+    def __init__(self):
+        super().__init__(Qt.Orientation.Horizontal)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumWidth(UI["lcd_w"][0])
-        self.setMaximumWidth(UI["lcd_w"][1])
-        self.setFixedHeight(UI["lcd_h"])
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 5, 14, 5)
-        lay.setSpacing(1)
-        self.title = QLabel(_("PodVault"))
-        self.title.setObjectName("lcdTitle")
-        self.sub = QLabel("")
-        self.sub.setObjectName("lcdSub")
-        for lab in (self.title, self.sub):
-            lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lab.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.bar = QProgressBar()
-        self.bar.setTextVisible(False)
-        self.bar.setMaximumWidth(UI["lcd_bar_w"])
-        lay.addWidget(self.title)
-        lay.addWidget(self.sub)
-        lay.addWidget(self.bar, 0, Qt.AlignmentFlag.AlignHCenter)
-        self.show_idle(_("PodVault"), "")
+        self.sliderReleased.connect(lambda: self.moved_to.emit(self.value()))
 
-    def show_idle(self, title, sub):
-        self.title.setText(title)
-        self.sub.setText(sub)
-        self.bar.setVisible(False)
-
-    def show_progress(self, title, sub, progress):
-        self.title.setText(title)
-        self.sub.setText(sub)
-        self.bar.setVisible(True)
-        if progress is None:
-            self.bar.setRange(0, 0)
-        else:
-            self.bar.setRange(0, 1000)
-            self.bar.setValue(int(progress * 1000))
-
-    def mouseReleaseEvent(self, e):
-        if e.button() != Qt.MouseButton.LeftButton:
-            return
-        bar, pos = self.bar.geometry(), e.position()
-        if self.bar.isVisible() and pos.y() >= bar.top() - UI["lcd_seek_zone"]:
-            self.seek.emit(min(max((pos.x() - bar.left()) / bar.width(), 0.0), 1.0))
-        else:
-            self.clicked.emit()
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and self.width() > 0:
+            v = self.minimum() + (self.maximum() - self.minimum()) * e.position().x() / self.width()
+            self.setValue(int(max(self.minimum(), min(self.maximum(), v))))
+            self.moved_to.emit(self.value())
+        super().mousePressEvent(e)
 
 
 # ------------------------------------------------------------ iPod pieces

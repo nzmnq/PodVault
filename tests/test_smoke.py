@@ -8,7 +8,6 @@ import shutil
 import sys
 import tempfile
 import unittest
-import unittest.mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -222,24 +221,6 @@ class SinglesMode(unittest.TestCase):
         settings.save({**settings.load(), "singles": "own"})
         self.assertEqual(settings.load()["singles"], "own")
         os.remove(settings.FILE)
-
-
-class Scrobbles(unittest.TestCase):
-    def test_plays_are_spaced_back_and_never_sent_twice(self):
-        import lastfm
-        row = {"artist": "ooes, Apex", "title": "слизывай", "album": "мне не страшно",
-               "recent_playcount": 2, "play_count": 12, "last_played": 2_000_000_000, "length": 120000}
-        names = {0: ("ooes", "слизывай (feat. Apex)", "мне не страшно")}
-        got = lastfm.plays([row], names, before={})
-        self.assertEqual([(p["artist"], p["timestamp"]) for p in got],
-                         [("ooes", 2_000_000_000), ("ooes", 2_000_000_000 - 120)])
-        # the last sync already saw 11 plays: only the one since then counts
-        before = {"ooes, Apex | слизывай | мне не страшно": {"play_count": 11}}
-        self.assertEqual(len(lastfm.plays([row], None, before)), 1)
-        cfg = {"reports_dir": tempfile.mkdtemp()}
-        with unittest.mock.patch.object(settings, "path", lambda k, c=None: cfg[k]):
-            self.assertEqual(lastfm.queue(cfg, got), 2)
-            self.assertEqual(lastfm.queue(cfg, got), 0)      # a second sync: nothing new
 
 
 class TagsForEveryFormat(unittest.TestCase):

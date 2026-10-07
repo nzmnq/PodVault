@@ -35,7 +35,6 @@ Safety:
 """
 
 import argparse
-import json
 import os
 import random
 import re
@@ -636,7 +635,6 @@ def run(cfg, apply_changes, ipod_path=None, playlist=None, playlist_only=False,
     if not apply_changes:
         print(_("\nNothing changed. Add --apply."))
         return
-    scrobble(cfg, db["tracks"], plan)        # before save_stats: it compares with the stats saved last time
     n = ipod.save_stats(cfg, db["tracks"])
     print(_("  play stats of {n} tracks saved to {file}").format(n=n, file=ipod.stats_file(cfg)))
     if not has_changes(plan):
@@ -651,23 +649,6 @@ def run(cfg, apply_changes, ipod_path=None, playlist=None, playlist_only=False,
             print(_("Cancelled."))
             return
     apply_plan(cfg, dev, db, generation, plan)
-
-
-def scrobble(cfg, rows, plan):
-    """Queue the plays since the last sync for Last.fm and send them (lastfm.py). Under the
-    library's names where the sync is renaming the track."""
-    import lastfm
-    try:
-        with open(ipod.stats_file(cfg), encoding="utf-8") as f:
-            before = json.load(f)
-    except (OSError, ValueError):
-        before = {}
-    names = {n: (d.get("artist", rows[n].get("artist")), d.get("title", rows[n].get("title")),
-                 d.get("album", rows[n].get("album"))) for n, d in plan["retag"].items()}
-    n = lastfm.queue(cfg, lastfm.plays(rows, names, before))
-    if n:
-        print(_("  plays since the last sync, queued for Last.fm: {n}").format(n=n))
-    lastfm.send(cfg, quiet=not lastfm.keys(cfg))
 
 
 # ------------------------------------------------------ save from the iPod

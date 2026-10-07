@@ -128,7 +128,6 @@ TOOLS = {
     "undo": dict(title=N_("Undo the last moves"), script="library.py", args=lambda p: ["--undo"],
                  apply="--apply", refresh={"library"},
                  confirm=N_("Put the albums from the last batch of moves back?")),
-    "lastfm": dict(title=N_("Connect Last.fm"), script="lastfm.py", args=lambda p: ["login"], refresh=set()),
     "undo_tags": dict(title=N_("Undo the last tag changes"), script="undo_tags.py", args=lambda p: [],
                       apply="--apply", refresh={"library", "ipod"},
                       confirm=N_("Put back what the last import, artist split or genre write changed?")),
@@ -182,9 +181,6 @@ ABOUT = {
                 'the albums are moved to match. Shown as a dry run first.'),
     "undo": N_('Puts back the albums moved by the last "Apply" or by dragging in the window. '
                'Albums merged into an existing folder cannot be undone. Shown as a dry run first.'),
-    "lastfm": N_("Opens the Last.fm page where you allow PodVault to scrobble, and waits for it. Needs "
-                 "the API key and secret in Settings → Last.fm. After that every iPod sync sends what "
-                 "was played since the last one."),
     "undo_tags": N_("Puts back what the last \u201cAdd new tracks\u201d, \u201cSplit glued artists\u201d or "
                     "\u201cGenres \u2014 write the tags\u201d changed: old tags, files moved back. Tracks an import "
                     "added are moved out to reports/undone, not deleted. Shown as a dry run first."),
