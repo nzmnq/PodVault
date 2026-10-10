@@ -296,8 +296,13 @@ def listing(root=None, quick=False):
     """tracks() for a tool: the drive listed, progress on the command line. When the window
     runs a tool's --apply right after its dry run, it sets PODVAULT_QUICK: the dry run has
     just looked at every file, so the folders' own times are trusted (see scan's quick)."""
+    global _open
     quick = quick or os.environ.get("PODVAULT_QUICK") == "1"
-    return tracks(root, fresh=True, quick=quick, progress=_cli_progress)
+    out = tracks(root, fresh=True, quick=quick, progress=_cli_progress)
+    if _open:               # the listing ended mid-line: what comes next starts on its own
+        print(flush=True)
+        _open = False
+    return out
 
 
 def forget(written):
@@ -503,26 +508,35 @@ def parse_list(path):
 
 
 _expected = 0       # albums the last scan found: while listing, how far along it is
+_shown_at = 0.0     # when the progress line was last drawn
+_open = False       # a progress line drawn without its newline yet
 
 
 def _cli_progress(done, total, left):
     """scan()'s progress on the command line (and in the window's log, whose bar reads
     the 'n/total' in it)."""
+    global _shown_at, _open
+    # drawn by the clock, not every N albums: every 20 it stood still for 15 s on a slow
+    # drive (an album takes nearly a second there) and looked like 20 being read at a time
+    now = time.time()
+    due = now - _shown_at >= .3 or (total and done == total)
+    if not due:
+        return
+    _shown_at = now
     if not total and _expected:
         # listing the folders: the count isn't known yet, last time's is close enough
-        if done % 10 == 0:
-            n = max(done, _expected)
-            print("\r" + _("  folders listed: {n}/{total} albums").format(n=done, total=n)
-                  + f"  · {100 * done // n}%", end="", flush=True)
+        n = max(done, _expected)
+        print("\r" + _("  folders listed: {n}/{total} albums").format(n=done, total=n)
+              + f"  · {100 * done // n}%", end="", flush=True)
+        _open = True
         return
     if total:
         text = _("  tags read: {n}/{total} albums").format(n=done, total=total) + f"  · {100 * done // total}%"
-        if done == total:
-            print("\r" + text, flush=True)
-        elif done % 20 == 0:
-            print("\r" + text, end="", flush=True)
-    elif done % 200 == 0:
+        print("\r" + text, end="\n" if done == total else "", flush=True)
+        _open = done != total
+    else:
         print("\r" + _("  folders listed: {n} albums").format(n=done), end="", flush=True)
+        _open = True
 
 
 def main():

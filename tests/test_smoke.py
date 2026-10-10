@@ -63,6 +63,12 @@ class IncomingNames(unittest.TestCase):
         self.assertEqual(split("125, Rue Montmartre", protect), ["125, Rue Montmartre"])
         self.assertEqual(split("ac/dc", protect), ["AC/DC"])
         self.assertEqual(add_incoming.with_feats("330", ["#keyoo"]), "330 (feat. #keyoo)")
+        # one (feat. …) group: new names join it, two groups become one
+        self.assertEqual(add_incoming.with_feats("Lemonade (feat. NAV)", ["Gunna", "NAV"]),
+                         "Lemonade (feat. NAV, Gunna)")
+        self.assertEqual(add_incoming.with_feats(
+            "Hole In The Sun (feat. COS & Conway) [From Cyberpunk 2077] (feat. Raney Shockne)", []),
+            "Hole In The Sun (feat. COS & Conway, Raney Shockne) [From Cyberpunk 2077]")
 
     def test_soundcloud_titles(self):
         import soundcloud

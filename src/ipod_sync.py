@@ -429,24 +429,29 @@ def show_plan(dev, plan):
                           plan["unknown"])):
         if items:
             print(f"\n--- {title} ---")
-            for n in items[:20]:
+            for n in items[:settings.LIST_MAX]:
                 print(f"  {name(n)}")
-            if len(items) > 20:
-                print(_("  ... {n} more").format(n=len(items) - 20))
+            if len(items) > settings.LIST_MAX:
+                print(_("  ... {n} more").format(n=len(items) - settings.LIST_MAX))
     if renamed:
         print("\n--- " + _("RENAMED ON THE IPOD (play counts kept)") + " ---")
-        for n in renamed[:20]:
+        labels = {"artist": _("artist"), "title": _("title"), "album": _("album"),
+                  "album_artist": _("album artist")}
+        for n in renamed[:settings.LIST_MAX]:
             d, x = plan["retag"][n], t[n]
             print(f"  {x.get('artist')} — {x.get('title')}")
-            print(f"    -> {d.get('artist', x.get('artist'))} — {d.get('title', x.get('title'))}")
-        if len(renamed) > 20:
-            print(_("  ... {n} more").format(n=len(renamed) - 20))
+            # what really changes: often the album (a single out of 'Singles') or the album artist
+            for key, label in labels.items():
+                if key in d and (x.get(key) or "") != d[key]:
+                    print(f"    {label}: {x.get(key) or '—'} -> {d[key]}")
+        if len(renamed) > settings.LIST_MAX:
+            print(_("  ... {n} more").format(n=len(renamed) - settings.LIST_MAX))
     if plan["to_add"]:
         print("\n--- " + _("WILL BE COPIED") + " ---")
-        for p in plan["to_add"][:20]:
+        for p in plan["to_add"][:settings.LIST_MAX]:
             print(f"  {os.path.relpath(p, ACTIVE)}")
-        if len(plan["to_add"]) > 20:
-            print(_("  ... {n} more").format(n=len(plan['to_add']) - 20))
+        if len(plan["to_add"]) > settings.LIST_MAX:
+            print(_("  ... {n} more").format(n=len(plan['to_add']) - settings.LIST_MAX))
 
 
 # ------------------------------------------------------------------- apply

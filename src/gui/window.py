@@ -23,8 +23,8 @@ from i18n import N_, _
 from gui.jobs import Jobs
 from gui.pages import (IpodPage, LibraryPage, PlaylistPage, SettingsPage, ToolDialog, VibePage)
 from gui.theme import C, GLYPHS, UI, icon
-from gui.widgets import (ElidedLabel, PlayerBar, ask, button, covers, fmt_gb, inform, placeholder, plural,
-                         run_async)
+from gui.widgets import (ElidedLabel, PlayerBar, ask, button, covers, fmt_gb, inform, on_click, placeholder,
+                         plural, run_async)
 
 VIEW_KEYS = ("albums", "artists", "genres")
 
@@ -234,7 +234,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
+        row.setContentsMargins(8, 8, 0, 8)      # the sidebar is a panel of its own, as in b1air's apps
         row.setSpacing(0)
         self.side_items = {}
         row.addWidget(self._sidebar())
@@ -351,7 +351,7 @@ class MainWindow(QMainWindow):
         self.act_bar.setTextVisible(False)
         for w in (self.act_title, self.act_sub, self.act_bar):
             al.addWidget(w)
-        self.activity.mousePressEvent = lambda e: self.jobs.current and self.sheet.open_for(self.jobs.current)
+        on_click(self.activity, lambda e: self.sheet.open_for(self.jobs.current) if self.jobs.current else None)
         self.activity.hide()
         lay.addWidget(self.activity)
         lay.addSpacing(6)
@@ -381,12 +381,14 @@ class MainWindow(QMainWindow):
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         if count is not None:
             inner = QHBoxLayout(b)
-            inner.setContentsMargins(0, 0, 12, 0)
+            inner.setContentsMargins(0, 0, 6, 0)
             inner.addStretch(1)
             n = QLabel(str(count))
             n.setObjectName("sideCount")
             n.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            inner.addWidget(n)
+            n.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            n.setFixedHeight(18)                      # a pill, not the row's whole height
+            inner.addWidget(n, 0, Qt.AlignmentFlag.AlignVCenter)
         return b
 
     def _menu(self):
@@ -520,8 +522,7 @@ class MainWindow(QMainWindow):
             used.setProperty("muted", True)
             lay.addWidget(bar)
             lay.addWidget(used)
-        card.mousePressEvent = lambda e: (e.button() == Qt.MouseButton.LeftButton and (
-            self.navigate("ipod"), self._select_side(self.current_key)))
+        on_click(card, lambda e: (self.navigate("ipod"), self._select_side(self.current_key)))
         card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         card.customContextMenuRequested.connect(lambda pos: self._side_menu("ipod", card.mapToGlobal(pos)))
         self.side_items["ipod"] = card
@@ -1173,7 +1174,7 @@ class MainWindow(QMainWindow):
         t.move(self.width() - t.width() - gap, max(gap, y))
         if action:
             t.setCursor(Qt.CursorShape.PointingHandCursor)
-            t.mousePressEvent = lambda e: (action(), t.deleteLater())
+            on_click(t, lambda e: (action(), t.deleteLater()))
         t.show()
         t.raise_()
         QTimer.singleShot(UI["toast_bad_ms"] if bad else UI["toast_ms"], t.deleteLater)

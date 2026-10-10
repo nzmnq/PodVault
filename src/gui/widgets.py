@@ -90,6 +90,17 @@ def run_async(fn, *args, ok=None, failed=None):
 # ------------------------------------------------------------ dialogs
 
 
+def on_click(widget, fn):
+    """fn(event) on a left click on a plain widget. Through a function that returns None:
+    a lambda handed to Qt as mousePressEvent that returns a value (a tuple, False) makes
+    PyQt raise "invalid argument to sipBadCatcherResult()"."""
+    def press(e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            fn(e)
+    widget.mousePressEvent = press
+    widget.setCursor(Qt.CursorShape.PointingHandCursor)
+
+
 def ask(parent, title, text, yes=None, danger=False, details=None):
     box = QMessageBox(parent)
     box.setWindowTitle(title)
@@ -468,7 +479,7 @@ class PlayerBar(QFrame):
         self.cover = QLabel()
         self.cover.setFixedSize(UI["player_cover"], UI["player_cover"])
         self.cover.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.cover.mousePressEvent = lambda e: self.opened.emit()
+        on_click(self.cover, lambda e: self.opened.emit())
         lay.addWidget(self.cover)
         text = QVBoxLayout()
         text.setSpacing(1)

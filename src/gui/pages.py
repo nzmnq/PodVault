@@ -7,7 +7,7 @@ import settings
 import i18n
 from i18n import N_, _
 from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QFont, QFontMetrics
 from PyQt6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QButtonGroup, QCheckBox, QComboBox, QCompleter,
                              QDialog, QListWidget, QListWidgetItem, QMenu, QPushButton,
                              QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
@@ -385,8 +385,10 @@ def segmented(items, on_pick, checked=0):
     box.setObjectName("segments")
     box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     lay = QHBoxLayout(box)
-    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setContentsMargins(3, 3, 3, 3)
     lay.setSpacing(0)
+    # b1air's control height: the track as tall as a button, the chosen pane inside it
+    box.setFixedHeight(UI["control_h"])
     group = QButtonGroup(box)
     group.setExclusive(True)
     buttons = {}
@@ -401,6 +403,15 @@ def segmented(items, on_pick, checked=0):
         group.addButton(b)
         lay.addWidget(b)
         buttons[key] = b
+    # equal segments, as wide as the widest label set in the chosen (semibold) weight:
+    # the chosen pane then fills its whole segment and nothing shifts when it moves
+    f = QFont(box.font())
+    f.setWeight(QFont.Weight.DemiBold)
+    fm = QFontMetrics(f)
+    width = max(fm.horizontalAdvance(b.text()) for b in buttons.values()) + 30
+    for b in buttons.values():
+        b.setFixedSize(width, UI["control_h"] - 6)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
     box.buttons = buttons
     return box
 
@@ -471,8 +482,11 @@ class LibraryPage(Page):
                                                             "window (Ctrl+N)"))
         self.sync_btn = button(GLYPHS["sync"] + "  " + _("Sync"), primary=True,
                                tip=_("Sync the iPod with Active (Ctrl+S)"))
+        self.head.insertSpacing(2, 8)              # air between the counts and the filter
         for w in (self.sort_box, self.size, self.add_btn, self.sync_btn):
             self.head.addWidget(w)
+        for w in (self.sort_box, self.add_btn, self.sync_btn):
+            w.setFixedHeight(UI["control_h"])      # one height along the header, as in b1air
 
         # second row: filter chips and what needs doing (the genres view has its own tools)
         self.bars = QStackedWidget()

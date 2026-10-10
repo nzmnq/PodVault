@@ -176,10 +176,23 @@ def split_artists(value, protect):
     return out or [v]
 
 
+FEAT_GROUP = re.compile(r"\s*\((?:feat|ft|featuring)\.?\s+([^)]*)\)", re.I)
+
+
 def with_feats(title, feats):
-    """'Title' + ['B'] -> 'Title (feat. B)', leaving out names the title already has."""
+    """'Title' + ['B'] -> 'Title (feat. B)', leaving out names the title already has.
+
+    One group only: names join a '(feat. …)' the title already has, and two such groups
+    become one ('Lemonade (feat. NAV) (feat. Gunna)' -> 'Lemonade (feat. NAV, Gunna)').
+    """
+    groups = FEAT_GROUP.findall(title)
     feats = [f for f in feats if norm(f) not in norm(title)]
-    return title + (f" (feat. {', '.join(feats)})" if feats else "")
+    if not groups:
+        return title + (f" (feat. {', '.join(feats)})" if feats else "")
+    names = ", ".join([g.strip() for g in groups] + feats)
+    first = FEAT_GROUP.search(title)
+    rest = FEAT_GROUP.sub("", title[first.end():])
+    return f"{title[:first.start()]} (feat. {names}){rest}"
 
 
 def resolve_album_artist(candidates):
@@ -709,7 +722,7 @@ def report_and_add(args, cfg, plan, notes, files, broken, lib_albums, lib_length
     no_album = [f for f in files if not f["album"] and not f.get("soundcloud")]
     if no_album:
         print("\n--- " + _("NO ALBUM IN TAGS ({n})").format(n=len(no_album)) + " ---")
-        for f in no_album[:20]:
+        for f in no_album[:settings.LIST_MAX]:
             print(f"  {f['file']}   artist={f['aa_raw']!r} title={f['title']!r}")
 
     if notes:
@@ -720,12 +733,12 @@ def report_and_add(args, cfg, plan, notes, files, broken, lib_albums, lib_length
 
     if dupes:
         print("\n--- " + _("ALREADY IN THE LIBRARY ({n})").format(n=len(dupes)) + " ---")
-        for it in dupes[:20]:
+        for it in dupes[:settings.LIST_MAX]:
             print(f"  {it['album_artist']} — {it['album']} / {it['out_title']}")
             if it.get("same_as"):
                 print("        " + _("same audio as: {path}").format(path=it["same_as"]))
-        if len(dupes) > 20:
-            print(_("  ... {n} more").format(n=len(dupes) - 20))
+        if len(dupes) > settings.LIST_MAX:
+            print(_("  ... {n} more").format(n=len(dupes) - settings.LIST_MAX))
 
     if broken:
         print("\n--- " + _("WON'T BE ADDED: unreadable, or not mp3 or m4a ({n})").format(n=len(broken)) + " ---")

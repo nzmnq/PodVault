@@ -192,6 +192,10 @@ def run(main):
         sys.exit(PROBLEMS_EXIT)
 
 
+# a report lists everything up to this many lines (it used to stop at 20 and say "... N more")
+LIST_MAX = 500
+
+
 class Progress:
     """A long loop shows it's alive: '  tags read: 300' on one line, redrawn in place
     ('\\r' — the terminal and the window both do it). text is already translated and has
@@ -205,17 +209,19 @@ class Progress:
     """
 
     def __init__(self, text, total=None, every=100):
-        self.text, self.total, self.every, self.n = text, total, every, 0
+        self.text, self.total, self.every, self.n, self.shown = text, total, every, 0, 0.0
 
     def tick(self):
+        """Redrawn every `every` items, and at least twice a second when items are slow."""
         self.n += 1
-        if self.n % self.every == 0:
+        if self.n % self.every == 0 or time.time() - self.shown >= .5:
             self._show("")
 
     def end(self):
         self._show("\n")
 
     def _show(self, end):
+        self.shown = time.time()
         pct = f"  · {100 * self.n // self.total}%" if self.total else ""
         print("\r  " + self.text.format(n=self.n, total=self.total) + pct, end=end, flush=True)
 
