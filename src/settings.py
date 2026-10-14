@@ -24,6 +24,7 @@ import json
 import os
 import shutil
 import sys
+import time
 
 import i18n
 from i18n import N_, _, n_

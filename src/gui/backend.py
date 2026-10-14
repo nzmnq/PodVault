@@ -67,7 +67,7 @@ def playlists_dir(c):
 
 
 def playlist_file(path):
-    """path, if it's one of the saved vibe playlists."""
+    """path, if it's one of the saved playlists."""
     folder = os.path.realpath(playlists_dir(cfg()))
     p = os.path.realpath(str(path or ""))
     if os.path.dirname(p) != folder or not p.lower().endswith(".m3u8") or not os.path.isfile(p):
@@ -578,6 +578,54 @@ def playlists():
             continue
     out.sort(key=lambda x: -x["modified"])
     return out
+
+
+def album_files(path):
+    """An album's audio files, in file-name order (01 - …, 02 - …)."""
+    return [os.path.join(path, fn) for fn in audiotags.audio_files(os.listdir(path))]
+
+
+def save_ipod_playlist(title):
+    """A playlist of the iPod's own, saved as a PodVault playlist (its tracks found in the
+    library by artist, title and duration) and kept on the iPod from now on.
+    Returns (path, found, total). Run through in_child: it parses the iPod's database."""
+    import ipod
+    import ipod_sync
+    import library
+    import playlists as saved
+    c = cfg()
+    ipod_sync.configure(c)
+    db = ipod.load(ipod.open_ipod(c))
+    pl = next((p for p in db["dataset2_standard_playlists"]
+               if p.get("title") == title and not p.get("master_flag")), None)
+    if pl is None:
+        raise RuntimeError(_("There's no playlist “{name}” on the iPod.").format(name=title))
+    by_id = {t.get("track_id"): t for t in db["tracks"]}
+    pool = {}
+    for path, _rel, _size, _mtime, t in library.tracks(settings.library_paths(c)[0], fresh=False):
+        for k in ipod_sync.device_keys(t["artist"], t["title"]) | ipod_sync.device_keys(t["albumartist"], t["title"]):
+            pool.setdefault(k, []).append((path, t["length"]))
+    paths = []
+    items = pl.get("items") or []
+    for item in items:
+        t = by_id.get(item.get("track_id"))
+        if not t:
+            continue
+        dur = (t.get("length") or 0) / 1000
+        for k in ipod_sync.device_keys(t.get("artist"), t.get("title")):
+            hit = next((p for p, ln in pool.get(k, [])
+                        if not dur or not ln or abs(ln - dur) <= ipod_sync.DURATION_TOLERANCE), None)
+            if hit:
+                paths.append(hit)
+                break
+    path = saved.new(c, title, paths)
+    name = os.path.splitext(os.path.basename(path))[0]
+    lists = saved.lists(c)
+    lists["keep"] = [n for n in lists["keep"] if n != name] + [name]
+    if name == title:                 # same name as on the iPod: the sync replaces it, no second copy
+        lists["managed"] = [n for n in lists["managed"] if n != name] + [name]
+    saved.save_lists(c, lists)
+    return path, len(paths), len(items)
 
 
 def playlist_tracks(path):

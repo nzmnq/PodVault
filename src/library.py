@@ -250,6 +250,7 @@ def scan(root=None, progress=None, quick=False):
     index = {rel: {"sig": sig, "rec": rec, "dir": mtime} for path, rel, audio, sig, rec, mtime in found}
     if todo or index != old:
         _save_index(root, index)
+    _stamp(root, True)
     return _sorted(_album(root, rel, sig, rec) for path, rel, audio, sig, rec, _m in found)
 
 
@@ -292,12 +293,43 @@ def album_info(root=None):
             for rel, e in _load_index(root).get("albums", {}).items()}
 
 
-def listing(root=None, quick=False):
-    """tracks() for a tool: the drive listed, progress on the command line. When the window
-    runs a tool's --apply right after its dry run, it sets PODVAULT_QUICK: the dry run has
-    just looked at every file, so the folders' own times are trusted (see scan's quick)."""
+SCANNED_FOR = 30 * 60      # seconds a scan counts as just done, for --scanned
+
+
+def _stamp(root, done):
+    """When the drive was last looked at (a file next to the index); done=False forgets it."""
+    path = index_file(root) + ".scanned"
+    try:
+        if done:
+            with open(path, "w") as f:
+                f.write(str(time.time()))
+        elif os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def just_scanned(root=None):
+    """True when a scan of this library finished less than SCANNED_FOR ago and no tag was
+    written into it since (forget() takes the stamp away)."""
+    try:
+        with open(index_file(root or paths()[0]) + ".scanned") as f:
+            return time.time() - float(f.read()) < SCANNED_FOR
+    except (OSError, ValueError):
+        return False
+
+
+def listing(root=None, quick=False, scanned=False):
+    """tracks() for a tool: the drive listed, progress on the command line.
+
+    scanned (--scanned, or PODVAULT_SCANNED=1, which the window sets on an --apply right
+    after its own dry run): the dry run has just read the library, so its index is taken
+    as it is and the drive isn't looked at again. Ignored when no scan has just run."""
     global _open
-    quick = quick or os.environ.get("PODVAULT_QUICK") == "1"
+    root = root or paths()[0]
+    if (scanned or os.environ.get("PODVAULT_SCANNED") == "1") and just_scanned(root):
+        print(_("  the library as the check a moment ago read it (--scanned)"), flush=True)
+        return tracks(root, fresh=False)
     out = tracks(root, fresh=True, quick=quick, progress=_cli_progress)
     if _open:               # the listing ended mid-line: what comes next starts on its own
         print(flush=True)
@@ -310,10 +342,11 @@ def forget(written):
     by the next scan, quick or not — a tag rewritten in place can keep a file's size and time."""
     try:
         root = paths()[0]
-    except Exception:           # no settings: nothing indexed either
+    except (Exception, SystemExit):     # no settings: nothing indexed either
         return
     albums = _load_index(root).get("albums", {})
     hit = {os.path.relpath(os.path.dirname(p), root).replace(os.sep, "/") for p in written} & set(albums)
+    _stamp(root, False)          # tags changed: the next --scanned has to look at the drive after all
     for rel in hit:
         albums[rel]["rec"]["v"] = 0
         albums[rel].pop("dir", None)

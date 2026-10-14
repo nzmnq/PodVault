@@ -46,6 +46,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import ipod        # podsync lives in vendor/podsync; importing ipod puts it on the path
+import playlists as saved_lists   # not "playlists": apply_plan has a list of that name
 import settings
 import smart_presets
 import soundcheck
@@ -339,6 +340,46 @@ def new_file_on_ipod(root, ext=".mp3"):
 # -------------------------------------------------------------------- plan
 
 
+def rating_plan(pairs, tracks, listing, cfg):
+    """Ratings: ({iPod track index: rating to write}, {key: rating taken from the iPod}).
+
+    ratings.json keeps PodVault's rating and the iPod's as of the last sync ("synced"):
+    the iPod changed it (and PodVault didn't) -> taken; PodVault changed it -> written.
+    A rating made only on the iPod is taken too."""
+    import library
+    import trackstats
+    rows = {os.path.normcase(p): (rel, t) for p, rel, _s, _m, t in listing}
+    album_of = {rel: rec.get("album") for rel, rec in library.album_info(LIBRARY).items()}
+    rated = trackstats.ratings(cfg)
+    push, pull = {}, {}
+    for n, p in pairs.items():
+        rel, t = rows.get(os.path.normcase(p), (None, None))
+        if t is None:
+            continue
+        k = trackstats.key(t["artist"], t["title"], album_of.get(rel))
+        on_ipod = tracks[n].get("rating") or 0
+        entry = rated.get(k)
+        if entry is None:
+            if on_ipod:
+                pull[k] = on_ipod
+        elif on_ipod != entry.get("synced", 0) and entry["rating"] == entry.get("synced", 0):
+            pull[k] = on_ipod
+        elif entry["rating"] != on_ipod:
+            push[n] = entry["rating"]
+    return push, pull
+
+
+def save_ratings_after(cfg, plan):
+    """After a sync: what was written or taken is what the iPod now has."""
+    import trackstats
+    if not (plan.get("rate_keys") or plan.get("pulled")):
+        return
+    rated = trackstats.ratings(cfg)
+    for k, v in list(plan.get("rate_keys", {}).items()) + list(plan.get("pulled", {}).items()):
+        rated[k] = {"rating": v, "synced": v}
+    trackstats.save_ratings(cfg, rated)
+
+
 def read_playlist(m3u):
     with open(m3u, encoding="utf-8-sig") as f:
         paths = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
@@ -352,11 +393,23 @@ def make_plan(dev, db, playlist_file=None, playlist_only=False, smart=False, lis
     missing from the iPod are copied, nothing is deleted or changed.
     """
     listing = listing if listing is not None else library_listing()
+    cfg = settings.require()
     idx, active_by_key = index_library(listing)
     tracks = db["tracks"]
     device = read_device(tracks)
+    # the tracks of playlists kept on the iPod stay there (and go there) even from Archive
+    keep = [] if (playlist_only or smart) else saved_lists.kept(cfg)
+    rows = {os.path.normcase(p): (p, t) for p, _rel, _s, _m, t in listing}
+    wanted = dict(active_by_key)
+    for _name, paths in keep:
+        for p in paths:
+            hit = rows.get(os.path.normcase(p))
+            if hit and hit[0] not in wanted:
+                t = hit[1]
+                wanted[hit[0]] = (device_keys(t["artist"], t["title"]) | device_keys(t["albumartist"], t["title"]),
+                                  t["length"])
     print(_("  matching Active with the iPod: artist, title, duration..."))
-    pairs, to_add = match_device(active_by_key, [(k, d) for _skip, k, d in device])
+    pairs, to_add = match_device(wanted, [(k, d) for _skip, k, d in device])
     dupes = set(find_duplicates(pairs, device, idx))
 
     archive, unknown = [], []
@@ -364,7 +417,7 @@ def make_plan(dev, db, playlist_file=None, playlist_only=False, smart=False, lis
         states = states_of(keys, idx)
         # Delete ONLY what's recognised as archive and not as active. Found
         # nowhere — leave it: an extra track in shuffle beats a needed one wiped.
-        if "A" not in states:
+        if "A" not in states and n not in pairs:     # a kept playlist's track is paired: it stays
             (archive if "R" in states else unknown).append(n)
 
     print(_("  checking covers and genres on the iPod..."))
@@ -372,7 +425,27 @@ def make_plan(dev, db, playlist_file=None, playlist_only=False, smart=False, lis
     no_cover = [n for n, p in pairs.items() if tracks[n].get("db_track_id") not in thumbs]
     covers = [n for n in no_cover if has_cover(pairs[n])]
     retag = retag_plan(pairs, tracks, listing)
+    push, pulled = rating_plan(pairs, tracks, listing, cfg)
+    rate_keys = {}
+    if push:
+        import trackstats
+        album_of_rel = {os.path.normcase(p): rel for p, rel, _s, _m, _t in listing}
+        import library
+        albums_info = library.album_info(LIBRARY)
+        for n, v in push.items():
+            retag.setdefault(n, {})["rating"] = v
+            _p, t = rows[os.path.normcase(pairs[n])]
+            rate_keys[trackstats.key(t["artist"], t["title"],
+                                     albums_info.get(album_of_rel[os.path.normcase(pairs[n])], {}).get("album"))] = v
     playlist = read_playlist(playlist_file) if playlist_file else None
+    # kept playlists: rewritten where the iPod's copy differs; ones no longer kept go
+    on_device = {p.get("title"): [i.get("track_id") for i in p.get("items") or []]
+                 for p in db.get("dataset2_standard_playlists") or [] if not p.get("master_flag")}
+    track_id_of = {os.path.normcase(path): tracks[n].get("track_id") for n, path in pairs.items()}
+    keep_changed = [name for name, paths in keep
+                    if on_device.get(name) != [track_id_of.get(os.path.normcase(p)) for p in paths]]
+    managed = saved_lists.lists(cfg)["managed"] if not (playlist_only or smart) else []
+    drop = [name for name in managed if name in on_device and name not in {n for n, _p in keep}]
 
     if playlist_only or smart:
         wanted = {os.path.normcase(p) for p in playlist[1]} if playlist else set()
@@ -383,11 +456,13 @@ def make_plan(dev, db, playlist_file=None, playlist_only=False, smart=False, lis
     return {"tracks": tracks, "pairs": pairs, "to_add": to_add, "dupes": sorted(dupes),
             "archive": archive, "unknown": unknown, "covers": covers,
             "bare": len(no_cover) - len(covers), "retag": retag, "playlist": playlist,
-            "smart": new_smart}
+            "smart": new_smart, "keep": keep, "keep_changed": keep_changed, "drop": drop,
+            "rate_keys": rate_keys, "pulled": pulled}
 
 
 def has_changes(plan):
-    return any(plan[k] for k in ("archive", "dupes", "to_add", "covers", "retag", "playlist", "smart"))
+    return any(plan[k] for k in ("archive", "dupes", "to_add", "covers", "retag", "playlist", "smart",
+                                       "keep_changed", "drop"))
 
 
 def show_plan(dev, plan):
@@ -407,9 +482,19 @@ def show_plan(dev, plan):
     if plan["bare"]:
         rows.append(("  + " + _("no cover in the file"), plan['bare'],
                      _("(nothing to set; 'covers' in the menu fetches them)")))
-    renamed = [n for n, d in plan["retag"].items() if set(d) - {"genre"}]
+    renamed = [n for n, d in plan["retag"].items() if set(d) - {"genre", "rating"}]
+    regenre = [n for n, d in plan["retag"].items() if set(d) == {"genre"} or set(d) == {"genre", "rating"}]
     rows.append((_("names differ from the file"), len(renamed), _("(updated, play counts kept)")))
-    rows.append((_("only the genre differs"), len(plan["retag"]) - len(renamed), _("(updated)")))
+    rows.append((_("only the genre differs"), len(regenre), _("(updated)")))
+    rated = sum(1 for d in plan["retag"].values() if "rating" in d)
+    if rated or plan.get("pulled"):
+        rows.append((_("ratings set in PodVault"), rated, _("(written to the iPod)")))
+        rows.append((_("ratings set on the iPod"), len(plan.get("pulled") or {}), _("(taken into PodVault)")))
+    if plan.get("keep") or plan.get("drop"):
+        rows.append((_("playlists kept on the iPod"), len(plan["keep"]),
+                     _("({n} to update)").format(n=len(plan["keep_changed"]))))
+        if plan["drop"]:
+            rows.append((_("playlists no longer kept"), len(plan["drop"]), _("<- removed from the iPod")))
     if plan["playlist"]:
         rows.append((_("playlist to add"), plan['playlist'][0],
                      _("({n} tracks)").format(n=len(plan['playlist'][1]))))
@@ -549,6 +634,15 @@ def apply_plan(cfg, dev, db, generation, plan):
                 print(_("  playlist '{name}': {n} tracks").format(name=final, n=len(ids))
                       + (" " + _("({n} not on the iPod)").format(n=missing) if missing else ""))
 
+            names = {n for n, _p in plan.get("keep") or []} | set(plan.get("drop") or [])
+            if names:
+                playlists = [p for p in playlists if p.name not in names]
+                for name, paths in plan["keep"]:
+                    ids = [by_path[os.path.normcase(p)] for p in paths if os.path.normcase(p) in by_path]
+                    playlists.append(PlaylistRecord(name=name, track_ids=ids))
+                print(_("  playlists kept on the iPod: {n}").format(n=len(plan["keep"]))
+                      + (" · " + _("removed: {n}").format(n=len(plan["drop"])) if plan["drop"] else ""))
+
             if plan["smart"]:
                 existing = {p.name for p in playlists}
                 fresh = smart_presets.build(records, existing)
@@ -593,6 +687,11 @@ def apply_plan(cfg, dev, db, generation, plan):
         if remove:
             print(_("  deleted {n} tracks ({files} files)").format(n=len(remove), files=gone))
 
+    if plan.get("keep") is not None and not plan.get("playlist") and not plan.get("smart"):
+        lists = saved_lists.lists(cfg)
+        lists["managed"] = [n for n, _p in plan["keep"]]
+        saved_lists.save_lists(cfg, lists)
+    save_ratings_after(cfg, plan)
     now = ipod.load(dev)["tracks"]
     print(_("\n  OK tracks on the iPod: {n} (read back, every file in place)").format(n=len(now)))
     if cover_from:
@@ -643,6 +742,7 @@ def run(cfg, apply_changes, ipod_path=None, playlist=None, playlist_only=False,
     n = ipod.save_stats(cfg, db["tracks"])
     print(_("  play stats of {n} tracks saved to {file}").format(n=n, file=ipod.stats_file(cfg)))
     if not has_changes(plan):
+        save_ratings_after(cfg, plan)        # ratings made on the iPod: taken all the same
         print(_("\nNothing to do: the iPod already matches Active."))
         return
     n_del = len(plan["archive"]) + len(plan["dupes"])
@@ -812,6 +912,9 @@ def main():
     ap.add_argument("--apply", action="store_true", help=_("actually apply"))
     ap.add_argument("--yes", action="store_true",
                     help=_("don't ask to confirm deletion (already confirmed)"))
+    ap.add_argument("--scanned", action="store_true",
+                    help=_("the library was just read (by the dry run): use that, don't read it again; "
+                           "ignored when it wasn't"))
     ap.add_argument("--ipod", metavar="PATH", help=_("the iPod's drive or mount point"))
     ap.add_argument("--playlist", metavar="M3U8", help=_("also put this playlist on the iPod"))
     ap.add_argument("--playlist-only", action="store_true",
@@ -831,6 +934,8 @@ def main():
                     help=_("folder on the device, with --disk (setting: {value})").format(
                         value=cfg['ipod_disk_subdir']))
     args = ap.parse_args()
+    if args.scanned:
+        os.environ["PODVAULT_SCANNED"] = "1"      # library.listing reads it
 
     global ASSUME_YES
     ASSUME_YES = args.yes

@@ -142,7 +142,7 @@ UI = dict(
 )
 
 # Table column widths, px.
-COLUMNS = dict(num=36, state=30, time=56, kbps=44, cover=54, plays=50, count=80,
+COLUMNS = dict(num=36, state=30, time=56, kbps=44, cover=54, plays=50, count=80, stars=86,
                artist=170, album=190, genre=140, style=260)
 
 C = dict(LIGHT)   # the colours in use; filled by apply()
@@ -213,6 +213,7 @@ QPushButton#sideRow {{ text-align: left; border: 0; border-radius: 8px; padding:
   background: transparent; color: {side_text}; }}
 QPushButton#sideRow:hover {{ background: {side_hover}; }}
 QPushButton#sideRow:checked {{ background: {accent_soft}; color: {text}; font-weight: 600; }}
+QPushButton#sideRow[faint="true"] {{ color: {muted}; }}
 QLabel#sideCount {{ color: {muted}; font-size: 8pt; background: {well}; border-radius: 9px; padding: 1px 7px;
   min-height: 16px; }}
 #deviceCard {{ background: {well}; border: 1px solid {glass}; border-radius: 12px; }}

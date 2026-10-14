@@ -6,13 +6,13 @@ from collections import Counter
 import settings
 import i18n
 from i18n import N_, _
-from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QFontMetrics
-from PyQt6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QButtonGroup, QCheckBox, QComboBox, QCompleter,
+from PyQt6.QtCore import QEvent, QMimeData, QObject, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QDrag, QFontMetrics
+from PyQt6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QCompleter,
                              QDialog, QListWidget, QListWidgetItem, QMenu, QPushButton,
                              QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
                              QInputDialog, QLabel, QLineEdit, QListView, QPlainTextEdit,
-                             QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QSplitter,
+                             QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
                              QStackedWidget, QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QTableWidgetItem,
                              QTabWidget,
                              QVBoxLayout, QWidget)
@@ -20,7 +20,54 @@ from PyQt6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QButtonGroup, 
 from gui import backend
 from gui.theme import C, COLUMNS, GLYPHS, UI
 from musiclib import first_artist, norm
-from gui.widgets import (AlbumDelegate, AlbumModel, CapacityBar, Card, ElidedLabel, ask,
+import playlists as saved_lists
+import trackstats
+
+DRAG_MIME = "application/x-podvault-paths"     # "album:<folder>" / "file:<path>" lines
+
+
+class StarClicks(QObject):
+    """A table's rating column: a click on the n-th star rates the row n stars; on the
+    stars it already has, it clears them. on_rate(row, rating 0-100)."""
+
+    def __init__(self, table, column, on_rate):
+        super().__init__(table)
+        self.table, self.column, self.on_rate = table, column, on_rate
+        table.viewport().installEventFilter(self)
+        table.viewport().setMouseTracking(True)
+
+    def eventFilter(self, obj, e):
+        if e.type() != QEvent.Type.MouseButtonPress or e.button() != Qt.MouseButton.LeftButton:
+            return False
+        index = self.table.indexAt(e.position().toPoint())
+        if not index.isValid() or index.column() != self.column:
+            return False
+        rect = self.table.visualRect(index)
+        width = max(1, QFontMetrics(self.table.font()).horizontalAdvance("★"))
+        n = min(5, max(1, int((e.position().x() - rect.x() - 6) / width) + 1))
+        item = self.table.item(index.row(), index.column())
+        had = item.data(Qt.ItemDataRole.UserRole) if item else 0
+        self.on_rate(index.row(), 0 if had == n * trackstats.STAR else n * trackstats.STAR)
+        return True
+
+
+def star_item(rating):
+    it = SortItem(trackstats.stars(rating), rating or 0)
+    it.setData(Qt.ItemDataRole.UserRole, rating or 0)
+    it.setForeground(QColor(C["accent"] if rating else C["faint"]))
+    it.setToolTip(_("Click a star to rate; click the same one again to clear"))
+    return it
+
+
+def rating_menu(menu, current, on_rate):
+    sub = menu.addMenu(_("Rating"))
+    for n in range(5, -1, -1):
+        act = sub.addAction(trackstats.stars(n * trackstats.STAR) if n else _("None"),
+                            lambda v=n * trackstats.STAR: on_rate(v))
+        act.setCheckable(True)
+        act.setChecked(round((current or 0) / trackstats.STAR) == n)
+    return sub
+from gui.widgets import (AlbumDelegate, AlbumModel, CapacityBar, Card, ElidedLabel, Segmented, ask,
                          button, covers, fmt_gb, fmt_time, fmt_total, inform, muted, placeholder,
                          plural, run_async)
 
@@ -192,6 +239,21 @@ class Grid(QListView):
         super().updateGeometries()
         QTimer.singleShot(0, self.justify)
 
+    def startDrag(self, actions):
+        """Albums dragged onto a playlist in the sidebar go into it."""
+        paths = [self.model().album(i)["path"] for i in self.selectionModel().selectedIndexes()]
+        if not paths:
+            return
+        mime = QMimeData()
+        mime.setData(DRAG_MIME, "\n".join("album:" + p for p in paths).encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        pm = covers().get(paths[0])
+        if pm is not None:
+            drag.setPixmap(pm.scaled(QSize(64, 64), Qt.AspectRatioMode.KeepAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation))
+        drag.exec(Qt.DropAction.CopyAction)
+
     def keyPressEvent(self, e):
         k, t = e.key(), e.text().lower()
         if t in ("a", "ф"):
@@ -270,8 +332,12 @@ class AlbumDetail(QFrame):
             acts.addWidget(b)
         acts.addStretch(1)
         lay.addLayout(acts)
-        self.tracks = table(["#", N_("Title"), N_("Time")])
+        self.tracks = table(["#", N_("Title"), N_("Plays"), N_("Rating"), N_("Time")])
         self.tracks.horizontalHeader().hide()
+        self.tracks.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tracks.customContextMenuRequested.connect(self._track_menu)
+        StarClicks(self.tracks, 3, self._rate)
+        self.win = None              # set by LibraryPage: plays, ratings, playlists
         self.tracks.verticalHeader().setDefaultSectionSize(UI["side_row"] + 4)
         self.tracks.setAlternatingRowColors(False)
         self.tracks.setSortingEnabled(False)
@@ -349,14 +415,55 @@ class AlbumDetail(QFrame):
         if not self.album or self.album["path"] != path:
             return
         self.rows = rows
+        self._fill()
+
+    def _info(self, r):
+        """(plays, rating, last played) of a track row."""
+        if self.win is None:
+            return 0, 0, 0
+        return trackstats.info(self.win.stats, self.win.rated, r["artist"] or self.album["artist"],
+                               r["title"], self.album["album"])
+
+    def _fill(self):
+        rows = self.rows
         fill(self.tracks, [[
             (r["track"], int(r["track"]) if r["track"].isdigit() else 999, "r", C["faint"]),
             r["title"] if not r["artist"] or r["artist"] == self.album["artist"]
             else f"{r['title']}  ·  {r['artist']}",
+            (self._info(r)[0] or "", self._info(r)[0], "r", C["muted"]),
+            "",
             (fmt_time(r["length"]), r["length"], "r", C["muted"]),
         ] for r in rows], sortable=False)
-        widths(self.tracks, {0: "num", 2: "time"})
+        for n, r in enumerate(rows):
+            plays, rating, last = self._info(r)
+            self.tracks.setItem(n, 3, star_item(rating))
+            if last:
+                import time as _t
+                self.tracks.item(n, 2).setToolTip(_("last played {date}").format(
+                    date=_t.strftime("%Y-%m-%d %H:%M", _t.localtime(last))))
+        widths(self.tracks, {0: "num", 2: "plays", 3: "stars", 4: "time"})
         self._paint_rows()
+
+    def _rate(self, row, value):
+        if self.win is None or row >= len(self.rows):
+            return
+        r = self.rows[row]
+        self.win.set_rating(r["artist"] or self.album["artist"], r["title"], self.album["album"], value)
+        self._fill()
+
+    def _track_menu(self, pos):
+        if self.win is None or not self.album:
+            return
+        row = self.tracks.rowAt(pos.y())
+        if row < 0 or row >= len(self.rows):
+            return
+        r = self.rows[row]
+        path = os.path.join(self.album["path"], r["file"])
+        menu = QMenu(self)
+        menu.addAction(_("Play"), lambda: self._play(row))
+        self.win.playlist_menu(menu, lambda: [path])
+        rating_menu(menu, self._info(r)[1], lambda v: self._rate(row, v))
+        menu.exec(self.tracks.viewport().mapToGlobal(pos))
 
     def _paint_rows(self):
         playing = os.path.basename(self.playing or "") if self.playing and self.album and \
@@ -380,39 +487,10 @@ VIEWS = [("albums", N_("Albums")), ("artists", N_("Artists")), ("genres", N_("Ge
 
 
 def segmented(items, on_pick, checked=0):
-    """A row of joined toggle buttons; exactly one is on. items: [(key, text, tip)], texts marked N_()."""
-    box = QWidget()
-    box.setObjectName("segments")
-    box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-    lay = QHBoxLayout(box)
-    lay.setContentsMargins(3, 3, 3, 3)
-    lay.setSpacing(0)
-    # b1air's control height: the track as tall as a button, the chosen pane inside it
-    box.setFixedHeight(UI["control_h"])
-    group = QButtonGroup(box)
-    group.setExclusive(True)
-    buttons = {}
-    for n, (key, text, tip) in enumerate(items):
-        b = QPushButton(_(text))
-        b.setCheckable(True)
-        b.setProperty("seg", "first" if n == 0 else "last" if n == len(items) - 1 else "true")
-        if tip:
-            b.setToolTip(_(tip))
-        b.setChecked(n == checked)
-        b.clicked.connect(lambda _, k=key: on_pick(k))
-        group.addButton(b)
-        lay.addWidget(b)
-        buttons[key] = b
-    # equal segments, as wide as the widest label set in the chosen (semibold) weight:
-    # the chosen pane then fills its whole segment and nothing shifts when it moves
-    f = QFont(box.font())
-    f.setWeight(QFont.Weight.DemiBold)
-    fm = QFontMetrics(f)
-    width = max(fm.horizontalAdvance(b.text()) for b in buttons.values()) + 30
-    for b in buttons.values():
-        b.setFixedSize(width, UI["control_h"] - 6)
-        b.setCursor(Qt.CursorShape.PointingHandCursor)
-    box.buttons = buttons
+    """b1air's segmented control (widgets.Segmented); exactly one is on.
+    items: [(key, text, tip)], texts marked N_()."""
+    box = Segmented([(k, _(t), _(tip) if tip else "") for k, t, tip in items], checked)
+    box.picked.connect(on_pick)
     return box
 
 
@@ -566,6 +644,9 @@ class LibraryPage(Page):
         self.grid.selectionModel().selectionChanged.connect(lambda *_: self._buttons())
         self.delegate.toggled.connect(self.toggle)
         self.detail = AlbumDetail()
+        self.detail.win = win
+        self.grid.setDragEnabled(True)
+        self.grid.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
         self.detail.closed.connect(self.close_album)
         self.detail.mark.connect(lambda p, s: self.set_marks({p: s}))
         self.detail.hide()
@@ -691,7 +772,7 @@ class LibraryPage(Page):
 
     def clear_filters(self):
         self.win.search.clear()
-        self.states.buttons["all"].click()
+        self.states.select("all")
         self.genre_box.setCurrentIndex(0)
         self.noart_chip.setChecked(False)
 
@@ -907,6 +988,8 @@ class LibraryPage(Page):
             menu.addAction(_("→ Active"), lambda: self.mark_selected("A"))
         if states != {"R"}:
             menu.addAction(_("→ Archive"), lambda: self.mark_selected("R"))
+        menu.addSeparator()
+        self.win.playlist_menu(menu, lambda: [f for a in sel for f in backend.album_files(a["path"])])
         if one:
             menu.addSeparator()
             menu.addAction(_("Show in folder"), lambda: self._show_folder(one))
@@ -1075,8 +1158,24 @@ class IpodPage(Page):
         self.songs.setSortingEnabled(True)
         sl.addWidget(self.songs)
         self.tabs.addTab(songs, _("Music"))
+        lists_tab = QWidget()
+        ll = QVBoxLayout(lists_tab)
+        ll.setContentsMargins(0, 8, 0, 0)
+        lrow = QHBoxLayout()
+        lrow.addWidget(muted(_("Playlists made on the iPod or in iTunes can be brought into PodVault "
+                               "and edited here; from then on every sync keeps the iPod's copy in line."),
+                             wrap=True), 1)
+        self.bring = button(_("Bring into PodVault"))
+        self.bring.clicked.connect(self._bring)
+        new_pl = button("+  " + _("New playlist on the iPod…"), primary=True)
+        new_pl.clicked.connect(lambda: self.win.new_playlist(keep_on_ipod=True))
+        lrow.addWidget(self.bring)
+        lrow.addWidget(new_pl)
+        ll.addLayout(lrow)
         self.lists = table([N_("Playlist"), N_("Tracks")], stretch=0)
-        self.tabs.addTab(self.lists, _("Playlists"))
+        self.lists.cellDoubleClicked.connect(lambda r, c: self._bring())
+        ll.addWidget(self.lists)
+        self.tabs.addTab(lists_tab, _("Playlists"))
         col.addWidget(self.tabs, 1)
         self.stack.addWidget(content)
         self.body.addWidget(self.stack)
@@ -1167,8 +1266,12 @@ class IpodPage(Page):
             used=fmt_gb(d["capacity_gb"] - d["free_gb"]), total=fmt_gb(d["capacity_gb"]),
             free=fmt_gb(d["free_gb"])))
         self.cap.set_values(d["capacity_gb"], d["music_gb"], d["free_gb"])
+        on_device = {p["title"] for p in d["playlists"]}
+        waiting = [n for n in saved_lists.lists(backend.cfg())["keep"] if n not in on_device]
         fill(self.lists, [[p["title"] + (_("  (folder)") if p["folder"] else ""),
-                           (p["count"], p["count"], "r")] for p in d["playlists"]])
+                           (p["count"], p["count"], "r")] for p in d["playlists"]]
+             + [[(n + "  " + _("(PodVault — goes there on the next sync)"), None, None, C["muted"]),
+                 ("", 0, "r")] for n in waiting])
         widths(self.lists, {1: "count"})
         self._render()
         self.stack.setCurrentIndex(1)
@@ -1230,6 +1333,27 @@ class IpodPage(Page):
                             6: "plays", 7: "cover"})
         self.count.setText(_("{shown} of {total}").format(shown=len(rows), total=len(self.data['tracks'])))
 
+    def _bring(self):
+        row = self.lists.currentRow()
+        if row < 0 or not self.data:
+            inform(self, _("Bring into PodVault"), _("Pick a playlist in the list first."))
+            return
+        title = self.lists.item(row, 0).text().replace(_("  (folder)"), "")
+        self.bring.setEnabled(False)
+
+        def done(result):
+            self.bring.setEnabled(True)
+            path, found, total = result
+            self.win.reload_playlists()
+            self.win.toast(_("“{name}”: {found} of {total} tracks found in the library. "
+                             "Kept on the iPod from now on.").format(name=title, found=found, total=total),
+                           good=found == total, action=lambda: self.win.navigate(f"playlist:{path}"))
+
+        def failed(msg):
+            self.bring.setEnabled(True)
+            inform(self, _("Bring into PodVault"), msg, bad=True)
+        run_async(backend.in_child, "save_ipod_playlist", title, ok=done, failed=failed)
+
     def _restore(self):
         if ask(self, _("Restore the iPod's database"),
                _("Put back the iPod's database as it was before the last write?\n\n"
@@ -1250,62 +1374,202 @@ class IpodPage(Page):
 
 
 class PlaylistPage(Page):
+    """A saved playlist: play it, put its tracks in order, take some out, keep it on the iPod."""
+
     def __init__(self, win):
         super().__init__(win, N_("Playlist"))
         self.file, self.rows, self.search = None, [], ""
-        self.to_ipod = button(_("Create on the iPod…"), primary=True,
-                              tip=_("Write this playlist into the iPod's database"))
-        self.to_ipod.clicked.connect(lambda: self.file and self.win.run_tool(
-            "playlist_to_ipod", {"file": self.file}))
-        delete = button(_("Delete"), danger=True)
-        delete.clicked.connect(self._delete)
-        self.head.addWidget(self.to_ipod)
-        self.head.addWidget(delete)
-        self.table = table(["#", N_("Name"), N_("Artist"), N_("Album"), N_("Style"), N_("Time")], stretch=1)
-        self.table.setSortingEnabled(True)
+        self.play_btn = button(GLYPHS["play"] + "  " + _("Play"), primary=True)
+        self.play_btn.clicked.connect(lambda: self._play(0))
+        self.keep = button(GLYPHS["ipod"] + "  " + _("On the iPod"),
+                           tip=_("Kept on the iPod: every sync makes the iPod's copy match this one"))
+        self.keep.setCheckable(True)
+        self.keep.clicked.connect(self._keep)
+        more = button("⋯", tip=_("More"))
+        menu = QMenu(self)
+        menu.addAction(_("Rename…"), self._rename)
+        menu.addAction(_("Duplicate"), self._duplicate)
+        menu.addSeparator()
+        menu.addAction(_("Delete…"), self._delete)
+        more.setMenu(menu)
+        self.sync_btn = button(GLYPHS["sync"] + "  " + _("Sync"), tip=_("Put it on the iPod now"))
+        self.sync_btn.clicked.connect(lambda: self.win.run_tool("sync"))
+        for b in (self.play_btn, self.keep, self.sync_btn, more):
+            self.head.addWidget(b)
+        self.empty = muted(_("Empty for now. Drag albums onto this playlist in the sidebar, or right-click an "
+                             "album or one of its tracks → Add to playlist."), wrap=True)
+        self.empty.setContentsMargins(20, 16, 20, 0)
+        self.body.addWidget(self.empty)
+        self.table = table(["#", N_("Name"), N_("Artist"), N_("Album"), N_("Plays"), N_("Rating"), N_("Time")],
+                           stretch=1)
+        self.table.setSortingEnabled(False)          # the order is the playlist's
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.cellDoubleClicked.connect(lambda row, col: col != 5 and self._play(self._index(row)))
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._menu)
+        StarClicks(self.table, 5, lambda row, v: self._rate(self._index(row), v))
+        self.table.installEventFilter(self)
         self.body.addWidget(self.table)
+
+    # --- showing
 
     def show_playlist(self, file):
         self.file = file
         self.title.setText(os.path.splitext(os.path.basename(file))[0])
         self.sub.setText(_("reading…"))
-        self.to_ipod.setEnabled(bool(self.win.ipods))
+        self.keep.setChecked(saved_lists.is_kept(backend.cfg(), self.title.text()))
         run_async(backend.playlist_tracks, file, ok=lambda rows: self._loaded(file, rows),
                   failed=lambda m: self.sub.setText(_("Could not read it: {error}").format(error=m)))
-
-    def shown(self):
-        self.to_ipod.setEnabled(bool(self.win.ipods) and bool(self.file))
 
     def _loaded(self, file, rows):
         if file != self.file:
             return
         self.rows = rows
-        gone = sum(1 for r in rows if not r["exists"])
-        self.sub.setText(f"{plural(len(rows), '{n} track', '{n} tracks')} · "
-                         f"{fmt_total(sum(r['length'] for r in rows))}"
-                         + (" · " + plural(gone, "{n} file missing", "{n} files missing") if gone else ""))
         self._render()
 
     def set_search(self, text):
         self.search = text.strip()
         self._render()
 
-    def _render(self):
-        rows = [(n, r) for n, r in enumerate(self.rows, 1)
+    def _visible(self):
+        return [n for n, r in enumerate(self.rows)
                 if matches(self.search, r["title"], r["artist"], r["album"], r["style"])]
-        fill(self.table, [[(n, n, "r"),
-                           (r["title"], None, None, None if r["exists"] else C["danger"]),
-                           r["artist"], r["album"], r["style"],
-                           (fmt_time(r["length"]), r["length"], "r")] for n, r in rows])
-        widths(self.table, {0: "num", 2: "artist", 3: "album", 4: "genre", 5: "time"})
+
+    def _index(self, table_row):
+        shown = self._visible()
+        return shown[table_row] if 0 <= table_row < len(shown) else -1
+
+    def _render(self):
+        self.empty.setVisible(not self.rows)
+        self.sync_btn.setVisible(self.keep.isChecked() and bool(self.win.ipods))
+        gone = sum(1 for r in self.rows if not r["exists"])
+        self.sub.setText(f"{plural(len(self.rows), '{n} track', '{n} tracks')} · "
+                         f"{fmt_total(sum(r['length'] for r in self.rows))}"
+                         + (" · " + plural(gone, "{n} file missing", "{n} files missing") if gone else ""))
+        shown = self._visible()
+        info = [trackstats.info(self.win.stats, self.win.rated, r["artist"], r["title"], r["album"])
+                for r in self.rows]
+        fill(self.table, [[(n + 1, n, "r", C["faint"]),
+                           (self.rows[n]["title"], None, None, None if self.rows[n]["exists"] else C["danger"]),
+                           self.rows[n]["artist"], self.rows[n]["album"],
+                           (info[n][0] or "", info[n][0], "r", C["muted"]), "",
+                           (fmt_time(self.rows[n]["length"]), self.rows[n]["length"], "r", C["muted"])]
+                          for n in shown], sortable=False)
+        for row, n in enumerate(shown):
+            self.table.setItem(row, 5, star_item(info[n][1]))
+        widths(self.table, {0: "num", 2: "artist", 3: "album", 4: "plays", 5: "stars", 6: "time"})
+
+    # --- playing and rating
+
+    def _play(self, at):
+        rows = [r for r in self.rows if r["exists"]]
+        if not rows or at < 0:
+            return
+        at = sum(1 for r in self.rows[:at] if r["exists"])
+        self.win.play([{"path": r["path"], "title": r["title"], "artist": r["artist"], "album": r["album"],
+                        "dir": os.path.dirname(r["path"])} for r in rows], min(at, len(rows) - 1))
+
+    def _rate(self, n, value):
+        if 0 <= n < len(self.rows):
+            r = self.rows[n]
+            self.win.set_rating(r["artist"], r["title"], r["album"], value)
+            self._render()
+
+    # --- editing: order, removal; saved at once
+
+    def _save(self):
+        saved_lists.write(self.file, [r["path"] for r in self.rows])
+        self._render()
+
+    def _selected(self):
+        return sorted({self._index(i.row()) for i in self.table.selectionModel().selectedRows()} - {-1})
+
+    def _remove(self):
+        picked = set(self._selected())
+        if picked:
+            self.rows = [r for n, r in enumerate(self.rows) if n not in picked]
+            self._save()
+
+    def _move(self, step):
+        picked = self._selected()
+        if not picked or self.search:            # moving within a filtered view would be guesswork
+            return
+        if (step < 0 and picked[0] == 0) or (step > 0 and picked[-1] == len(self.rows) - 1):
+            return
+        for n in (picked if step < 0 else reversed(picked)):
+            self.rows[n + step], self.rows[n] = self.rows[n], self.rows[n + step]
+        self._save()
+        self.table.clearSelection()
+        for n in picked:
+            self.table.selectRow(n + step)
+
+    def eventFilter(self, obj, e):
+        if obj is self.table and e.type() == QEvent.Type.KeyPress:
+            if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                self._remove()
+                return True
+            if e.modifiers() & Qt.KeyboardModifier.AltModifier and e.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                self._move(-1 if e.key() == Qt.Key.Key_Up else 1)
+                return True
+        return False
+
+    def _menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        if row < 0:
+            return
+        if not self.table.selectionModel().isRowSelected(row):
+            self.table.selectRow(row)
+        n = self._index(row)
+        menu = QMenu(self)
+        menu.addAction(_("Play from here"), lambda: self._play(n))
+        menu.addSeparator()
+        up = menu.addAction(_("Move up") + "\tAlt+↑", lambda: self._move(-1))
+        down = menu.addAction(_("Move down") + "\tAlt+↓", lambda: self._move(1))
+        for act in (up, down):
+            act.setEnabled(not self.search)
+        menu.addAction(_("Remove from the playlist") + "\tDel", self._remove)
+        menu.addSeparator()
+        r = self.rows[n]
+        rating_menu(menu, trackstats.info(self.win.stats, self.win.rated, r["artist"], r["title"], r["album"])[1],
+                    lambda v: self._rate(n, v))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    # --- the file
+
+    def _keep(self, on):
+        saved_lists.keep_on_ipod(backend.cfg(), self.title.text(), on)
+        self.sync_btn.setVisible(on and bool(self.win.ipods))
+        if on and self.win.ipods:
+            self.win.toast(_("Kept on the iPod: the next sync puts it there.\nClick to sync now."),
+                           good=True, action=lambda: self.win.run_tool("sync"))
+        elif not on:
+            self.win.toast(_("No longer kept: the next sync takes it off the iPod."))
+
+    def _rename(self):
+        name, ok = QInputDialog.getText(self, _("Rename playlist"), _("Name"), text=self.title.text())
+        if not ok or not name.strip() or name.strip() == self.title.text():
+            return
+        try:
+            new = saved_lists.rename(backend.cfg(), backend.playlist_file(self.file), name.strip())
+        except (OSError, ValueError) as e:
+            inform(self, _("Rename playlist"), str(e), bad=True)
+            return
+        self.win.reload_playlists()
+        self.win.navigate(f"playlist:{new}")
+
+    def _duplicate(self):
+        new = saved_lists.new(backend.cfg(), _("{name} copy").format(name=self.title.text()),
+                              [r["path"] for r in self.rows])
+        self.win.reload_playlists()
+        self.win.navigate(f"playlist:{new}")
 
     def _delete(self):
         if not self.file:
             return
-        name = os.path.basename(self.file)
+        name = self.title.text()
         if not ask(self, _("Delete playlist"), _("Delete the saved playlist “{name}”?\n\n"
-                                                 "Only the .m3u8 file goes; a copy already on the iPod "
-                                                 "stays there.").format(name=name),
+                                                 "If it's kept on the iPod, the next sync takes it off "
+                                                 "there too.").format(name=name),
                    yes=_("Delete"), danger=True):
             return
         try:
@@ -1313,9 +1577,10 @@ class PlaylistPage(Page):
         except (OSError, ValueError) as e:
             inform(self, _("Delete playlist"), str(e), bad=True)
             return
+        saved_lists.keep_on_ipod(backend.cfg(), name, False)
         self.file = None
         self.win.reload_playlists()
-        self.win.navigate("albums:all")
+        self.win.navigate("albums")
 
 
 class VibePage(Page):

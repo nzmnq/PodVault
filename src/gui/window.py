@@ -11,18 +11,20 @@ import traceback
 from PyQt6.QtCore import QFileSystemWatcher, QPoint, Qt, QTimer, QUrl
 from PyQt6.QtGui import QIcon, QKeySequence, QShortcut
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PyQt6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+from PyQt6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
                              QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-                             QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
+                             QStackedWidget, QVBoxLayout, QWidget)
 
+import playlists as saved_lists
 import settings
 import tags as audiotags
+import trackstats
 from gui import backend, theme
 import i18n
 from i18n import N_, _
 from gui.jobs import Jobs
-from gui.pages import (IpodPage, LibraryPage, PlaylistPage, SettingsPage, ToolDialog, VibePage)
-from gui.theme import C, GLYPHS, UI, icon
+from gui.pages import (DRAG_MIME, IpodPage, LibraryPage, PlaylistPage, SettingsPage, ToolDialog, VibePage)
+from gui.theme import GLYPHS, UI, icon
 from gui.widgets import (ElidedLabel, PlayerBar, ask, button, covers, fmt_gb, inform, on_click, placeholder,
                          plural, run_async)
 
@@ -218,6 +220,7 @@ class MainWindow(QMainWindow):
         self.ipods, self.ipod_info, self.polling = [], None, False
         self.identifying = False    # IpodPage._identify: the iPod drops off on purpose
         self.playlists, self.genres_missing = [], 0
+        self.stats, self.rated = {}, {}      # plays from the iPod, ratings (trackstats)
         self.current_key = None
         self.lcd_note, self.lcd_note_until = None, 0
         self.relabel_after_job, self.replaced = None, False    # relabel_after_job: the toast to show then
@@ -296,6 +299,7 @@ class MainWindow(QMainWindow):
         self.player_timer.timeout.connect(self.update_player)
         self.player_timer.start()
 
+        self.reload_stats()
         self.build_sidebar()
         self._busy_buttons()
         if backend.cfg() is None:
@@ -468,16 +472,110 @@ class MainWindow(QMainWindow):
         row("albums", _("Albums"), "albums", len(albums) if self.albums is not None else None)
         row("artists", _("Artists"), "artists", len({a["artist"] for a in albums}) if albums else None)
         row("genres", _("Genres"), "genres", len({a["genre"] for a in albums if a["genre"]}) if albums else None)
-        head(N_("PLAYLISTS"), (_("New vibe playlist…"), lambda: (self.navigate("vibe"),
-                                                                  self._select_side(self.current_key))))
+        head(N_("PLAYLISTS"), (_("New playlist"), self._new_playlist_menu))
         for p in self.playlists:
             row(f"playlist:{p['file']}", p["name"], "playlist")
-        if not self.playlists:
-            row("vibe", _("New vibe playlist…"), "vibe")
+            self._drop_target(self.side_items[f"playlist:{p['file']}"], p["file"])
+        new = self._side_row(_("New playlist…"), "incoming")
+        new.setCheckable(False)
+        new.setProperty("faint", True)
+        new.clicked.connect(lambda: self.new_playlist())
+        self.side_box.addWidget(new)
         if self.ipods:
             head(N_("DEVICE"))
             self.side_box.addWidget(self._device_card())
         self._select_side(self.current_key)
+
+    # --- playlists: made here, filled from the library
+
+    def _new_playlist_menu(self):
+        menu = QMenu(self)
+        menu.addAction(_("New playlist…"), lambda: self.new_playlist())
+        act = menu.addAction(_("New playlist on the iPod…"), lambda: self.new_playlist(keep_on_ipod=True))
+        act.setEnabled(bool(self.ipods))
+        menu.addAction(_("New vibe playlist… (AI)"), lambda: (self.navigate("vibe"),
+                                                            self._select_side(self.current_key)))
+        menu.exec(self.cursor().pos())
+
+    def new_playlist(self, keep_on_ipod=False):
+        """Ask for a name, make an empty playlist and show it (kept on the iPod if asked)."""
+        name, ok = QInputDialog.getText(self, _("New playlist on the iPod") if keep_on_ipod
+                                        else _("New playlist"), _("Name"))
+        if not ok or not name.strip():
+            return None
+        c = backend.cfg()
+        file = saved_lists.new(c, name.strip())
+        if keep_on_ipod:
+            saved_lists.keep_on_ipod(c, os.path.splitext(os.path.basename(file))[0], True)
+        self.reload_playlists()
+        self.navigate(f"playlist:{file}")
+        self.toast(_("Fill it: drag albums onto it in the sidebar, or right-click an album or a track "
+                     "→ Add to playlist.") + ("\n" + _("Sync puts it on the iPod.") if keep_on_ipod else ""))
+        return file
+
+    def add_to_playlist(self, paths, file):
+        """Add tracks to a saved playlist; file None: a new one, named first. Returns its path."""
+        c = backend.cfg()
+        if file is None:
+            name, ok = QInputDialog.getText(self, _("New playlist"), _("Name"))
+            if not ok or not name.strip():
+                return None
+            file = saved_lists.new(c, name.strip(), paths)
+        else:
+            saved_lists.add(file, paths)
+        self.reload_playlists()
+        if paths:
+            self.toast(_("Added to “{name}”: {tracks}").format(
+                name=os.path.splitext(os.path.basename(file))[0],
+                tracks=plural(len(paths), "{n} track", "{n} tracks")), good=True)
+        if self.current_key == f"playlist:{file}":
+            self.playlist_page.show_playlist(file)
+        return file
+
+    def playlist_menu(self, menu, get_paths):
+        """'Add to playlist ▸' with every saved playlist and a new one; get_paths() is asked
+        only when one is picked (an album's files are listed then)."""
+        sub = menu.addMenu(_("Add to playlist"))
+        sub.addAction(_("New playlist…"), lambda: self.add_to_playlist(get_paths(), None))
+        if self.playlists:
+            sub.addSeparator()
+        for p in self.playlists:
+            sub.addAction(p["name"], lambda f=p["file"]: self.add_to_playlist(get_paths(), f))
+        return sub
+
+    def _drop_target(self, widget, file):
+        """A playlist in the sidebar takes albums and tracks dragged onto it."""
+        def enter(e):
+            if e.mimeData().hasFormat(DRAG_MIME):
+                e.acceptProposedAction()
+
+        def drop(e):
+            paths = []
+            for line in bytes(e.mimeData().data(DRAG_MIME)).decode("utf-8").splitlines():
+                kind, _sep, value = line.partition(":")
+                if kind == "album" and os.path.isdir(value):
+                    paths += backend.album_files(value)
+                elif kind == "file":
+                    paths.append(value)
+            if paths:
+                e.acceptProposedAction()
+                self.add_to_playlist(paths, file)
+        widget.setAcceptDrops(True)
+        widget.dragEnterEvent = enter
+        widget.dropEvent = drop
+
+    def reload_stats(self):
+        """Plays and ratings for the track lists: from the last sync, and ratings set here."""
+        c = backend.cfg()
+        if c is None:
+            return
+        self.stats, self.rated = trackstats.plays(c), trackstats.ratings(c)
+
+    def set_rating(self, artist, title, album, value):
+        trackstats.set_rating(backend.cfg(), artist, title, album, value)
+        self.reload_stats()
+        if self.ipods:
+            self.note(_("Rating saved"), _("the next sync puts it on the iPod"))
 
     def _device_card(self):
         """The iPod in the sidebar: its name, how full it is, eject. Click: the iPod page."""
@@ -547,9 +645,12 @@ class MainWindow(QMainWindow):
             menu.addAction(_("Read it again"), lambda: self.ipod_page.load(force=True))
         elif key.startswith("playlist:"):
             f = key.split(":", 1)[1]
-            act = menu.addAction(_("Create on the iPod…"), lambda: self.run_tool(
-                "playlist_to_ipod", {"file": f}))
-            act.setEnabled(bool(self.ipods))
+            name = os.path.splitext(os.path.basename(f))[0]
+            act = menu.addAction(_("Keep on the iPod"), lambda on=False: (
+                saved_lists.keep_on_ipod(backend.cfg(), name, not saved_lists.is_kept(backend.cfg(), name)),
+                self.current_key == key and self.playlist_page.show_playlist(f)))
+            act.setCheckable(True)
+            act.setChecked(saved_lists.is_kept(backend.cfg(), name))
         elif key in VIEW_KEYS:
             menu.addAction(_("Read the library again"), lambda: self.reload_library(force=True))
         else:
@@ -856,6 +957,7 @@ class MainWindow(QMainWindow):
                 self.reload_library()
             if "ipod" in refresh:
                 self.ipod_page.invalidate()
+                self.reload_stats()           # a sync saves plays and settles ratings
             if "genres" in refresh:
                 self.genres_page.invalidate()
                 self.refresh_attention()
@@ -899,8 +1001,9 @@ class MainWindow(QMainWindow):
             if newest:
                 sheet.add_follow(_("Show the playlist"), lambda: self.navigate(f"playlist:{newest}"))
                 if self.ipods:
-                    sheet.add_follow(_("Create on the iPod…"), lambda: self.run_tool(
-                        "playlist_to_ipod", {"file": newest}), primary=True)
+                    sheet.add_follow(_("Keep on the iPod and sync…"), lambda: (
+                        saved_lists.keep_on_ipod(backend.cfg(), os.path.splitext(os.path.basename(newest))[0],
+                                                 True), self.run_tool("sync")), primary=True)
         elif job.tool == "genres_suggest":
             sheet.add_follow(_("Review the genres"), lambda: self.navigate("genres"), primary=True)
 

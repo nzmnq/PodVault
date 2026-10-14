@@ -3,12 +3,12 @@
 import hashlib
 import traceback
 
-from PyQt6.QtCore import (QAbstractListModel, QEvent, QModelIndex, QObject, QPoint, QRect,
-                          QRectF, QRunnable, QSize, Qt, QThreadPool, pyqtSignal)
+from PyQt6.QtCore import (QAbstractListModel, QEasingCurve, QEvent, QModelIndex, QObject, QPoint, QRect,
+                          QRectF, QRunnable, QSize, Qt, QThreadPool, QVariantAnimation, pyqtSignal)
 from PyQt6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QImage, QLinearGradient,
                          QPainter, QPainterPath, QPen, QPixmap)
-from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMessageBox, QProgressBar,
-                             QPushButton, QSizePolicy, QSlider, QStyle, QStyledItemDelegate, QVBoxLayout,
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMessageBox,
+                             QPushButton, QSlider, QStyle, QStyledItemDelegate, QVBoxLayout,
                              QWidget)
 
 from gui import backend
@@ -551,6 +551,123 @@ class PlayerBar(QFrame):
         self.dur.setText(fmt_time(duration_ms / 1000))
         if not self.bar.isSliderDown():
             self.bar.setValue(int(1000 * position_ms / duration_ms) if duration_ms > 0 else 0)
+
+
+class Segmented(QWidget):
+    """b1air's Ui/SegmentedControl, drawn: a recessed track (radius 8, a hairline), equal
+    segments, and the chosen one a raised pane 2 px inside the track (radius 6) that slides
+    to a new choice in 150 ms. The chosen label is semibold, the others dimmed until hovered.
+    Left / Right move the choice. items: [(key, text, tip)] with translated texts."""
+
+    picked = pyqtSignal(str)
+    PAD, H = 2, 32
+
+    def __init__(self, items, current=0):
+        super().__init__()
+        self.items, self.index, self.hover, self.keyboard = items, current, -1, False
+        self.pos = float(current)
+        self.anim = QVariantAnimation(self)
+        self.anim.setDuration(150)
+        self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.anim.valueChanged.connect(self._moved)
+        self.setFixedHeight(self.H)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        bold = QFont(self.font())
+        bold.setWeight(QFont.Weight.DemiBold)
+        seg = max(QFontMetrics(bold).horizontalAdvance(t) for _k, t, _tip in items) + 32
+        self.setFixedWidth(seg * len(items) + 2 * self.PAD)
+
+    def _moved(self, v):
+        self.pos = float(v)
+        self.update()
+
+    def _seg_w(self):
+        return (self.width() - 2 * self.PAD) / max(1, len(self.items))
+
+    def key(self):
+        return self.items[self.index][0]
+
+    def select(self, key, emit=True):
+        for i, (k, _t, _tip) in enumerate(self.items):
+            if k == key:
+                self._go(i, emit)
+                return
+
+    def _go(self, i, emit=True):
+        if not 0 <= i < len(self.items):
+            return
+        changed = i != self.index
+        self.index = i
+        self.anim.stop()
+        self.anim.setStartValue(self.pos)
+        self.anim.setEndValue(float(i))
+        self.anim.start()
+        if emit and changed:
+            self.picked.emit(self.items[i][0])
+
+    def _at(self, x):
+        return int(min(len(self.items) - 1, max(0, (x - self.PAD) // self._seg_w())))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._go(self._at(e.position().x()))
+
+    def mouseMoveEvent(self, e):
+        i = self._at(e.position().x())
+        if i != self.hover:
+            self.hover = i
+            tip = self.items[i][2]
+            self.setToolTip(tip or "")
+            self.update()
+
+    def leaveEvent(self, e):
+        self.hover = -1
+        self.update()
+
+    def focusInEvent(self, e):
+        # the ring only for a focus that came from the keyboard, as b1air's FocusRing
+        self.keyboard = e.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason)
+        self.update()
+
+    def focusOutEvent(self, e):
+        self.keyboard = False
+        self.update()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Left:
+            self._go(self.index - 1)
+        elif e.key() == Qt.Key.Key_Right:
+            self._go(self.index + 1)
+        else:
+            super().keyPressEvent(e)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        track = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
+        p.setPen(QPen(QColor(C["glass"]), 1))
+        p.setBrush(QColor(C["well"]))
+        p.drawRoundedRect(track, 8, 8)
+        w = self._seg_w()
+        pane = QRectF(self.PAD + self.pos * w, self.PAD, w, self.height() - 2 * self.PAD).adjusted(.5, .5, -.5, -.5)
+        p.setPen(QPen(QColor(C["glass"]), 1))
+        p.setBrush(QColor(C["fill"]))
+        p.drawRoundedRect(pane, 6, 6)
+        bold = QFont(self.font())
+        bold.setWeight(QFont.Weight.DemiBold)
+        for i, (_k, text, _tip) in enumerate(self.items):
+            r = QRectF(self.PAD + i * w, 0, w, self.height())
+            on = i == self.index
+            p.setFont(bold if on else self.font())
+            p.setPen(QColor(C["text"] if on or i == self.hover else C["muted"]))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
+        if self.hasFocus() and self.keyboard:
+            p.setPen(QPen(QColor(C["accent"]), 1.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(track, 8, 8)
+        p.end()
 
 
 class _Slider(QSlider):

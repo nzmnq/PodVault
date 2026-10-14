@@ -227,7 +227,7 @@ def collect_missing():
         g = groups[rel]
         g["artist"] = g["artist"] or t["albumartist"] or t["artist"] or None
         g["album"] = g["album"] or t["album"] or None
-        g["files"].append({"path": fp, "title": t["title"] or fn})
+        g["files"].append({"path": fp, "title": t["title"] or os.path.basename(fp)})
     seen.end()
     for rel, g in groups.items():
         g["local"] = with_art.get(rel)

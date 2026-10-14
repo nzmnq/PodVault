@@ -75,6 +75,20 @@ class IncomingNames(unittest.TestCase):
         soundcloud.selfcheck()
 
 
+class ProgressLine(unittest.TestCase):
+    def test_progress_draws_by_the_clock(self):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            p = settings.Progress("read: {n}/{total}", total=3, every=100)
+            for _i in range(3):
+                p.tick()                       # the first one is due at once (never drawn before)
+            p.end()
+        self.assertIn("read: 1/3", out.getvalue())
+        self.assertIn("read: 3/3", out.getvalue())
+
+
 class SettingsValues(unittest.TestCase):
     def test_zero_means_not_set_only_where_the_default_is_zero(self):
         import settings
@@ -176,6 +190,120 @@ def sample(folder, kind, name="track"):
         path = os.path.join(folder, name + ".m4a")
         shutil.copy(os.path.join(DATA, f"silence_{kind}.m4a"), path)
     return path
+
+
+class PlaylistsAndRatings(unittest.TestCase):
+    def test_playlist_files(self):
+        import playlists
+        cfg = {"reports_dir": tempfile.mkdtemp()}
+        p = playlists.new(cfg, "Night: drive", ["/a.mp3"])
+        self.assertTrue(p.endswith("Night_ drive.m3u8"))             # no ':' in a file name
+        playlists.add(p, ["/a.mp3", "/b.mp3"])
+        self.assertEqual(playlists.read(p), ["/a.mp3", "/b.mp3"])    # no doubles
+        self.assertTrue(playlists.new(cfg, "Night: drive").endswith("Night_ drive 2.m3u8"))
+        playlists.keep_on_ipod(cfg, "Night_ drive", True)
+        p2 = playlists.rename(cfg, p, "Drive")
+        self.assertEqual(playlists.lists(cfg)["keep"], ["Drive"])     # the mark goes with the name
+        self.assertEqual([n for n, _paths in playlists.kept(cfg)], ["Drive"])
+        self.assertTrue(os.path.isfile(p2))
+
+    def test_ratings_go_where_they_were_changed(self):
+        import ipod_sync
+        import library
+        import tags
+        import trackstats
+        root = tempfile.mkdtemp()
+        album = os.path.join(root, "Active", "Band", "Record")
+        os.makedirs(album)
+        files = []
+        for n, title in enumerate(("One", "Two", "Three", "Four"), 1):
+            f = sample(album, "mp3", f"0{n}")
+            tags.write(f, {"artist": "Band", "albumartist": "Band", "album": "Record", "title": title})
+            files.append(f)
+        cfg = {"reports_dir": tempfile.mkdtemp()}
+        listing = library.tracks(root)
+        ipod_sync.LIBRARY = root
+        k = lambda t: trackstats.key("Band", t, "Record")
+        trackstats.save_ratings(cfg, {
+            k("One"): {"rating": 80, "synced": 40},      # changed in PodVault -> written
+            k("Two"): {"rating": 40, "synced": 40},      # changed on the iPod -> taken
+            k("Three"): {"rating": 60, "synced": 60},    # unchanged
+        })
+        on_ipod = [{"rating": 40}, {"rating": 100}, {"rating": 60}, {"rating": 20}]
+        pairs = {n: f for n, f in enumerate(files)}
+        push, pull = ipod_sync.rating_plan(pairs, on_ipod, listing, cfg)
+        self.assertEqual(push, {0: 80})
+        self.assertEqual(pull, {k("Two"): 100, k("Four"): 20})          # Four: rated only on the iPod
+
+
+class KeptPlaylists(unittest.TestCase):
+    def test_a_kept_playlist_keeps_its_archive_track_on_the_ipod(self):
+        import ipod_sync
+        import library
+        import playlists
+        import tags
+        root = tempfile.mkdtemp()
+        active = os.path.join(root, "Active", "Band", "Live")
+        archive = os.path.join(root, "Archive", "Band", "Old")
+        os.makedirs(active)
+        os.makedirs(archive)
+        a = sample(active, "mp3", "01")
+        tags.write(a, {"artist": "Band", "albumartist": "Band", "album": "Live", "title": "New"})
+        r = sample(archive, "mp3", "01")
+        tags.write(r, {"artist": "Band", "albumartist": "Band", "album": "Old", "title": "Old song"})
+        cfg = {"reports_dir": tempfile.mkdtemp(), "library_dir": root, "duration_tolerance": 3}
+        playlists.write(playlists.path_of(cfg, "Mix"), [r, a])
+        playlists.keep_on_ipod(cfg, "Mix", True)
+        playlists.save_lists(cfg, {"keep": ["Mix"], "managed": ["Mix", "Gone"]})
+        db = {"tracks": [{"artist": "Band", "title": "New", "album": "Live", "length": 0, "track_id": 1},
+                         {"artist": "Band", "title": "Old song", "album": "Old", "length": 0, "track_id": 2}],
+              "dataset2_standard_playlists": [{"title": "Mix", "items": [{"track_id": 1}]},
+                                              {"title": "Gone", "items": []}]}
+        ipod_sync.LIBRARY = root
+        real = (settings.require, ipod_sync.ipod.covered, ipod_sync.has_cover)
+        settings.require = lambda: cfg
+        ipod_sync.ipod.covered = lambda path, tracks: set()
+        ipod_sync.has_cover = lambda p: False
+        try:
+            plan = ipod_sync.make_plan(type("Dev", (), {"path": root})(), db, listing=library.tracks(root))
+        finally:
+            settings.require, ipod_sync.ipod.covered, ipod_sync.has_cover = real
+        self.assertEqual(plan["archive"], [])                   # the Archive track stays: it's in Mix
+        self.assertEqual(sorted(plan["pairs"]), [0, 1])
+        self.assertEqual(plan["keep_changed"], ["Mix"])         # the iPod's Mix lacks a track
+        self.assertEqual(plan["drop"], ["Gone"])                # no longer kept: taken off
+        self.assertTrue(ipod_sync.has_changes(plan))
+
+
+class ScannedFlag(unittest.TestCase):
+    def test_scanned_skips_the_drive_only_after_a_scan(self):
+        import library
+        import tags
+        root = tempfile.mkdtemp()
+        album = os.path.join(root, "Active", "Band", "Record")
+        os.makedirs(album)
+        tags.write(sample(album, "mp3", "01"), {"artist": "Band", "albumartist": "Band",
+                                                 "album": "Record", "title": "One"})
+        self.assertFalse(library.just_scanned(root))       # nothing read yet: --scanned is ignored
+        calls = []
+        real = library.scan
+        library.scan = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
+        try:
+            self.assertEqual(len(library.listing(root, scanned=True)), 1)
+            self.assertEqual(len(calls), 1)                  # it read the drive after all
+            self.assertTrue(library.just_scanned(root))
+            self.assertEqual(len(library.listing(root, scanned=True)), 1)
+            self.assertEqual(len(calls), 1)                  # now it trusted the scan just made
+        finally:
+            library.scan = real
+        # a tag written into the library: the next --scanned has to look again
+        real_paths = library.paths
+        library.paths = lambda values=None: (root, os.path.join(root, "Active"), os.path.join(root, "Archive"))
+        try:
+            library.forget({os.path.join(album, "01.mp3")})
+        finally:
+            library.paths = real_paths
+        self.assertFalse(library.just_scanned(root))
 
 
 class IpodRetag(unittest.TestCase):

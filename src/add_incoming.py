@@ -630,6 +630,9 @@ def main():
                     help=_("overwrite tracks that are already in the library"))
     ap.add_argument("--to", choices=("archive", "active"), default=cfg["new_tracks_target"],
                     help=_("where to put new tracks (setting: {value})").format(value=cfg['new_tracks_target']))
+    ap.add_argument("--scanned", action="store_true",
+                    help=_("the library was just read (by the dry run): use that, don't read it again; "
+                           "ignored when it wasn't"))
     ap.add_argument("--plan", metavar="FILE",
                     help=_("with --apply: add what this saved plan says (the window's review)"))
     ap.add_argument("--split-singles", action="store_true",
@@ -637,6 +640,8 @@ def main():
     ap.add_argument("--fix-library", action="store_true",
                     help=_("split 'A, B' artists already in the library: features into the title"))
     args = ap.parse_args()
+    if args.scanned:
+        os.environ["PODVAULT_SCANNED"] = "1"      # library.listing reads it
     protect, alias = load_artists(cfg)
     if args.apply:
         import undo_tags
