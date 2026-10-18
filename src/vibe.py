@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 
 import ai
+import playlists as saved_lists
 import settings
 import tags as audiotags
 from i18n import _
@@ -359,16 +360,13 @@ def playlists_dir(cfg):
 
 
 def write_m3u(cfg, name, picked):
-    """Save the pick; it also becomes the one --push-last sends."""
+    """Save this pick as a distinct playlist; also becomes the one --push-last sends."""
     folder = playlists_dir(cfg)
     os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, safe_filename(name) + ".m3u8")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("#EXTM3U\n")
-        for p in picked:
-            f.write(p + "\n")
+    path = saved_lists.new(cfg, name, picked)
+    saved_name = os.path.splitext(os.path.basename(path))[0]
     with open(os.path.join(folder, "last.json"), "w", encoding="utf-8") as f:
-        json.dump({"name": name, "m3u": path}, f, ensure_ascii=False)
+        json.dump({"name": saved_name, "m3u": path}, f, ensure_ascii=False)
     return path
 
 
@@ -406,8 +404,9 @@ def main():
                     help=_("about how many tracks (setting: {value})").format(value=count))
     ap.add_argument("--apply", action="store_true", help=_("also create the playlist on the iPod"))
     ap.add_argument("--backend", choices=ai.BACKENDS,
-                    help=_("cli = Claude Code on a subscription, gemini = Google Gemini "
-                           "(free key), api = Anthropic API key (setting: {value})").format(
+                    help=_("cli = Claude Code on a subscription, codex = Codex CLI account, "
+                           "gemini = Google Gemini (free key), api = Anthropic API key "
+                           "(setting: {value})").format(
                         value=cfg.get('vibe_backend', 'auto')))
     ap.add_argument("--push-last", action="store_true",
                     help=_("put the last pick on the iPod, without asking the AI again"))
@@ -431,7 +430,7 @@ def main():
     print(_("  asking {ai} for \"{vibe}\"... (usually under a minute)").format(
         ai=ai.backend_name(backend), vibe=args.vibe))
     answer = ai.ask_json(cfg, SYSTEM + text, f"Vibe: {args.vibe}\n\nAbout {args.count} tracks.",
-                         SCHEMA, backend)
+                         SCHEMA, args.backend)
     seen = set()
     picked = []
     for i in answer["track_ids"]:

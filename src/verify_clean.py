@@ -38,6 +38,7 @@ def main():
     ap = argparse.ArgumentParser(description=_("check the library's tags"))
     ap.add_argument("--fix", action="store_true", help=_("remove v2.4 frames from v2.3 tags"))
     args = ap.parse_args()
+    args.fix = settings.apply_requested(args.fix)
 
     cfg = settings.require()
     dest = settings.library_paths(cfg)[0]

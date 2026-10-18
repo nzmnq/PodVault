@@ -701,6 +701,7 @@ def main():
     ap.add_argument("--fix-library", action="store_true",
                     help=_("split 'A, B' artists already in the library: features into the title"))
     args = ap.parse_args()
+    args.apply = settings.apply_requested(args.apply)
     if args.scanned:
         os.environ["PODVAULT_SCANNED"] = "1"      # library.listing reads it
     protect, alias = load_artists(cfg)

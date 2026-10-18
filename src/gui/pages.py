@@ -75,6 +75,7 @@ from gui.widgets import (AlbumDelegate, AlbumModel, CapacityBar, Card, ElidedLab
 # how the stored values of choice settings read in the window
 CHOICE_LABELS = {"active": N_("Active"), "archive": N_("Archive"), "auto": N_("Auto"),
                  "cli": N_("Claude Code (subscription)"), "gemini": N_("Gemini (free key)"),
+                 "codex": N_("Codex (subscription)"),
                  "api": N_("Anthropic API (paid)")}
 
 
@@ -1385,6 +1386,10 @@ class PlaylistPage(Page):
                            tip=_("Kept on the iPod: every sync makes the iPod's copy match this one"))
         self.keep.setCheckable(True)
         self.keep.clicked.connect(self._keep)
+        self.edit_btn = button(GLYPHS.get("edit", "✎") + "  " + _("Edit playlist"))
+        self.edit_btn.setCheckable(True)
+        self.edit_btn.setToolTip(_("Turn on editing to remove or reorder tracks"))
+        self.edit_btn.toggled.connect(self._set_editing)
         more = button("⋯", tip=_("More"))
         menu = QMenu(self)
         menu.addAction(_("Rename…"), self._rename)
@@ -1394,7 +1399,7 @@ class PlaylistPage(Page):
         more.setMenu(menu)
         self.sync_btn = button(GLYPHS["sync"] + "  " + _("Sync"), tip=_("Put it on the iPod now"))
         self.sync_btn.clicked.connect(lambda: self.win.run_tool("sync"))
-        for b in (self.play_btn, self.keep, self.sync_btn, more):
+        for b in (self.play_btn, self.edit_btn, self.keep, self.sync_btn, more):
             self.head.addWidget(b)
         self.empty = muted(_("Empty for now. Drag albums onto this playlist in the sidebar, or right-click an "
                              "album or one of its tracks → Add to playlist."), wrap=True)
@@ -1415,6 +1420,7 @@ class PlaylistPage(Page):
 
     def show_playlist(self, file):
         self.file = file
+        self.edit_btn.setChecked(False)
         self.title.setText(os.path.splitext(os.path.basename(file))[0])
         self.sub.setText(_("reading…"))
         self.keep.setChecked(saved_lists.is_kept(backend.cfg(), self.title.text()))
@@ -1477,6 +1483,14 @@ class PlaylistPage(Page):
 
     # --- editing: order, removal; saved at once
 
+    def _set_editing(self, on):
+        self.edit_btn.setText((GLYPHS.get("edit", "✎") + "  " + _("Done editing")) if on else
+                              (GLYPHS.get("edit", "✎") + "  " + _("Edit playlist")))
+        self.table.setToolTip(_("Editing is on: select tracks, then use Delete or Alt+↑/↓ to change the list.")
+                              if on else _("To change this playlist, click Edit playlist."))
+        if not on:
+            self.table.clearSelection()
+
     def _save(self):
         saved_lists.write(self.file, [r["path"] for r in self.rows])
         self._render()
@@ -1485,12 +1499,16 @@ class PlaylistPage(Page):
         return sorted({self._index(i.row()) for i in self.table.selectionModel().selectedRows()} - {-1})
 
     def _remove(self):
+        if not self.edit_btn.isChecked():
+            return
         picked = set(self._selected())
         if picked:
             self.rows = [r for n, r in enumerate(self.rows) if n not in picked]
             self._save()
 
     def _move(self, step):
+        if not self.edit_btn.isChecked():
+            return
         picked = self._selected()
         if not picked or self.search:            # moving within a filtered view would be guesswork
             return
@@ -1523,11 +1541,13 @@ class PlaylistPage(Page):
         menu = QMenu(self)
         menu.addAction(_("Play from here"), lambda: self._play(n))
         menu.addSeparator()
-        up = menu.addAction(_("Move up") + "\tAlt+↑", lambda: self._move(-1))
-        down = menu.addAction(_("Move down") + "\tAlt+↓", lambda: self._move(1))
-        for act in (up, down):
-            act.setEnabled(not self.search)
-        menu.addAction(_("Remove from the playlist") + "\tDel", self._remove)
+        if self.edit_btn.isChecked():
+            menu.addSeparator()
+            up = menu.addAction(_("Move up") + "\tAlt+↑", lambda: self._move(-1))
+            down = menu.addAction(_("Move down") + "\tAlt+↓", lambda: self._move(1))
+            for act in (up, down):
+                act.setEnabled(not self.search)
+            menu.addAction(_("Remove from the playlist") + "\tDel", self._remove)
         menu.addSeparator()
         r = self.rows[n]
         rating_menu(menu, trackstats.info(self.win.stats, self.win.rated, r["artist"], r["title"], r["album"])[1],
@@ -1621,7 +1641,8 @@ class VibePage(Page):
         more.row(analyse)
         col.addWidget(more)
         how = Card(_("Which AI"), _("Settings → AI: Claude Code on a Claude subscription, Google Gemini "
-                                    "with a free key (GEMINI_API_KEY), or the paid Anthropic API."))
+                                    "with a free key (GEMINI_API_KEY), Codex on your Codex account, "
+                                    "or the paid Anthropic API."))
         col.addWidget(how)
         col.addStretch(1)
 
@@ -1711,10 +1732,16 @@ class ToolDialog(QDialog):
         row.addStretch(1)
         cancel = button(_("Cancel"))
         cancel.clicked.connect(self.reject)
-        go = button(_("Check…") if spec.get("apply") else _("Run"), primary=True)
+        direct = None
+        if tool in ("incoming", "marks"):
+            direct = button(_("Add now") if tool == "incoming" else _("Apply now"), primary=True)
+            direct.clicked.connect(self._apply_now)
+            row.addWidget(direct)
+        go = button(_("Review first") if direct else
+                    _("Check…") if spec.get("apply") else _("Run"), primary=direct is None)
         go.setDefault(True)
         go.clicked.connect(self._go)
-        row.addWidget(cancel)
+        row.insertWidget(0, cancel)
         row.addWidget(go)
         lay.addLayout(row)
 
@@ -1727,7 +1754,13 @@ class ToolDialog(QDialog):
         return p
 
     def _go(self):
-        if self.win.run_tool(self.tool, self.params()) is not None:
+        # Incoming tracks need a dry run to build the review table before writing.
+        if self.win.run_tool(self.tool, self.params(), applying=False) is not None:
+            self.accept()
+
+    def _apply_now(self):
+        # Choosing this explicit action is the confirmation; skip the dry-run/apply pair.
+        if self.win.run_tool(self.tool, self.params(), applying=True) is not None:
             self.accept()
 
 
@@ -1989,11 +2022,8 @@ class GenresView(QWidget):
         self.win.run_tool("genres_suggest")
 
     def _write(self):
-        if self.edits:
-            if not ask(self, _("Genres"), _("Save the edits first?"), yes=_("Save")):
-                return
-            if not self.save():
-                return
+        if self.edits and not self.save():
+            return
         self.win.run_tool("genres_apply")
 
     def _open(self):

@@ -32,6 +32,16 @@ from i18n import N_, _, n_
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def apply_requested(cli_flag=False):
+    """Whether a mutating tool should write changes.
+
+    The GUI sets PODVAULT_APPLY after the user confirms once. Standalone CLI
+    calls keep their explicit --apply safety switch for compatibility.
+    """
+    return bool(cli_flag) or os.environ.get("PODVAULT_APPLY", "").strip().lower() in (
+        "1", "true", "yes", "да")
+
+
 def _user_dirs():
     """(settings folder, data folder) of an installed copy."""
     home = os.path.expanduser("~")
@@ -116,9 +126,9 @@ FIELDS = [
 
     # ------------------------------------------------------------------ AI
     Field("vibe_backend", "auto", "choice", "AI through",
-          "Auto picks the first that works: Claude Code, then Gemini "
+          "Auto picks the first that works: Codex, Claude Code, Gemini "
           "(GEMINI_API_KEY), then the Anthropic API (ANTHROPIC_API_KEY, paid).",
-          "AI", options=["auto", "cli", "gemini", "api"]),
+          "AI", options=["auto", "cli", "codex", "gemini", "api"]),
     Field("vibe_count", 25, "int", "Tracks per playlist",
           "About how many tracks to pick; asked each time, this is the default.",
           "AI"),
@@ -128,6 +138,10 @@ FIELDS = [
     Field("claude_cli_model", "", "text", "Claude Code model",
           "Empty = your subscription's default; or e.g. sonnet, opus.",
           "AI", optional=True),
+    Field("codex_cli_path", "auto", "file", "Codex CLI (codex)",
+          "'auto' looks in PATH, then in the Codex desktop app on macOS. Sign in once with `codex`.", "AI"),
+    Field("codex_cli_model", "", "text", "Codex model",
+          "Empty = the default model from your Codex settings.", "AI", optional=True),
     Field("gemini_model", "gemini-3.8-flash", "text", "Gemini model",
           "Any model your key can use; Flash models are in the free tier "
           "(key from aistudio.google.com).", "AI"),
@@ -340,6 +354,26 @@ def claude_cli(values=None):
 
     if versions:
         return os.path.join(bundled, max(versions, key=version_key), exe)
+    return None
+
+
+def codex_cli(values=None):
+    """Path to the Codex command line, or None if it can't be found."""
+    values = values if values is not None else require()
+    v = str(values.get("codex_cli_path") or "auto")
+    if v.lower() != "auto":
+        p = resolve(v)
+        return p if p and os.path.isfile(p) else None
+    found = shutil.which("codex")
+    if found:
+        return found
+    if sys.platform == "darwin":
+        exe = os.path.join("Contents", "Resources", "codex-cli", "CodexCLI.app",
+                           "Contents", "MacOS", "codex")
+        for app in ("/Applications/ChatGPT.app", os.path.expanduser("~/Applications/ChatGPT.app")):
+            p = os.path.join(app, exe)
+            if os.path.isfile(p):
+                return p
     return None
 
 

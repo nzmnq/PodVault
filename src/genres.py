@@ -149,7 +149,8 @@ def suggest(cfg, path, backend):
     if not todo:
         print(_("  every album is already in {file}").format(file=path))
         return
-    backend = ai.pick_backend(cfg, backend)
+    requested_backend = backend
+    backend = ai.pick_backend(cfg, requested_backend)
     if known:
         print(_("  {n} albums already have a line (earlier runs, your edits): kept, not asked again").format(
             n=len(known)))
@@ -175,7 +176,7 @@ def suggest(cfg, path, backend):
                                     (i, d["artist"], d["album"], d["year"], d["genre"],
                                      "; ".join(d["titles"]))))
         try:
-            answer = ai.ask_json(cfg, SYSTEM, "\n".join(lines), SCHEMA, backend)
+            answer = ai.ask_json(cfg, SYSTEM, "\n".join(lines), SCHEMA, requested_backend)
         except (Exception, SystemExit) as e:
             print(_("\n  !! {error}").format(error=e))
             sys.exit(_("Stopped after {n} albums. What was suggested is saved: Suggest again carries on "
@@ -304,6 +305,7 @@ def main():
     ap.add_argument("--apply", action="store_true", help=_("apply: actually write the tags"))
     ap.add_argument("--backend", choices=ai.BACKENDS, help=_("suggest: which AI to ask"))
     args = ap.parse_args()
+    args.apply = settings.apply_requested(args.apply)
     path = settings.path("genres_file", cfg)
     if args.step == "suggest":
         suggest(cfg, path, args.backend)

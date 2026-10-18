@@ -934,11 +934,12 @@ def main():
                     help=_("folder on the device, with --disk (setting: {value})").format(
                         value=cfg['ipod_disk_subdir']))
     args = ap.parse_args()
+    args.apply = settings.apply_requested(args.apply)
     if args.scanned:
         os.environ["PODVAULT_SCANNED"] = "1"      # library.listing reads it
 
     global ASSUME_YES
-    ASSUME_YES = args.yes
+    ASSUME_YES = args.yes or args.apply
 
     if not os.path.isdir(ACTIVE):
         sys.exit(_("Active folder not found: {folder}").format(folder=ACTIVE))

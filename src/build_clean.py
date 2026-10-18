@@ -409,6 +409,7 @@ def main():
     ap.add_argument("--limit", type=int, help=_("process only N tracks (for testing)"))
     ap.add_argument("--dest", help=_("build into this folder instead of the library folder"))
     args = ap.parse_args()
+    args.apply = settings.apply_requested(args.apply)
 
     SOURCE = settings.path("source_dir", cfg)
     if not SOURCE:

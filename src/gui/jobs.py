@@ -159,6 +159,7 @@ class Job(QObject):
 
     def _run(self):
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+        env["PODVAULT_APPLY"] = "1" if self.applying else "0"
         if self.quick:
             env["PODVAULT_SCANNED"] = "1"   # library.listing: the dry run has just read the library
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)

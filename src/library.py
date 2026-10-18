@@ -599,6 +599,7 @@ def main():
     ap.add_argument("--undo", action="store_true", help=_("take back the last batch of moves"))
     ap.add_argument("--apply", action="store_true", help=_("with --import / --undo: actually move albums"))
     args = ap.parse_args()
+    args.apply = settings.apply_requested(args.apply)
 
     root = paths()[0]
     if not os.path.isdir(root):

@@ -77,15 +77,15 @@ def playlist_file(path):
 
 TOOLS = {
     "sync": dict(title=N_("Sync the iPod"), script="ipod_sync.py", args=lambda p: [],
-                 apply="--apply", apply_extra=["--yes"], cancel_apply=False,
+                 apply=True, cancel_apply=False,
                  refresh={"ipod", "library"},     # the sync also writes the file's genres into tags
                  confirm=N_("Back up the iPod's database, then delete the archive tracks, "
                          "copy the new ones, set covers and genres?")),
     "rescue": dict(title=N_("Save tracks from the iPod"), script="ipod_sync.py",
-                   args=lambda p: ["--rescue"], apply="--apply", refresh=set(),
+                   args=lambda p: ["--rescue"], apply=True, refresh=set(),
                    confirm=N_("Copy these tracks off the iPod into the incoming folder?")),
     "disk": dict(title=N_("Mirror to disk"), script="ipod_sync.py",
-                 args=lambda p: ["--disk", _drive(p)], apply="--apply", apply_extra=["--yes"],
+                 args=lambda p: ["--disk", _drive(p)], apply=True,
                  refresh=set(), confirm=N_("Copy the new files and DELETE the extras on the "
                                         "device? Deleting can't be undone.")),
     "restore": dict(title=N_("Restore the iPod's database"), script="ipod_sync.py",
@@ -95,7 +95,7 @@ TOOLS = {
     "playlist_to_ipod": dict(title=N_("Playlist to the iPod"), script="ipod_sync.py",
                              args=lambda p: ["--playlist", playlist_file(p.get("file")),
                                              "--playlist-only"],
-                             apply="--apply", apply_extra=["--yes"], cancel_apply=False,
+                             apply=True, cancel_apply=False,
                              refresh={"ipod"},
                              confirm=N_("Create this playlist on the iPod? Picked tracks not on "
                                      "it yet are copied; nothing is deleted.")),
@@ -104,13 +104,13 @@ TOOLS = {
                                      "archive" if p.get("to") == "archive" else "active"],
                      # the dry run's plan, as the review table left it: nothing is read twice
                      apply_args=lambda p: ["--plan", incoming_plan()] if os.path.exists(incoming_plan()) else [],
-                     apply="--apply", refresh={"library", "ipod"},
+                     apply=True, refresh={"library", "ipod"},
                      confirm=N_("Fix the tags and add these tracks to the library?")),
     "covers": dict(title=N_("Find missing cover art"), script="fetch_covers.py", args=lambda p: [],
-                   apply="--apply", refresh={"library", "ipod"},
+                   apply=True, refresh={"library", "ipod"},
                    confirm=N_("Embed the covers that were found?")),
     "tags": dict(title=N_("Check tags"), script="verify_clean.py", args=lambda p: [],
-                 apply="--fix", refresh={"library"},
+                 apply=True, refresh={"library"},
                  confirm=N_("Remove the v2.4 frames that were found?")),
     "vibe": dict(title=N_("AI vibe playlist"), script="vibe.py",
                  args=lambda p: [_text(p, "vibe")] + _count(p), refresh={"playlists"}),
@@ -119,23 +119,23 @@ TOOLS = {
     "genres_suggest": dict(title=N_("Genres — the AI suggests"), script="genres.py",
                            args=lambda p: ["suggest"], refresh={"genres"}),
     "genres_apply": dict(title=N_("Genres — write the tags"), script="genres.py",
-                         args=lambda p: ["apply"], apply="--apply",
+                         args=lambda p: ["apply"], apply=True,
                          refresh={"library", "ipod", "genres"},
                          confirm=N_("Write these genres into the tags?")),
     "marks": dict(title=N_("Apply the edited list"), script="library.py",
-                  args=lambda p: ["--import", _existing(p, "path")], apply="--apply",
+                  args=lambda p: ["--import", _existing(p, "path")], apply=True,
                   refresh={"library"}, confirm=N_("Move the albums the way the list says?")),
     "undo": dict(title=N_("Undo the last moves"), script="library.py", args=lambda p: ["--undo"],
-                 apply="--apply", refresh={"library"},
+                 apply=True, refresh={"library"},
                  confirm=N_("Put the albums from the last batch of moves back?")),
     "undo_tags": dict(title=N_("Undo the last tag changes"), script="undo_tags.py", args=lambda p: [],
-                      apply="--apply", refresh={"library", "ipod"},
+                      apply=True, refresh={"library", "ipod"},
                       confirm=N_("Put back what the last import, artist split or genre write changed?")),
     "split_singles": dict(title=N_("Split the Singles albums"), script="add_incoming.py",
-                          args=lambda p: ["--split-singles"], apply="--apply", refresh={"library", "ipod"},
+                          args=lambda p: ["--split-singles"], apply=True, refresh={"library", "ipod"},
                           confirm=N_("Make every single an album of its own?")),
     "artists": dict(title=N_("Split glued artists"), script="add_incoming.py",
-                    args=lambda p: ["--fix-library"], apply="--apply", refresh={"library", "ipod"},
+                    args=lambda p: ["--fix-library"], apply=True, refresh={"library", "ipod"},
                     confirm=N_("Move the features into the titles and the albums to the main artist?")),
     "duplicates": dict(title=N_("Find duplicates"), script="duplicates.py", args=lambda p: [],
                        refresh=set()),
@@ -143,10 +143,10 @@ TOOLS = {
                 args=lambda p: ["--out", os.path.join(settings.path("reports_dir", cfg()), "fit.txt")],
                 refresh=set()),
     "soundcheck": dict(title=N_("Sound Check (even out the volume)"), script="soundcheck.py",
-                       args=lambda p: [], apply="--apply", refresh={"library"},
+                       args=lambda p: [], apply=True, refresh={"library"},
                        confirm=N_("Measure the loudness of every Active track and write the tags? It takes a while.")),
     "smart": dict(title=N_("Add smart playlists"), script="ipod_sync.py", args=lambda p: ["--smart"],
-                  apply="--apply", apply_extra=["--yes"], cancel_apply=False, refresh={"ipod"},
+                  apply=True, cancel_apply=False, refresh={"ipod"},
                   confirm=N_("Add the ready-made smart playlists to the iPod? Nothing else is changed.")),
     "likes": dict(title=N_("What's missing from my likes"),
                   steps=lambda p: [["import_likes.py", _existing(p, "path")], ["find_missing.py"]],
@@ -154,7 +154,7 @@ TOOLS = {
     "flac": dict(title=N_("Convert FLAC to ALAC"), script="flac_to_alac.py", args=lambda p: [],
                  refresh=set()),
     "build": dict(title=N_("Initial build from an old collection"), script="build_clean.py",
-                  args=lambda p: [], apply="--apply", refresh={"library"},
+                  args=lambda p: [], apply=True, refresh={"library"},
                   confirm=N_("Build the library from the old collection?")),
 }
 
@@ -163,7 +163,7 @@ TOOLS = {
 ABOUT = {
     "incoming": N_('Takes a folder of new tracks (mp3 or m4a), fixes their tags (Album Artist, features, '
                  "genre, cover; ID3v2.3 for mp3) and moves them into the library. What's already in the library is skipped. "
-                 'You see everything first and confirm.'),
+                 'Add directly, or review the full plan first.'),
     "covers": N_('For albums without a cover: Deezer first, then MusicBrainz. A cover is only used '
                'when the artist matches. The next sync gives the iPod copies their covers.'),
     "tags": N_('Album Artist set; for mp3 also ID3v2.3 in UTF-16 (an old iPod garbles Cyrillic '
@@ -178,7 +178,7 @@ ABOUT = {
     "build": N_('One-time: builds the library from an old, unsorted collection (Settings → Initial '
               'build → Old collection). Shown as a dry run first.'),
     "marks": N_('The list written by "Export the list", with the [A] / [R] letters changed by hand: '
-                'the albums are moved to match. Shown as a dry run first.'),
+                 'the albums are moved to match. Apply directly, or review first.'),
     "undo": N_('Puts back the albums moved by the last "Apply" or by dragging in the window. '
                'Albums merged into an existing folder cannot be undone. Shown as a dry run first.'),
     "undo_tags": N_("Puts back what the last \u201cAdd new tracks\u201d, \u201cSplit glued artists\u201d or "
@@ -217,8 +217,7 @@ def tool_steps(tool, params, applying):
         return spec["steps"](params)
     args = spec["args"](params)
     if applying:
-        args = [*args, spec["apply"], *spec.get("apply_extra", []),
-                *(spec["apply_args"](params) if "apply_args" in spec else [])]
+        args = [*args, *(spec["apply_args"](params) if "apply_args" in spec else [])]
     return [[spec["script"], *args]]
 
 

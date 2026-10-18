@@ -59,6 +59,7 @@ def main():
     ap = argparse.ArgumentParser(description=_("measure loudness and write Sound Check tags"))
     ap.add_argument("--apply", action="store_true", help=_("measure and write the tags"))
     args = ap.parse_args()
+    args.apply = settings.apply_requested(args.apply)
 
     cfg = settings.require()
     active = settings.library_paths(cfg)[1]

@@ -712,7 +712,7 @@ class MainWindow(QMainWindow):
         elif name in ("incoming", "likes", "marks"):
             ToolDialog(self, name).exec()
         elif backend.TOOLS[name].get("apply"):
-            self.run_tool(name)                 # a dry run first: safe to start right away
+            self.run_tool(name)                 # one clear confirmation, then apply
         elif ask(self, _(backend.TOOLS[name]["title"]), _(backend.TOOLS[name].get("about", "")),
                  yes=_("Run")):
             self.run_tool(name)
@@ -918,12 +918,29 @@ class MainWindow(QMainWindow):
 
     # --- tools
 
-    def run_tool(self, tool, params=None, applying=False):
+    def run_tool(self, tool, params=None, applying=None):
         title = _(backend.TOOLS[tool]["title"])
+        spec = backend.TOOLS[tool]
         if tool in ("sync", "rescue", "restore", "playlist_to_ipod", "eject") and not self.ipods:
             inform(self, title, _("No iPod connected. Connect it with the cable and try again."))
             return None
-        if tool in ("sync", "playlist_to_ipod", "rescue") and self.library_page.marks:
+        unsaved_sync_marks = tool in ("sync", "playlist_to_ipod", "rescue") and bool(self.library_page.marks)
+        if applying is None:
+            # A direct action button means "do it". Ask once, then run the apply
+            # command directly instead of making the user start a dry run and
+            # confirm the same operation again on the task sheet.
+            applying = bool(spec.get("apply"))
+            if applying:
+                prompt = _(spec.get("confirm") or "Apply these changes?")
+                if unsaved_sync_marks:
+                    prompt += "\n\n" + _("There are unsaved Active / Archive marks. The sync only sees "
+                                             "what's saved on disk. Continue without them?")
+                if not ask(self, title, prompt, yes=_("Apply"),
+                           danger=tool in ("sync", "disk", "restore")):
+                    return None
+        elif applying and unsaved_sync_marks:
+            # This is only reached by callers that explicitly ask to apply
+            # after a separate review flow.
             if not ask(self, title, _("There are unsaved Active / Archive marks. The sync only sees "
                                       "what's saved on disk.\n\nContinue without them?"), yes=_("Continue")):
                 return None

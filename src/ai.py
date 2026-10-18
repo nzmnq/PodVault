@@ -3,10 +3,11 @@ One question to an AI model, one JSON answer back. Shared by the tools
 that need it (vibe playlists, genre suggestions).
 
 Where the answer comes from (setting 'AI through', or a --backend flag):
-  auto   — cli if Claude Code is installed, else gemini if its key is set,
-           else api.
+  auto   — codex if its CLI is available, then cli if Claude Code is installed,
+           then gemini if its key is set, else api.
   cli    — the Claude Code command line, on a Claude subscription; log in
            once by running `claude` and typing /login. No API costs.
+  codex  — the Codex command line, using the signed-in Codex account.
   gemini — Google Gemini; a free key from aistudio.google.com in
            GEMINI_API_KEY. For anyone without a Claude subscription.
   api    — the Anthropic API, paid per use; needs ANTHROPIC_API_KEY.
@@ -26,14 +27,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import settings
 from i18n import _
 
-BACKENDS = ("auto", "cli", "gemini", "api")
+BACKENDS = ("auto", "cli", "codex", "gemini", "api")
 
 
 def pick_backend(cfg, requested=None):
-    """'auto' becomes cli, gemini or api, depending on what this machine has."""
+    """'auto' picks the first available CLI or configured API backend."""
     backend = requested or str(cfg.get("vibe_backend") or "auto")
     if backend != "auto":
         return backend
+    if settings.codex_cli(cfg):
+        return "codex"
     if settings.claude_cli(cfg):
         return "cli"
     if os.environ.get("GEMINI_API_KEY", "").strip():
@@ -41,18 +44,43 @@ def pick_backend(cfg, requested=None):
     return "api"
 
 
+def _backend_chain(cfg, requested):
+    """Return the requested backend followed by available quota fallbacks."""
+    setting = requested or str(cfg.get("vibe_backend") or "auto")
+    first = pick_backend(cfg, requested)
+    if setting != "auto":
+        return [first]
+    chain = [first]
+    if settings.codex_cli(cfg) and "codex" not in chain:
+        chain.append("codex")
+    if settings.claude_cli(cfg) and "cli" not in chain:
+        chain.append("cli")
+    if os.environ.get("GEMINI_API_KEY", "").strip() and "gemini" not in chain:
+        chain.append("gemini")
+    if os.environ.get("ANTHROPIC_API_KEY", "").strip() and "api" not in chain:
+        chain.append("api")
+    return chain
+
+
 def backend_name(backend):
-    return "Gemini" if backend == "gemini" else f"Claude ({backend})"
+    return {"gemini": "Gemini", "codex": "Codex"}.get(backend, f"Claude ({backend})")
 
 
 def ask_json(cfg, system, user, schema, backend=None):
-    """Ask once; returns the answer as a dict matching schema."""
-    backend = pick_backend(cfg, backend)
-    if backend == "api":
-        return _ask_api(cfg, system, user, schema)
-    if backend == "gemini":
-        return _ask_gemini(cfg, system, user, schema)
-    return _ask_cli(cfg, system, user, schema)
+    """Ask for JSON; in auto mode, try the next backend after any failure."""
+    chain = _backend_chain(cfg, backend)
+    calls = {"api": _ask_api, "gemini": _ask_gemini,
+             "codex": _ask_codex, "cli": _ask_cli}
+    for index, selected in enumerate(chain):
+        try:
+            return calls[selected](cfg, system, user, schema)
+        except (Exception, SystemExit) as error:
+            if index + 1 >= len(chain):
+                raise
+            following = chain[index + 1]
+            print(_("  {ai} failed ({error}); trying {next}...").format(
+                ai=backend_name(selected), error=str(error).strip()[:240],
+                next=backend_name(following)), flush=True)
 
 
 # ------------------------------------------------------------ Claude Code
@@ -110,6 +138,48 @@ def _ask_cli(cfg, system, user, schema):
             sys.exit(_("Claude Code didn't return the expected JSON:") + "\n"
                      + str(data.get('result'))[:1000])
     return answer
+
+
+# ------------------------------------------------------------------- Codex
+
+
+def _ask_codex(cfg, system, user, schema):
+    """Ask Codex CLI for one structured answer, without a persistent session."""
+    exe = settings.codex_cli(cfg)
+    if not exe:
+        sys.exit(_("Codex CLI (codex) not found. Install it, or set its path in Settings -> AI."))
+
+    with tempfile.TemporaryDirectory(prefix="podvault-codex-") as work:
+        schema_file = os.path.join(work, "schema.json")
+        answer_file = os.path.join(work, "answer.json")
+        with open(schema_file, "w", encoding="utf-8") as f:
+            json.dump(schema, f, ensure_ascii=False)
+        cmd = [exe, "exec", "--ephemeral", "--sandbox", "read-only",
+               "--skip-git-repo-check", "--output-schema", schema_file,
+               "--output-last-message", answer_file]
+        model = str(cfg.get("codex_cli_model") or "").strip()
+        if model:
+            cmd += ["--model", model]
+        cmd.append("-")
+        try:
+            r = subprocess.run(cmd, input=system + "\n\n" + user, text=True,
+                               capture_output=True, timeout=900, cwd=work)
+        except subprocess.TimeoutExpired:
+            sys.exit(_("Codex didn't answer within 15 minutes."))
+        except OSError as e:
+            sys.exit(_("Could not start Codex CLI: {error}").format(error=e))
+
+        if r.returncode:
+            detail = (r.stderr or r.stdout).strip()[:1000]
+            if "login" in detail.lower() or "auth" in detail.lower():
+                sys.exit(_("Codex CLI isn't signed in. Run `codex` in a terminal and sign in."))
+            sys.exit(_("Codex CLI failed (exit {code}): {error}").format(
+                code=r.returncode, error=detail or _("unknown error")))
+        try:
+            with open(answer_file, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError) as e:
+            sys.exit(_("Codex CLI didn't return the expected JSON: {error}").format(error=e))
 
 
 # ----------------------------------------------------------------- Gemini

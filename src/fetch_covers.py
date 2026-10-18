@@ -268,6 +268,7 @@ def main():
     ap = argparse.ArgumentParser(description=_("find cover art for albums without one"))
     ap.add_argument("--apply", action="store_true", help=_("embed what was found"))
     args = ap.parse_args()
+    args.apply = settings.apply_requested(args.apply)
 
     global LIBRARY, SIZE
     cfg = settings.require()

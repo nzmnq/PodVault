@@ -132,6 +132,7 @@ def main():
     ap = argparse.ArgumentParser(description=_("undo the last batch of tag changes"))
     ap.add_argument("--apply", action="store_true", help=_("put it back"))
     args = ap.parse_args()
+    args.apply = settings.apply_requested(args.apply)
     cfg = settings.require()
     path = last_journal(cfg)
     if not path:

@@ -176,7 +176,7 @@ the system. Colours, symbols, sizes and timings all live in `src/gui/theme.py`.
 | Sync the iPod | Makes the device hold exactly what's in `Active`. |
 | Find missing cover art | Deezer, then MusicBrainz. Only applied when the artist matches. |
 | Check tags | Album Artist and cover art; for mp3 also ID3v2.3 / UTF-16, no v2.4 frames (can repair the latter). |
-| AI vibe playlist | Describe a mood in words; Claude picks and orders tracks from `Active`, helped by tempo/energy measured from the audio. Saved as `.m3u8`. |
+| AI vibe playlist | Describe a mood in words; the selected AI picks and orders tracks from `Active`, helped by tempo/energy measured from the audio. Saved as `.m3u8`. |
 | Genres | The AI suggests a genre and a precise style per album, you correct the file, then they're written into the tags. |
 | What's missing from my likes | Compares a Spotify data export, an Apple Music playlist page or a text list with the library. |
 | Export the list to a file | The markup as a text file, for editing elsewhere. |
@@ -212,7 +212,7 @@ src/
   find_missing.py       comparison with the library
   vibe.py               AI vibe playlists
   genres.py             genre and style per album
-  ai.py                 one question to an AI model (Claude Code, Gemini, API)
+  ai.py                 one question to an AI model (Claude Code, Codex, Gemini, API)
   build_clean.py        one-time initial build
   musiclib.py           shared helpers
   flac_to_alac.py       FLAC -> ALAC
@@ -400,7 +400,7 @@ python src/vibe.py "gym, loud and fast" --count 40
 
 Every `Active` track is analysed once from a 45-second excerpt — tempo,
 loudness, how busy, bright, bass-heavy and dynamic it is — and cached in
-`reports/vibe_features.json`; later runs analyse only new tracks. Claude gets
+`reports/vibe_features.json`; later runs analyse only new tracks. The selected AI gets
 the whole catalogue with those numbers and the vibe (roughly 50k tokens),
 picks and orders the tracks and names the playlist. The result is saved to
 `reports/playlists/<name>.m3u8`.
@@ -408,8 +408,10 @@ picks and orders the tracks and names the playlist. The result is saved to
 Settings → AI holds the mode, the default number of tracks and the
 model for each mode. Where the pick comes from (`--backend` overrides it):
 
-- **auto** (default) — `cli` if Claude Code is installed, else `gemini` if
-  `GEMINI_API_KEY` is set, else `api`. The same project works for everyone.
+- **auto** (default) — `codex` if the Codex CLI is available, then `cli` if
+  Claude Code is installed, then `gemini` if `GEMINI_API_KEY` is set, else `api`.
+  If a backend fails for any reason, PodVault tries the next available backend
+  automatically. The same project works for everyone.
 - **gemini** — Google Gemini through its OpenAI-compatible endpoint, for
   anyone without a Claude subscription. The key is free (aistudio.google.com →
   Get API key, no card); set it once — Windows: `setx GEMINI_API_KEY "..."`,
@@ -422,6 +424,10 @@ model for each mode. Where the pick comes from (`--backend` overrides it):
   bundled with the Claude desktop app (Windows, macOS, Linux). Log in once: run `claude`, type
   `/login`, then `/exit`. Tools, MCP servers and project settings are switched
   off for the call, and nothing is saved to the session history.
+- **codex** — the Codex CLI, signed in with your Codex account. `auto` finds
+  `codex` in `PATH` or in the Codex desktop app on macOS. Set a model in
+  Settings → AI to override your Codex default. The call is ephemeral,
+  read-only, and returns a structured playlist answer.
 - **api** — the Anthropic API (`claude-opus-5`), paid per use; needs
   `ANTHROPIC_API_KEY` (console.anthropic.com → API keys). The library is sent
   as a cached prompt, so a second vibe within the hour costs a fraction of the
