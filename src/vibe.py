@@ -32,6 +32,7 @@ import argparse
 import json
 import os
 import sys
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -185,39 +186,93 @@ def save_cache(cfg, tracks):
     os.replace(tmp, path)
 
 
+def _active_listing(active):
+    """[(path, size:mtime, tags)] of Active's tracks from the library index: no file is opened
+    for a track that hasn't changed. Outside a configured library (tests): the folder walked."""
+    import library
+    try:
+        root = settings.library_paths()[0]
+    except SystemExit:
+        root = None
+    if root and os.path.normcase(os.path.dirname(os.path.abspath(active))) == os.path.normcase(os.path.abspath(root)):
+        rows = library.listing(root, quick=True)      # our own tag writes mark their albums (forget)
+        info = library.album_info(root)
+        out = []
+        for p, rel, size, mtime, t in rows:
+            if rel.split("/")[0] != os.path.basename(active):
+                continue
+            a = info.get(rel, {})
+            out.append((p, f"{size}:{mtime}", {"artist": t["artist"], "title": t["title"],
+                                               "album": a.get("album", ""), "genre": t["genre"],
+                                               "style": t["grouping"], "year": a.get("year", "")}))
+        return out
+    out = []
+    for p in active_tracks(active):
+        st = os.stat(p)
+        out.append((p, f"{st.st_size}:{int(st.st_mtime)}", None))
+    return out
+
+
 def update_features(cfg, active):
-    """Analyse whatever is new or changed. Returns {path: entry}."""
+    """Analyse whatever is new or changed. Returns {path: entry}.
+
+    A track is known again without opening it: by its path and size:mtime ("sig", from the
+    library index). Only when that fails is its audio stamp read (length and bit rate) — then
+    a track that moved, or whose tags were written, keeps its analysis. The new ones are
+    analysed in parallel, and the cache is written once, at the end.
+    """
+    from concurrent.futures import ThreadPoolExecutor
     cache = load_cache(cfg)
-    files = active_tracks(active)
-    fresh = {}
-    todo = []
-    for n, p in enumerate(files, 1):
-        if n % 25 == 0:          # slow on a network drive: say how far it is
-            print("\r" + _("  checked {n}/{total}").format(n=n, total=len(files)), end="", flush=True)
-        stamp = audio_stamp(p)
+    listed = _active_listing(active)
+    fresh, unsure = {}, []
+    for p, sig, tags in listed:
         old = cache.get(p)
-        if old and old.get("stamp") != stamp:
-            # entries from before audio_stamp() used size:mtime — keep them
-            # if the file is untouched since
-            st = os.stat(p)
-            if old.get("stamp") == f"{st.st_size}:{int(st.st_mtime)}":
-                old = {**old, "stamp": stamp}
-        if old and old.get("stamp") == stamp:
-            # tags are cheap to read and may have changed (genres, styles)
-            fresh[p] = {**old, "tags": track_tags(p)}
+        if old and old.get("sig") == sig:
+            fresh[p] = {**old, "tags": tags or old.get("tags") or track_tags(p)}
         else:
-            todo.append((p, stamp))
-    print("\r" + _("  checked {n}/{total}").format(n=len(files), total=len(files)))
+            unsure.append((p, sig, tags))
+    if fresh:
+        print(_("  known from the cache: {n} tracks").format(n=len(fresh)))
+
+    # changed or new: their audio stamp says whether it's the same recording (in parallel:
+    # on a network drive it's one slow read each)
+    stamps = Counter(e.get("stamp") for e in cache.values())
+    by_stamp = {e.get("stamp"): e for e in cache.values() if stamps[e.get("stamp")] == 1}
+    todo, moved = [], 0
+    workers = min(8, (os.cpu_count() or 2))
+    if unsure:
+        seen = settings.Progress(_("checked {n}/{total}"), total=len(unsure), every=25)
+        with ThreadPoolExecutor(workers) as pool:
+            for (p, sig, tags), stamp in zip(unsure, pool.map(lambda u: audio_stamp(u[0]), unsure)):
+                seen.tick()
+                old = cache.get(p)
+                if not (old and old.get("stamp") == stamp) and stamp in by_stamp:
+                    old, moved = by_stamp[stamp], moved + 1
+                if old and old.get("stamp") == stamp:
+                    fresh[p] = {**old, "sig": sig, "tags": tags or track_tags(p)}
+                else:
+                    todo.append((p, sig, stamp, tags))
+        seen.end()
+    if moved:
+        print(_("  {n} tracks moved since the last analysis: their analysis moved with them").format(n=moved))
+
     if todo:
-        print(_("  analysing {n} tracks (once; cached afterwards)...").format(n=len(todo)))
-    for i, (p, stamp) in enumerate(todo, 1):
-        fresh[p] = {"stamp": stamp, "tags": track_tags(p), "audio": analyse(p)}
-        if i % 25 == 0:
-            print("\r" + _("  analysed {n}/{total}").format(n=i, total=len(todo)), end="", flush=True)
-            save_cache(cfg, {**cache, **fresh})
-    if todo:
-        print("\r" + _("  analysed {n}/{total}").format(n=len(todo), total=len(todo)) + "      ")
-    save_cache(cfg, fresh)   # also drops tracks no longer in Active
+        print(_("  analysing {n} new or changed tracks (once; cached afterwards)...").format(n=len(todo)))
+        done = settings.Progress(_("analysed {n}/{total}"), total=len(todo), every=1)
+
+        def one(item):
+            p, sig, stamp, tags = item
+            return p, {"stamp": stamp, "sig": sig, "tags": tags or track_tags(p), "audio": analyse(p)}
+        try:
+            with ThreadPoolExecutor(workers) as pool:
+                for p, entry in pool.map(one, todo):
+                    fresh[p] = entry
+                    done.tick()
+        except BaseException:
+            save_cache(cfg, {**cache, **fresh})      # an interrupted run keeps what it did
+            raise
+        done.end()
+    save_cache(cfg, fresh)   # once; also drops tracks no longer in Active
     return fresh
 
 

@@ -60,25 +60,33 @@ def fingerprint(exe, path):
     return np.array(words, dtype=np.uint32) if len(words) > 40 else None
 
 
+_BITS = None
+
+
 def similarity(a, b, length_diff=0.0):
     """Best share of equal bits, one print shifted against the other.
 
-    The shift covers the length difference plus 7 s: one copy may carry a
-    longer intro ('Интернет человек' on SoundCloud is 11 s longer).
+    A window of the first print (200 words, about 25 s, from a quarter in: past the intro)
+    is slid along the second over the length difference plus 7 s, all shifts at once (one
+    numpy operation; a Python loop over the shifts was most of an import's time). One copy
+    may carry a longer intro ('Интернет человек' on SoundCloud is 11 s longer).
     """
     import numpy as np
-    bits = np.unpackbits(np.arange(256, dtype=np.uint8)[:, None], axis=1).sum(1)
+    global _BITS
+    if _BITS is None:
+        _BITS = np.unpackbits(np.arange(256, dtype=np.uint8)[:, None], axis=1).sum(1).astype(np.uint16)
+    w = min(200, len(a) // 2, len(b) // 2)
+    if w < 20:
+        return 0.0
+    start = min(len(a) // 4, len(a) - w)
+    seg = a[start:start + w]
     lag = int(abs(length_diff) / STEP) + 60
-    need = min(200, len(a) // 2, len(b) // 2)
-    best = 0.0
-    for d in range(-lag, lag + 1):
-        x, y = (a[d:], b) if d >= 0 else (a, b[-d:])
-        m = min(len(x), len(y))
-        if m < need:
-            continue
-        differ = bits[(x[:m] ^ y[:m]).view(np.uint8)].sum()
-        best = max(best, 1 - differ / (32 * m))
-    return best
+    lo, hi = max(0, start - lag), min(len(b) - w, start + lag)
+    if hi < lo:
+        return 0.0
+    windows = np.lib.stride_tricks.sliding_window_view(b, w)[lo:hi + 1]
+    differ = _BITS[(windows ^ seg).view(np.uint8)].reshape(len(windows), -1).sum(axis=1)
+    return float(1 - differ.min() / (32 * w))
 
 
 def close_length(a, b):
@@ -99,13 +107,15 @@ class Prints:
             self.cache = {}
         self.dirty = False
 
-    def get(self, path, key=None):
+    def get(self, path, key=None, stamp=None):
         """key: the file it was made from, when path is a temporary copy (a remuxed m4a):
-        cached under that, or every run would fingerprint it again."""
+        cached under that, or every run would fingerprint it again. stamp: its size:mtime when
+        already known (the library index has it): no stat of each file on a slow drive."""
         import numpy as np
         key = key or path
-        st = os.stat(key)
-        stamp = f"{st.st_size}:{int(st.st_mtime)}"
+        if stamp is None:
+            st = os.stat(key)
+            stamp = f"{st.st_size}:{int(st.st_mtime)}"
         hit = self.cache.get(key)
         if hit and hit[0] == stamp:
             return np.frombuffer(base64.b64decode(hit[1]), np.uint32) if hit[1] else None

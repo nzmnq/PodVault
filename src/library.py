@@ -72,13 +72,17 @@ def _load_index(root):
     return {}
 
 
-def _save_index(root, albums):
-    """Best effort: without it the library just gets scanned in full every time."""
+def _save_index(root, albums, tree=None):
+    """Best effort: without it the library just gets scanned in full every time.
+    tree: {folder: [mtime, [subfolder names], has audio]} for the quick walk (scan); kept
+    as it was when not given."""
     path = index_file(root)
+    if tree is None:
+        tree = _load_index(root).get("tree", {})
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path + ".tmp", "w", encoding="utf-8") as f:
-            json.dump({"v": 1, "albums": albums}, f, ensure_ascii=False, separators=(",", ":"))
+            json.dump({"v": 1, "albums": albums, "tree": tree}, f, ensure_ascii=False, separators=(",", ":"))
         os.replace(path + ".tmp", path)
     except OSError:
         pass
@@ -123,26 +127,37 @@ def _read_album(path, audio):
     }
 
 
-def _look(path, known=None):
-    """One folder: (subfolders, audio files, their [name, size, mtime], the folder's mtime).
+def _look(path, known=None, node=None):
+    """One folder: (subfolders, audio files, their [name, size, mtime], the album's mtime,
+    the folder's tree node [mtime, subfolder names, has audio]).
 
-    known: its index entry, for a quick look — when the folder's own time and its file
-    names are what the index has, the files aren't looked at one by one (on a network
-    drive that's one slow request each). A tag edited inside a file isn't seen that way:
-    the folder's time changes when files come and go, not when one is written to.
+    known / node: its index entry and tree node, for a quick look. A folder whose own time is
+    what the tree has isn't even listed: one stat, its subfolders and files come from the
+    index (on a cold network drive listing every folder took 7 s at each start). A tag edited
+    inside a file isn't seen that way: the folder's time changes when files come and go, not
+    when one is written to (our tools' own writes mark their albums: forget).
     """
+    st = os.stat(path)
+    mtime, stamp = int(st.st_mtime), st.st_mtime_ns     # the tree goes by the exact time
+    if node and node[0] == stamp:
+        dirs = [os.path.join(path, n) for n in node[1]]
+        if not node[2]:
+            return dirs, [], [], 0, node
+        if known and known.get("dir") == mtime:
+            return dirs, [x[0] for x in known["sig"]], known["sig"], mtime, node
     with os.scandir(path) as it:
         entries = list(it)
     dirs = [e.path for e in entries if e.is_dir(follow_symlinks=False)]
     audio = audiotags.audio_files(e.name for e in entries if e.is_file())
-    mtime = int(os.stat(path).st_mtime) if audio else 0
-    if known and known.get("dir") == mtime and [s[0] for s in known["sig"]] == audio:
-        return dirs, audio, known["sig"], mtime
+    node = [stamp, sorted(os.path.basename(d) for d in dirs), bool(audio)]
+    album_mtime = mtime if audio else 0
+    if known and known.get("dir") == album_mtime and [s[0] for s in known["sig"]] == audio:
+        return dirs, audio, known["sig"], album_mtime, node
     sig = []
     for fn in audio:
         st = os.stat(os.path.join(path, fn))
         sig.append([fn, st.st_size, int(st.st_mtime)])
-    return dirs, audio, sig, mtime
+    return dirs, audio, sig, album_mtime, node
 
 
 def _album(root, rel, sig, rec):
@@ -200,7 +215,10 @@ def scan(root=None, progress=None, quick=False):
     """
     global _expected
     root = root or paths()[0]
-    old = _load_index(root).get("albums", {})
+    data = _load_index(root)
+    old = data.get("albums", {})
+    old_tree = data.get("tree", {}) if quick else {}
+    tree = {}
     _expected = len(old)
     by_sig = {json.dumps(e["sig"]): e for e in old.values()}
 
@@ -214,8 +232,9 @@ def scan(root=None, progress=None, quick=False):
     while level:
         nxt = []
         rels = [os.path.relpath(path, root).replace(os.sep, "/") for path in level]
-        looks = pool.map(lambda p, r: _look(p, old.get(r) if quick else None), level, rels)
-        for path, rel, (dirs, audio, sig, mtime) in zip(level, rels, looks):
+        looks = pool.map(lambda p, r: _look(p, old.get(r) if quick else None, old_tree.get(r)), level, rels)
+        for path, rel, (dirs, audio, sig, mtime, node) in zip(level, rels, looks):
+            tree[rel] = node
             nxt += dirs
             if not audio:
                 continue
@@ -244,12 +263,13 @@ def scan(root=None, progress=None, quick=False):
             spent = time.time() - started
             progress(done, len(todo), spent / done * (len(todo) - done) if done >= 3 else None)
         if time.time() - saved > 30:    # an interrupted first scan isn't lost
-            _save_index(root, {**old, **{g[1]: {"sig": g[3], "rec": g[4], "dir": g[5]} for g in found if g[4]}})
+            _save_index(root, {**old, **{g[1]: {"sig": g[3], "rec": g[4], "dir": g[5]} for g in found if g[4]}},
+                        tree)
             saved = time.time()
 
     index = {rel: {"sig": sig, "rec": rec, "dir": mtime} for path, rel, audio, sig, rec, mtime in found}
-    if todo or index != old:
-        _save_index(root, index)
+    if todo or index != old or tree != data.get("tree"):
+        _save_index(root, index, tree)
     _stamp(root, True)
     return _sorted(_album(root, rel, sig, rec) for path, rel, audio, sig, rec, _m in found)
 

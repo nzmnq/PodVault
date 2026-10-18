@@ -226,10 +226,12 @@ def load_library(library_dir):
     names = Counter()           # normalised name -> count
     spelling = {}
     lengths = []
-    rows = library.listing(library_dir)
+    # quick: folders whose own time and file names are as indexed aren't looked into; our tools'
+    # own tag writes mark their albums to be read again (library.forget)
+    rows = library.listing(library_dir, quick=True)
     album_of = {rel: rec.get("album") or "" for rel, rec in library.album_info(library_dir).items()}
-    for fp, rel, _size, _mtime, t in rows:
-        lengths.append((fp, t["length"]))
+    for fp, rel, size, mtime, t in rows:
+        lengths.append((fp, t["length"], f"{size}:{mtime}"))
         aa = t["albumartist"] or t["artist"]
         al = album_of.get(rel, "")
         ti = t["title"]
@@ -254,8 +256,9 @@ OTHER_AUDIO = (".flac", ".wav", ".ogg", ".opus", ".aac", ".wma", ".alac", ".aiff
 
 def remux(ffmpeg, src, tmp):
     """A fragmented m4a (SoundCloud, YouTube) rewritten as a plain one, audio and cover
-    copied as they are. Returns the new path, or None."""
-    out = os.path.join(tmp, f"{len(os.listdir(tmp)):04d}.m4a")
+    copied as they are. Returns the new path, or None. Safe to run in parallel."""
+    import hashlib
+    out = os.path.join(tmp, hashlib.sha1(src.encode("utf-8")).hexdigest()[:16] + ".m4a")
     r = subprocess.run([ffmpeg, "-y", "-v", "error", "-i", src, "-map", "0:a:0", "-map", "0:v?",
                         "-c", "copy", "-disposition:v", "attached_pic", "-movflags", "+faststart", out],
                        capture_output=True)
@@ -272,26 +275,79 @@ def needs_remux(fp):
         return True
 
 
-def read_incoming(src, protect, cfg, tmp):
-    """Read every mp3 and m4a in the folder. Returns (files, unreadable).
+# ------------------------------------------------- files already settled
+
+
+def _settled_file(cfg):
+    return os.path.join(settings.path("reports_dir", cfg), "incoming_settled.json")
+
+
+def _sig(path):
+    try:
+        st = os.stat(path)
+        return f"{st.st_size}:{int(st.st_mtime)}"
+    except OSError:
+        return None
+
+
+def settled(cfg):
+    """{source file: size:mtime} of the incoming files already found in the library or added:
+    the next check doesn't open them again (until the file changes, or --recheck)."""
+    try:
+        with open(_settled_file(cfg), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def remember_settled(cfg, paths):
+    """Remember these source files as settled; ones that are gone are forgotten."""
+    data = {p: s for p, s in settled(cfg).items() if os.path.exists(p)}
+    for p in paths:
+        sig = _sig(p)
+        if sig:
+            data[p] = sig
+    path = _settled_file(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(path + ".tmp", path)
+
+
+def read_incoming(src, protect, cfg, tmp, skip=None):
+    """Read every mp3 and m4a in the folder. Returns (files, unreadable, skipped).
 
     Other audio formats are reported as unreadable rather than skipped
     silently: they need converting first (FLAC -> ALAC is in the menu).
+    skip: {path: size:mtime} of files already settled (settled()); those that haven't
+    changed aren't opened, only counted.
     """
     files, broken = [], []
+    skip = skip or {}
+    known = {os.path.join(r, fn) for r, _s, fs in os.walk(src) for fn in audiotags.audio_files(fs)
+             if skip.get(os.path.join(r, fn)) and skip[os.path.join(r, fn)] == _sig(os.path.join(r, fn))}
     ffmpeg = settings.ffmpeg(cfg)
     reports = settings.path("reports_dir", cfg)
     pages = soundcloud.load_cache(reports)
-    total = sum(len(audiotags.audio_files(fs)) for _r, _s, fs in os.walk(src))
+    # the fragmented m4a are rewritten first, several at once (ffmpeg does the work)
+    from concurrent.futures import ThreadPoolExecutor
+    every = [os.path.join(r, fn) for r, _s, fs in os.walk(src) for fn in audiotags.audio_files(fs)
+             if os.path.join(r, fn) not in known]
+    total = len(every)
+    with ThreadPoolExecutor(min(8, os.cpu_count() or 2)) as pool:
+        rewritten = dict(zip(every, pool.map(
+            lambda p: (remux(ffmpeg, p, tmp) if ffmpeg else None) if needs_remux(p) else p, every)))
     seen = settings.Progress(_("new tracks read: {n}/{total}"), total=total, every=1)
     for root, _skip, fs in os.walk(src):
         for fn in sorted(f for f in fs if f.lower().endswith(OTHER_AUDIO)):
             broken.append((fn, _("not mp3 or m4a — convert it first")))
         for fn in audiotags.audio_files(fs):
+            orig = os.path.join(root, fn)
+            if orig in known:
+                continue
             seen.tick()
-            fp = orig = os.path.join(root, fn)
-            if needs_remux(fp):
-                fp = remux(ffmpeg, fp, tmp) if ffmpeg else None
+            fp = rewritten.get(orig)
+            if fp != orig:
                 if not fp:
                     broken.append((fn, _("fragmented m4a, and ffmpeg can't rewrite it")
                                    if ffmpeg else _("fragmented m4a — ffmpeg is needed to rewrite it")))
@@ -335,7 +391,7 @@ def read_incoming(src, protect, cfg, tmp):
             files.append(f)
     seen.end()
     soundcloud.save_cache(reports, pages)
-    return files, broken
+    return files, broken, len(known)
 
 
 def soundcloud_tags(f, page, protect):
@@ -460,10 +516,11 @@ def same_audio(plan, lib_lengths, cfg):
             mine = prints.get(it["src"], it["orig"])
             if mine is None:
                 continue
-            pool = [(p, ln) for p, ln in lib_lengths if duplicates.close_length(ln, it["length"])]
-            pool += [(e["src"], e["length"]) for e in earlier if duplicates.close_length(e["length"], it["length"])]
-            for p, ln in pool:
-                other = prints.get(p, origs.get(p))
+            pool = [(p, ln, stamp) for p, ln, stamp in lib_lengths if duplicates.close_length(ln, it["length"])]
+            pool += [(e["src"], e["length"], None) for e in earlier
+                     if duplicates.close_length(e["length"], it["length"])]
+            for p, ln, stamp in pool:
+                other = prints.get(p, origs.get(p), stamp)
                 if other is not None and duplicates.similarity(
                         mine, other, ln - it["length"]) >= duplicates.SAME_AUDIO:
                     found[id(it)] = names.get(p, p)
@@ -533,6 +590,8 @@ def add_from_plan(args, cfg, path, dest_root):
             write_track(it)
             if n % 50 == 0:
                 print(f"  ... {n}/{len(todo)}")
+    remember_settled(cfg, [it["orig"] for it in todo]
+                     + [it["orig"] for it in data["items"] if it["status"] == "dupe"])
     print(_("\nTracks added: {n}").format(n=len(todo)))
     skipped = sum(1 for it in data["items"] if it["skip"])
     if skipped:
@@ -630,6 +689,8 @@ def main():
                     help=_("overwrite tracks that are already in the library"))
     ap.add_argument("--to", choices=("archive", "active"), default=cfg["new_tracks_target"],
                     help=_("where to put new tracks (setting: {value})").format(value=cfg['new_tracks_target']))
+    ap.add_argument("--recheck", action="store_true",
+                    help=_("read again the files an earlier check found in the library"))
     ap.add_argument("--scanned", action="store_true",
                     help=_("the library was just read (by the dry run): use that, don't read it again; "
                            "ignored when it wasn't"))
@@ -675,8 +736,11 @@ def main():
     lib_albums, spelling, lib_lengths = load_library(library)
     print(_("Reading the new tracks: {folder}").format(folder=args.source))
     with tempfile.TemporaryDirectory(prefix="podvault-") as tmp:
-        files, broken = read_incoming(args.source, protect, cfg, tmp)
+        skip = {} if (args.recheck or args.replace) else settled(cfg)
+        files, broken, skipped = read_incoming(args.source, protect, cfg, tmp, skip)
         print(_("  read: {n} tracks").format(n=len(files)))
+        if skipped:
+            print(_("  already settled before, not read again: {n} (--recheck reads them)").format(n=skipped))
         print(_("Making the plan: albums, artists, file names..."))
         plan, notes = build_plan(files, protect, speller(spelling, alias, files), dest_root, lib_albums,
                                  merged=cfg.get("singles") == "merged")
@@ -759,6 +823,7 @@ def report_and_add(args, cfg, plan, notes, files, broken, lib_albums, lib_length
         for label, value in rows:
             print(f"  {label.ljust(width)} : {value}")
 
+    remember_settled(cfg, [it["orig"] for it in dupes])     # found in the library: settled
     if not args.apply:
         save_plan(cfg, args, plan, dupes, lib_albums)
         if fresh or (args.replace and plan):
@@ -782,6 +847,7 @@ def report_and_add(args, cfg, plan, notes, files, broken, lib_albums, lib_length
         write_track(it)
         if n % 50 == 0:
             print(f"  ... {n}/{len(todo)}")
+    remember_settled(cfg, [it["orig"] for it in todo])
     print(_("\nTracks added: {n}").format(n=len(todo)))
     if dupes and not args.replace:
         print(_("Skipped as already present: {n} (--replace overwrites)").format(n=len(dupes)))

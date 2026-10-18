@@ -17,6 +17,7 @@
   "actually add the tracks": "справді додати треки",
   "overwrite tracks that are already in the library": "перезаписати треки, які вже є в бібліотеці",
   "where to put new tracks (setting: {value})": "куди класти нові треки (налаштування: {value})",
+  "read again the files an earlier check found in the library": "прочитати знову файли, які попередня перевірка знайшла в медіатеці",
   "the library was just read (by the dry run): use that, don't read it again; ignored when it wasn't": "медіатеку щойно прочитано (пробним прогоном): взяти це, не читати знову; ігнорується, якщо не прочитано",
   "with --apply: add what this saved plan says (the window's review)": "з --apply: додати те, що каже збережений план (перевірка у вікні)",
   "take the old 'Singles' albums apart: every single an album of its own": "розібрати старі альбоми «Singles»: кожен сингл — окремий альбом",
@@ -26,6 +27,7 @@
   "Reading the library (what's there, how names are spelled): {folder}": "Читаю бібліотеку (що вже є, як написані імена): {folder}",
   "Reading the new tracks: {folder}": "Читаю нові треки: {folder}",
   "  read: {n} tracks": "  прочитано: {n} треків",
+  "  already settled before, not read again: {n} (--recheck reads them)": "  вже розібрані раніше, не читаються знову: {n} (--recheck прочитає їх)",
   "Making the plan: albums, artists, file names...": "Складаю план: альбоми, виконавці, імена файлів...",
   "Comparing the audio with the library (the first run takes a while)...": "Порівнюю звук із медіатекою (перший запуск триває довше)...",
   "INCOMING: {tracks} tracks in {albums} albums   ({folder})": "НОВІ: треків — {tracks}, альбомів — {albums}   ({folder})",
@@ -509,9 +511,11 @@
   "artist still glued": "виконавці досі склеєні",
   "no embedded cover art": "немає вбудованої обкладинки",
   "\nOK artists with a 'Singles' album: {n}": "\nOK виконавців з альбомом 'Singles': {n}",
-  "  checked {n}/{total}": "  перевірено {n}/{total}",
-  "  analysing {n} tracks (once; cached afterwards)...": "  аналізую треків: {n} (один раз; далі з кешу)...",
-  "  analysed {n}/{total}": "  проаналізовано {n}/{total}",
+  "  known from the cache: {n} tracks": "  відомі з кешу: {n} треків",
+  "checked {n}/{total}": "перевірено {n}/{total}",
+  "  {n} tracks moved since the last analysis: their analysis moved with them": "  {n} треків переміщено з минулого аналізу: їхній аналіз перенесено разом із ними",
+  "  analysing {n} new or changed tracks (once; cached afterwards)...": "  аналізую {n} нових чи змінених треків (один раз; далі з кешу)...",
+  "analysed {n}/{total}": "проаналізовано {n}/{total}",
   "No saved pick yet — describe a vibe first.": "Збереженого добору ще немає — спершу опишіть настрій.",
   "The last pick's file is gone: {file}": "Файл останнього добору зник: {file}",
   "AI vibe playlists": "ШІ-плейлисти за настроєм",
@@ -1301,6 +1305,9 @@
     "Create on the iPod…": "Створити на iPod…",
     "Write this playlist into the iPod's database": "Записати цей плейлист у базу iPod",
     "Delete the saved playlist “{name}”?\n\nOnly the .m3u8 file goes; a copy already on the iPod stays there.": "Видалити збережений плейлист «{name}»?\n\nВидаляється лише файл .m3u8; копія, що вже є на iPod, там і лишиться.",
-    "New vibe playlist…": "Плейлист за настроєм…"
+    "New vibe playlist…": "Плейлист за настроєм…",
+    "  checked {n}/{total}": "  перевірено {n}/{total}",
+    "  analysing {n} tracks (once; cached afterwards)...": "  аналізую треків: {n} (один раз; далі з кешу)...",
+    "  analysed {n}/{total}": "  проаналізовано {n}/{total}"
   }
 }

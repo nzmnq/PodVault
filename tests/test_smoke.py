@@ -275,6 +275,62 @@ class KeptPlaylists(unittest.TestCase):
         self.assertTrue(ipod_sync.has_changes(plan))
 
 
+class VibeCache(unittest.TestCase):
+    def test_a_moved_track_keeps_its_analysis(self):
+        import shutil
+        import tags
+        import vibe
+        root = tempfile.mkdtemp()
+        old = os.path.join(root, "Band", "Singles")
+        os.makedirs(old)
+        f = sample(old, "mp3", "01 - Song")
+        tags.write(f, {"artist": "Band", "title": "Song"})
+        cfg = {"reports_dir": tempfile.mkdtemp()}
+        calls = []
+        real = vibe.analyse
+        vibe.analyse = lambda p: (calls.append(p), {"loudness": 1.0})[1]
+        try:
+            vibe.update_features(cfg, root)
+            new = os.path.join(root, "Band", "Song")
+            os.makedirs(new)
+            shutil.move(f, os.path.join(new, "01 - Song.mp3"))       # the Singles split moved it
+            got = vibe.update_features(cfg, root)
+        finally:
+            vibe.analyse = real
+        self.assertEqual(len(calls), 1)                 # analysed once, not again after the move
+        stamped = []
+        real_stamp = vibe.audio_stamp
+        vibe.audio_stamp = lambda p: (stamped.append(p), real_stamp(p))[1]
+        try:
+            vibe.update_features(cfg, root)
+        finally:
+            vibe.audio_stamp = real_stamp
+        self.assertEqual(stamped, [])                    # unchanged: not even opened
+        self.assertEqual(list(got), [os.path.join(new, "01 - Song.mp3")])
+
+
+class SettledIncoming(unittest.TestCase):
+    def test_settled_files_are_skipped_until_they_change(self):
+        import time
+        import add_incoming
+        src = tempfile.mkdtemp()
+        f = sample(src, "mp3", "song")
+        cfg = {"reports_dir": tempfile.mkdtemp(), "ffmpeg_path": "auto"}
+        real = settings.path
+        settings.path = lambda key, values=None: cfg[key] if key == "reports_dir" else real(key, values)
+        try:
+            add_incoming.remember_settled(cfg, [f])
+            _files, _broken, skipped = add_incoming.read_incoming(src, {}, cfg, tempfile.mkdtemp(),
+                                                                  add_incoming.settled(cfg))
+            self.assertEqual(skipped, 1)
+            os.utime(f, (time.time() + 5, time.time() + 5))       # the file changed: read it again
+            files, broken, skipped = add_incoming.read_incoming(src, {}, cfg, tempfile.mkdtemp(),
+                                                                add_incoming.settled(cfg))
+            self.assertEqual((skipped, len(files) + len(broken)), (0, 1))   # looked at again
+        finally:
+            settings.path = real
+
+
 class ScannedFlag(unittest.TestCase):
     def test_scanned_skips_the_drive_only_after_a_scan(self):
         import library
