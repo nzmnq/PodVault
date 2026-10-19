@@ -551,7 +551,7 @@ def apply_plan(cfg, dev, db, generation, plan):
     """
     from podsync.hardware.safety.guard import WriteLock
     from podsync.hardware.safety.readiness import check_write_ready, lock_key_for, recheck_write_ready
-    from podsync.itdb.writer.playlist import PlaylistRecord
+    from podsync.itdb.writer.playlist import PlaylistRecord, generate_playlist_id
     from podsync.library import database
     from podsync.library.media_paths import expected_media_path, location_for_media_path
     from podsync.library.playlists import assemble_playlists
@@ -648,6 +648,15 @@ def apply_plan(cfg, dev, db, generation, plan):
                 fresh = smart_presets.build(records, existing)
                 playlists.extend(fresh)
                 print(_("  smart playlists added: {n}").format(n=len(fresh)))
+
+            # The iPod's menu lists playlists from dataset 3 (iTunes writes it as a copy of
+            # dataset 2), not dataset 2: mirror the edited list there, same ids in both.
+            for p in playlists:
+                if p.playlist_id is None:
+                    p.playlist_id = generate_playlist_id()
+            podcast_pls = ([p for p in playlists if not p.is_podcast]
+                           + ([p for p in podcast_pls if p.is_podcast]
+                              or [p for p in playlists if p.is_podcast]))
 
             print(_("  writing the database (podsync reads it back afterwards)..."))
             written = database.save_device_library(
